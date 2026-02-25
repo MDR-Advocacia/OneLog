@@ -1,0 +1,63 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: onelog_db
+    environment:
+      POSTGRES_USER: ${DB_USER:-onelog}
+      POSTGRES_PASSWORD: ${DB_PASS:-onelog_password}
+      POSTGRES_DB: ${DB_NAME:-onelog_db}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    container_name: onelog_redis
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  api:
+    build: 
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: onelog_api
+    ports:
+      - "5000:5000"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - DB_URL=postgresql://${DB_USER:-onelog}:${DB_PASS:-onelog_password}@db:5432/${DB_NAME:-onelog_db}
+    volumes:
+      - ./static:/app/static
+    depends_on:
+      - redis
+      - db
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: onelog_worker
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - DB_URL=postgresql://${DB_USER:-onelog}:${DB_PASS:-onelog_password}@db:5432/${DB_NAME:-onelog_db}
+      - BB_USUARIO=${BB_USUARIO}
+      - BB_SENHA=${BB_SENHA}
+    volumes:
+      - ./static:/app/static # Pasta compartilhada para os prints da RPA
+    depends_on:
+      - redis
+      - db
+    restart: unless-stopped
+    # mem_limit: 1g # Limite de RAM (descomente no servidor de produção)
+
+volumes:
+  postgres_data:
+  redis_data:

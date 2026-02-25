@@ -1,0 +1,28 @@
+Ambiente Virtual Python
+
+venv/
+.env/
+pycache/
+*.pyc
+
+Configurações locais e Senhas (MUITO IMPORTANTE)
+
+.env
+backend/.env
+
+Banco de dados local (se usar SQLite para teste)
+
+*.sqlite3
+*.db
+
+Logs e Prints do Robô
+
+backend/static/.png
+backend/logs/.log
+*.log
+
+Pastas de IDEs e SO
+
+.vscode/
+.idea/
+.DS_Store

@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>OneLog Pro</title>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background-color: #f0f2f5; margin: 0; width: 340px; color: #333; }
+        .container { background: white; padding: 20px; text-align: center; }
+        h2 { color: #003366; font-size: 18px; margin: 0 0 15px 0; display: flex; align-items: center; justify-content: center; gap: 8px;}
+        
+        /* Formulário de Login AD */
+        .login-box { text-align: left; margin-bottom: 15px; }
+        label { font-size: 11px; font-weight: bold; color: #666; display: block; margin-bottom: 4px; }
+        input { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px; margin-bottom: 10px; box-sizing: border-box; font-size: 13px; }
+        input:focus { border-color: #003366; outline: none; }
+
+        .step-list { list-style: none; padding: 0; margin: 15px 0; text-align: left; max-height: 120px; overflow-y: auto; font-size: 12px; border-top: 1px solid #eee; display: none; }
+        .step-item { padding: 5px 0; border-bottom: 1px solid #f9f9f9; color: #555; display: flex; align-items: center; }
+        .step-icon { margin-right: 8px; color: #2e7d32; font-weight: bold; }
+        
+        .loader { border: 3px solid #f3f3f3; border-top: 3px solid #003366; border-radius: 50%; width: 20px; height: 20px; animation: spin 1s linear infinite; margin: 10px auto; display: none; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        
+        .debug-area { margin-top: 10px; display: none; border-radius: 6px; overflow: hidden; border: 1px solid #ddd; }
+        .debug-area img { width: 100%; display: block; }
+        .debug-label { background: #333; color: white; font-size: 9px; padding: 3px; text-align: center;}
+
+        button { background-color: #003366; color: white; border: none; padding: 12px; border-radius: 6px; cursor: pointer; width: 100%; font-weight: bold; transition: background 0.2s;}
+        button:hover { background-color: #002244; }
+        .error { color: #d32f2f; font-size: 12px; font-weight: bold; margin-top: 10px; display: none;}
+        .footer { font-size: 10px; color: #888; margin-top: 15px; border-top: 1px solid #eee; padding-top: 8px;}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>🛡️ OneLog Enterprise</h2>
+        
+        <div id="login-form">
+            <div class="login-box">
+                <label>USUÁRIO DA REDE (AD)</label>
+                <input type="text" id="username" placeholder="ex: rildon.silva" spellcheck="false">
+                <label>SENHA DO WINDOWS</label>
+                <input type="password" id="password" placeholder="••••••••">
+            </div>
+            <button id="btn-start">Entrar e Acessar Portal</button>
+        </div>
+
+        <div class="loader" id="loader"></div>
+        <ul class="step-list" id="step-list"></ul>
+        
+        <div class="debug-area" id="debug-area">
+            <div class="debug-label">Visão do Robô (RPA)</div>
+            <img id="debug-img" src="" alt="Screenshot">
+        </div>
+
+        <div id="error-msg" class="error"></div>
+        <div class="footer">Autenticação via MDR.LOCAL</div>
+    </div>
+    <script src="popup.js"></script>
+</body>
+</html>

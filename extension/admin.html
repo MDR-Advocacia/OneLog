@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OneLog - Painel de Controle</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body class="bg-gray-50 min-h-screen font-sans text-gray-800">
+    <!-- Navbar -->
+    <nav class="bg-blue-900 text-white p-4 shadow-md">
+        <div class="container mx-auto flex justify-between items-center">
+            <h1 class="text-xl font-bold flex items-center">
+                <i class="fas fa-robot text-blue-300 mr-3 text-2xl"></i> OneLog Enterprise
+            </h1>
+            <div class="flex items-center gap-4">
+                <span class="text-xs bg-green-500 text-white px-2 py-1 rounded-full font-bold uppercase tracking-wider shadow-sm">
+                    <i class="fas fa-circle text-[8px] mr-1 align-middle"></i> Sistema Operacional
+                </span>
+                <button class="text-blue-200 hover:text-white transition"><i class="fas fa-sign-out-alt"></i></button>
+            </div>
+        </div>
+    </nav>
+
+    <main class="container mx-auto p-6 mt-4">
+        
+        <!-- Cards de Resumo -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+            <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex items-center justify-between">
+                <div>
+                    <h3 class="text-gray-400 text-xs font-bold uppercase tracking-wider">Sessões Ativas no Pool</h3>
+                    <p class="text-3xl font-black text-gray-700 mt-1">2 <span class="text-lg text-gray-400 font-medium">/ 10</span></p>
+                </div>
+                <div class="bg-blue-50 w-12 h-12 rounded-full flex items-center justify-center text-blue-600 text-xl">
+                    <i class="fas fa-cookie-bite"></i>
+                </div>
+            </div>
+            
+            <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex items-center justify-between">
+                <div>
+                    <h3 class="text-gray-400 text-xs font-bold uppercase tracking-wider">Usuários Sincronizados (AD)</h3>
+                    <p class="text-3xl font-black text-indigo-600 mt-1" id="users-count">35</p>
+                </div>
+                <div class="bg-indigo-50 w-12 h-12 rounded-full flex items-center justify-center text-indigo-600 text-xl">
+                    <i class="fas fa-users"></i>
+                </div>
+            </div>
+            
+            <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex items-center justify-between">
+                <div>
+                    <h3 class="text-gray-400 text-xs font-bold uppercase tracking-wider">Fila do Robô (Espera)</h3>
+                    <p class="text-3xl font-black text-orange-500 mt-1" id="queue-size">0</p>
+                </div>
+                <div class="bg-orange-50 w-12 h-12 rounded-full flex items-center justify-center text-orange-500 text-xl">
+                    <i class="fas fa-hourglass-half"></i>
+                </div>
+            </div>
+        </div>
+
+        <!-- Seção: Contas do BB -->
+        <div class="mb-8">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-lg font-bold text-gray-800"><i class="fas fa-university mr-2 text-gray-400"></i>Contas do Banco do Brasil</h2>
+                <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold py-2 px-4 rounded-lg shadow transition">
+                    <i class="fas fa-plus mr-2"></i>Nova Conta
+                </button>
+            </div>
+            
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                <table class="w-full text-left border-collapse">
+                    <thead class="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider">
+                        <tr>
+                            <th class="p-4 font-semibold">Setor Associado (OU)</th>
+                            <th class="p-4 font-semibold">Login BB</th>
+                            <th class="p-4 font-semibold">Status da Sessão</th>
+                            <th class="p-4 font-semibold">Última Renovação</th>
+                            <th class="p-4 font-semibold text-right">Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody class="text-sm divide-y divide-gray-100" id="accounts-table">
+                        <tr class="hover:bg-gray-50 transition">
+                            <td class="p-4 font-bold text-gray-700"><i class="far fa-folder text-blue-400 mr-2"></i>BB_Acordos</td>
+                            <td class="p-4 text-gray-500 font-mono">11122233</td>
+                            <td class="p-4">
+                                <span class="bg-green-100 text-green-800 px-3 py-1 rounded-full text-xs font-bold inline-flex items-center">
+                                    <span class="w-2 h-2 bg-green-500 rounded-full mr-2 animate-pulse"></span> Quente (Ativa)
+                                </span>
+                            </td>
+                            <td class="p-4 text-gray-500 text-xs"><i class="far fa-clock mr-1"></i> Há 12 minutos</td>
+                            <td class="p-4 text-right">
+                                <button class="text-blue-600 hover:text-blue-800 font-semibold text-xs bg-blue-50 px-3 py-1 rounded-md transition mr-2" onclick="forcarRenovacao('BB_Acordos')">
+                                    <i class="fas fa-sync-alt mr-1"></i> Forçar Robô
+                                </button>
+                                <button class="text-red-500 hover:text-red-700 transition" title="Colocar em Manutenção">
+                                    <i class="fas fa-ban"></i>
+                                </button>
+                            </td>
+                        </tr>
+                        <tr class="hover:bg-gray-50 transition">
+                            <td class="p-4 font-bold text-gray-700"><i class="far fa-folder text-blue-400 mr-2"></i>BB_Defesa</td>
+                            <td class="p-4 text-gray-500 font-mono">44455566</td>
+                            <td class="p-4">
+                                <span class="bg-green-100 text-green-800 px-3 py-1 rounded-full text-xs font-bold inline-flex items-center">
+                                    <span class="w-2 h-2 bg-green-500 rounded-full mr-2 animate-pulse"></span> Quente (Ativa)
+                                </span>
+                            </td>
+                            <td class="p-4 text-gray-500 text-xs"><i class="far fa-clock mr-1"></i> Há 2 minutos</td>
+                            <td class="p-4 text-right">
+                                <button class="text-blue-600 hover:text-blue-800 font-semibold text-xs bg-blue-50 px-3 py-1 rounded-md transition mr-2" onclick="forcarRenovacao('BB_Defesa')">
+                                    <i class="fas fa-sync-alt mr-1"></i> Forçar Robô
+                                </button>
+                                <button class="text-red-500 hover:text-red-700 transition" title="Colocar em Manutenção">
+                                    <i class="fas fa-ban"></i>
+                                </button>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Seção: Sincronização Active Directory -->
+        <div>
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-lg font-bold text-gray-800"><i class="fas fa-sitemap mr-2 text-gray-400"></i>Mapeamento do Active Directory (AD)</h2>
+                <button class="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold py-2 px-4 rounded-lg shadow-sm transition">
+                    <i class="fas fa-sync-alt mr-2"></i>Sincronizar OUs (BB_*)
+                </button>
+            </div>
+            
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                <table class="w-full text-left border-collapse">
+                    <thead class="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider">
+                        <tr>
+                            <th class="p-4 font-semibold">Unidade Organizacional (OU)</th>
+                            <th class="p-4 font-semibold">Caminho no AD</th>
+                            <th class="p-4 font-semibold">Usuários Ativos</th>
+                            <th class="p-4 font-semibold">Status de Pool</th>
+                        </tr>
+                    </thead>
+                    <tbody class="text-sm divide-y divide-gray-100">
+                        <tr class="hover:bg-gray-50 transition">
+                            <td class="p-4 font-bold text-gray-700"><i class="far fa-folder-open text-yellow-500 mr-2"></i>BB_Acordos</td>
+                            <td class="p-4 text-gray-400 text-xs font-mono">MDR/01_Juridico/01_Passivo_Reu/BB_Acordos</td>
+                            <td class="p-4"><span class="bg-gray-100 text-gray-700 px-2 py-1 rounded-md font-bold">12</span></td>
+                            <td class="p-4"><span class="text-green-600 text-xs font-bold"><i class="fas fa-check-circle mr-1"></i> Mapeado (Conta 11122233)</span></td>
+                        </tr>
+                        <tr class="hover:bg-gray-50 transition">
+                            <td class="p-4 font-bold text-gray-700"><i class="far fa-folder-open text-yellow-500 mr-2"></i>BB_Defesa</td>
+                            <td class="p-4 text-gray-400 text-xs font-mono">MDR/01_Juridico/01_Passivo_Reu/BB_Defesa</td>
+                            <td class="p-4"><span class="bg-gray-100 text-gray-700 px-2 py-1 rounded-md font-bold">8</span></td>
+                            <td class="p-4"><span class="text-green-600 text-xs font-bold"><i class="fas fa-check-circle mr-1"></i> Mapeado (Conta 44455566)</span></td>
+                        </tr>
+                         <tr class="hover:bg-gray-50 transition">
+                            <td class="p-4 font-bold text-gray-700"><i class="far fa-folder-open text-yellow-500 mr-2"></i>BB_Negocial</td>
+                            <td class="p-4 text-gray-400 text-xs font-mono">MDR/01_Juridico/02_Ativo_Autor/BB_Negocial</td>
+                            <td class="p-4"><span class="bg-gray-100 text-gray-700 px-2 py-1 rounded-md font-bold">15</span></td>
+                            <td class="p-4"><span class="text-red-500 text-xs font-bold"><i class="fas fa-exclamation-triangle mr-1"></i> Sem Conta do BB Associada</span></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        function forcarRenovacao(setor) {
+            if(confirm(`Deseja forçar o robô a renovar a sessão da OU ${setor} agora?`)) {
+                alert("Ordem enviada para a fila do Redis!");
+                // fetch(`/api/zerocore/renew?setor=${setor}`, { method: 'POST' })
+            }
+        }
+    </script>
+</body>
+</html>

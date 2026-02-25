@@ -1,0 +1,33 @@
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# O Robô precisa de navegadores! Instalando Chrome, Xvfb e dependências
+RUN apt-get update && apt-get install -y \
+    wget \
+    gnupg \
+    xvfb \
+    libpq-dev \
+    gcc \
+    unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Adiciona a chave e o repositório do Google Chrome
+RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
+    && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list
+
+# Instala o Google Chrome
+RUN apt-get update && apt-get install -y google-chrome-stable && rm -rf /var/lib/apt/lists/*
+
+# Instala as dependências do Python
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Baixa o driver compatível via SeleniumBase
+RUN sbase install chromedriver
+
+# Copia o código do robô
+COPY . .
+
+# Comando para iniciar o worker ouvindo o Redis
+CMD ["python", "worker.py"]
