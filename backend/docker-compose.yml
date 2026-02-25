@@ -11,8 +11,11 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
-    ports:
-      - "5432:5432"
+    # Banco de dados consome pouco, mas vamos limitar por segurança
+    deploy:
+      resources:
+        limits:
+          memory: 256M
 
   redis:
     image: redis:7-alpine
@@ -20,8 +23,10 @@ services:
     volumes:
       - redis_data:/data
     restart: unless-stopped
-    ports:
-      - "6379:6379"
+    deploy:
+      resources:
+        limits:
+          memory: 128M
 
   api:
     build: 
@@ -33,30 +38,45 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379/0
       - DB_URL=postgresql://${DB_USER:-onelog}:${DB_PASS:-onelog_password}@db:5432/${DB_NAME:-onelog_db}
+      - AD_SERVER_IP=${AD_SERVER_IP}
+      - AD_DOMAIN=${AD_DOMAIN}
     volumes:
       - ./static:/app/static
     depends_on:
       - redis
       - db
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 400M
 
   worker:
     build:
       context: .
       dockerfile: Dockerfile.worker
     container_name: onelog_worker
+    # IMPORTANTE: Memória compartilhada para evitar crash do Chrome
+    shm_size: 2gb
     environment:
       - REDIS_URL=redis://redis:6379/0
       - DB_URL=postgresql://${DB_USER:-onelog}:${DB_PASS:-onelog_password}@db:5432/${DB_NAME:-onelog_db}
-      - BB_USUARIO=${BB_USUARIO}
-      - BB_SENHA=${BB_SENHA}
     volumes:
-      - ./static:/app/static # Pasta compartilhada para os prints da RPA
+      - ./static:/app/static
     depends_on:
       - redis
       - db
     restart: unless-stopped
-    # mem_limit: 1g # Limite de RAM (descomente no servidor de produção)
+    
+    # AQUI ESTÁ A PROTEÇÃO DA SUA EC2 (BASEADA NOS SEUS TESTES)
+    deploy:
+      resources:
+        limits:
+          cpus: '0.80'        # Usa no máximo 80% de 1 vCPU
+          memory: 800M        # Se o Chrome "vazar" memória e passar de 800MB, o Docker reinicia o container
+        reservations:
+          memory: 300M        # Reserva o mínimo para o boot do Chrome
 
 volumes:
   postgres_data:
