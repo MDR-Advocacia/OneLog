@@ -7,67 +7,64 @@ import time
 from datetime import datetime
 from database import SessionLocal, Sector, AccountBB, init_db, seed_db
 from ad_integration import autenticar_e_obter_setor
+from functools import wraps
 
 app = Flask(__name__)
 CORS(app)
 
-# Conexão com o Redis (Fila e Cache Rápido)
+# Configurações de Segurança
+# Defina uma chave forte no Coolify em ADMIN_TOKEN. Se não definir, o padrão é 'mudar-urgente'
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "mudar-urgente")
+
+# Conexão com o Redis
 redis_client = redis.Redis.from_url(os.getenv('REDIS_URL', 'redis://localhost:6379/0'), decode_responses=True)
 
+def admin_required(f):
+    """Decorator para proteger rotas administrativas"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        token = request.headers.get("X-Admin-Token")
+        if not token or token != ADMIN_TOKEN:
+            return jsonify({"erro": "Acesso negado: Chave administrativa inválida ou ausente."}), 403
+        return f(*args, **kwargs)
+    return decorated_function
+
 def inicializar_sistema():
-    """Tenta inicializar o banco de dados com retentativas (Aguarda o Postgres subir)"""
+    """Tenta inicializar o banco de dados com retentativas"""
     tentativas = 10
     while tentativas > 0:
         try:
-            print(f"Tentando conectar ao banco de dados... ({11 - tentativas}/10)")
             init_db()
             seed_db()
-            print("✅ Banco de Dados conectado e tabelas sincronizadas!")
+            print("✅ Banco de Dados conectado!")
             return True
         except Exception as e:
-            print(f"⚠️ Banco de dados ainda não está pronto. Erro: {e}")
+            print(f"⚠️ Aguardando banco... {e}")
             tentativas -= 1
             time.sleep(5)
     return False
 
+# --- ROTAS DE OPERAÇÃO (EXTENSÃO) ---
+
 @app.route('/api/zerocore/status', methods=['GET'])
 def get_status():
-    """Consulta o status do processamento para um setor específico."""
     setor_nome = request.args.get('setor')
-    if not setor_nome:
-        return jsonify({"mensagem": "Setor não identificado."}), 400
-        
+    if not setor_nome: return jsonify({"mensagem": "Setor ausente."}), 400
     status_str = redis_client.get(f"status:{setor_nome}")
-    if status_str:
-        return jsonify(json.loads(status_str))
-    return jsonify({"mensagem": "Aguardando...", "concluido": False, "erro": False, "imagem": None})
+    return jsonify(json.loads(status_str)) if status_str else jsonify({"mensagem": "Aguardando..."})
 
 @app.route('/api/zerocore/login', methods=['POST'])
 def request_login():
-    """
-    Endpoint Principal:
-    1. Autentica no AD.
-    2. Identifica o Setor (OU).
-    3. Entrega cookie do Pool ou aciona o Robô.
-    """
     data = request.json
-    username = data.get('username')
-    password = data.get('password')
-
-    if not username or not password:
-        return jsonify({"status": "erro", "mensagem": "Usuário e senha são obrigatórios."}), 400
-
-    # 1. Autenticação no Active Directory
-    ad_result = autenticar_e_obter_setor(username, password)
+    username, password = data.get('username'), data.get('password')
     
-    if ad_result['status'] == 'erro':
-        return jsonify(ad_result), 401
+    # 1. Autentica no AD (Segurança de Rede)
+    ad_result = autenticar_e_obter_setor(username, password)
+    if ad_result['status'] == 'erro': return jsonify(ad_result), 401
 
     setor_nome = ad_result['setor']
-    
     db = SessionLocal()
     try:
-        # 2. Busca o Setor e a Conta vinculada no Banco de Dados
         sector = db.query(Sector).filter(Sector.nome == setor_nome).first()
         if not sector:
             sector = Sector(nome=setor_nome)
@@ -76,77 +73,64 @@ def request_login():
             db.refresh(sector)
             
         account = db.query(AccountBB).filter(AccountBB.sector_id == sector.id, AccountBB.status == 'active').first()
-        
         if not account:
-            return jsonify({
-                "status": "erro", 
-                "mensagem": f"Acesso negado: O setor {setor_nome} ainda não possui uma conta do BB vinculada."
-            }), 403
+            return jsonify({"status": "erro", "mensagem": f"Setor {setor_nome} sem conta vinculada."}), 403
 
-        # 3. Verifica se existe Cookie válido (Pool de Sessões)
+        # 2. Verifica Pool de Cookies
         if account.cookie_payload and account.last_login_at:
-            age_minutes = (datetime.now() - account.last_login_at).total_seconds() / 60
-            if age_minutes < 20:
+            if (datetime.now() - account.last_login_at).total_seconds() / 60 < 20:
                 return jsonify({
-                    "status": "sucesso",
-                    "setor": setor_nome,
+                    "status": "sucesso", "setor": setor_nome,
                     "cookies": json.loads(account.cookie_payload),
-                    "url": "https://juridico.bb.com.br/wfj",
-                    "cached": True
+                    "url": "https://juridico.bb.com.br/wfj"
                 })
         
-        # 4. Se não houver cookie, aciona o Robô via Redis
-        redis_client.set(f"status:{setor_nome}", json.dumps({
-            "mensagem": f"Autenticado como {username}. Iniciando robô para o setor {setor_nome}...", 
-            "concluido": False, "erro": False, "imagem": None
-        }))
-        
+        # 3. Aciona Robô
+        redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Iniciando robô...", "concluido": False}))
         redis_client.lpush("queue:login_requests", account.id)
-        
-        return jsonify({
-            "status": "queued", 
-            "setor": setor_nome, 
-            "mensagem": "Sessão expirada. O robô foi acionado para renovação automática."
-        })
-        
-    except Exception as e:
-        return jsonify({"status": "erro", "mensagem": f"Erro interno: {str(e)}"}), 500
+        return jsonify({"status": "queued", "setor": setor_nome})
     finally:
         db.close()
 
-@app.route('/api/zerocore/renew', methods=['POST'])
-def renew_session():
-    """Força a renovação em background pelo Marcapasso."""
-    setor_nome = request.args.get('setor')
-    if not setor_nome: return jsonify({"status": "erro"}), 400
-    
+# --- ROTAS ADMINISTRATIVAS (PROTEGIDAS) ---
+
+@app.route('/api/admin/sectors', methods=['GET'])
+@admin_required
+def admin_list_sectors():
+    db = SessionLocal()
+    sectors = db.query(Sector).all()
+    result = [{"id": s.id, "nome": s.nome} for s in sectors]
+    db.close()
+    return jsonify(result)
+
+@app.route('/api/admin/configure_account', methods=['POST'])
+@admin_required
+def admin_configure_account():
+    data = request.json
+    setor_nome, bb_login, bb_senha = data.get('setor'), data.get('login'), data.get('senha')
+
     db = SessionLocal()
     try:
         sector = db.query(Sector).filter(Sector.nome == setor_nome).first()
-        if sector:
-            account = db.query(AccountBB).filter(AccountBB.sector_id == sector.id).first()
-            if account:
-                redis_client.lpush("queue:login_requests", account.id)
-                return jsonify({"status": "queued"})
+        if not sector:
+            sector = Sector(nome=setor_nome); db.add(sector); db.commit(); db.refresh(sector)
+
+        account = db.query(AccountBB).filter(AccountBB.sector_id == sector.id).first()
+        if not account:
+            account = AccountBB(sector_id=sector.id); db.add(account)
+
+        account.login, account.senha, account.status = bb_login, bb_senha, "active"
+        db.commit()
+        return jsonify({"mensagem": f"Conta {bb_login} vinculada ao setor {setor_nome}!"})
     finally:
         db.close()
-    return jsonify({"status": "erro"}), 400
 
 @app.route('/api/zerocore/reset', methods=['POST'])
 def api_reset():
-    setor_nome = request.args.get('setor', 'GERAL')
-    redis_client.delete(f"status:{setor_nome}")
+    redis_client.delete(f"status:{request.args.get('setor', 'GERAL')}")
     return jsonify({"status": "resetado"})
-
-@app.route('/static/<path:filename>')
-def serve_static(filename):
-    return send_from_directory('static', filename)
 
 if __name__ == '__main__':
     if not os.path.exists('static'): os.makedirs('static')
-    
-    # Tenta inicializar o banco antes de subir o servidor Flask
     if inicializar_sistema():
         app.run(host='0.0.0.0', port=5000)
-    else:
-        print("❌ ERRO CRÍTICO: Não foi possível conectar ao Banco de Dados após várias tentativas.")
