@@ -11,7 +11,6 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
-    # Banco de dados consome pouco, mas vamos limitar por segurança
     deploy:
       resources:
         limits:
@@ -40,8 +39,7 @@ services:
       - DB_URL=postgresql://${DB_USER:-onelog}:${DB_PASS:-onelog_password}@db:5432/${DB_NAME:-onelog_db}
       - AD_SERVER_IP=${AD_SERVER_IP}
       - AD_DOMAIN=${AD_DOMAIN}
-    volumes:
-      - ./static:/app/static
+      - PYTHONUNBUFFERED=1
     depends_on:
       - redis
       - db
@@ -57,26 +55,24 @@ services:
       context: .
       dockerfile: Dockerfile.worker
     container_name: onelog_worker
-    # IMPORTANTE: Memória compartilhada para evitar crash do Chrome
     shm_size: 2gb
     environment:
       - REDIS_URL=redis://redis:6379/0
       - DB_URL=postgresql://${DB_USER:-onelog}:${DB_PASS:-onelog_password}@db:5432/${DB_NAME:-onelog_db}
+      - PYTHONUNBUFFERED=1
     volumes:
       - ./static:/app/static
     depends_on:
       - redis
       - db
     restart: unless-stopped
-    
-    # AQUI ESTÁ A PROTEÇÃO DA SUA EC2 (BASEADA NOS SEUS TESTES)
     deploy:
       resources:
         limits:
-          cpus: '0.80'        # Usa no máximo 80% de 1 vCPU
-          memory: 800M        # Se o Chrome "vazar" memória e passar de 800MB, o Docker reinicia o container
+          cpus: '0.80'
+          memory: 800M
         reservations:
-          memory: 300M        # Reserva o mínimo para o boot do Chrome
+          memory: 300M
 
 volumes:
   postgres_data:
