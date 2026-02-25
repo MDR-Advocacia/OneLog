@@ -55,9 +55,12 @@ def get_status():
 
 @app.route('/api/zerocore/login', methods=['POST'])
 def request_login():
-    data = request.json
+    data = request.get_json(silent=True) or {}
     username, password = data.get('username'), data.get('password')
     
+    if not username or not password:
+        return jsonify({"status": "erro", "mensagem": "Usuário e senha são obrigatórios."}), 400
+
     # 1. Autentica no AD (Segurança de Rede)
     ad_result = autenticar_e_obter_setor(username, password)
     if ad_result['status'] == 'erro': return jsonify(ad_result), 401
@@ -89,6 +92,8 @@ def request_login():
         redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Iniciando robô...", "concluido": False}))
         redis_client.lpush("queue:login_requests", account.id)
         return jsonify({"status": "queued", "setor": setor_nome})
+    except Exception as e:
+        return jsonify({"status": "erro", "mensagem": f"Erro interno na API: {str(e)}"}), 500
     finally:
         db.close()
 
@@ -98,30 +103,59 @@ def request_login():
 @admin_required
 def admin_list_sectors():
     db = SessionLocal()
-    sectors = db.query(Sector).all()
-    result = [{"id": s.id, "nome": s.nome} for s in sectors]
-    db.close()
-    return jsonify(result)
+    try:
+        sectors = db.query(Sector).all()
+        result = [{"id": s.id, "nome": s.nome} for s in sectors]
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"erro": f"Erro interno: {str(e)}"}), 500
+    finally:
+        db.close()
 
 @app.route('/api/admin/configure_account', methods=['POST'])
 @admin_required
 def admin_configure_account():
-    data = request.json
-    setor_nome, bb_login, bb_senha = data.get('setor'), data.get('login'), data.get('senha')
+    data = request.get_json(silent=True) or {}
+    setor_nome = data.get('setor')
+    bb_login = data.get('login')
+    bb_senha = data.get('senha')
+
+    if not all([setor_nome, bb_login, bb_senha]):
+        return jsonify({"erro": "Dados incompletos. Envie setor, login e senha."}), 400
 
     db = SessionLocal()
     try:
+        # 1. Garante que o Setor existe
         sector = db.query(Sector).filter(Sector.nome == setor_nome).first()
         if not sector:
-            sector = Sector(nome=setor_nome); db.add(sector); db.commit(); db.refresh(sector)
+            sector = Sector(nome=setor_nome)
+            db.add(sector)
+            db.commit()
+            db.refresh(sector)
 
-        account = db.query(AccountBB).filter(AccountBB.sector_id == sector.id).first()
+        # 2. Busca a conta PRIMEIRO pelo LOGIN (já que é único)
+        account = db.query(AccountBB).filter(AccountBB.login == bb_login).first()
+        
+        # 3. Se não achou pelo login, tenta achar a conta vazia do setor para reaproveitar
         if not account:
-            account = AccountBB(sector_id=sector.id); db.add(account)
+            account = db.query(AccountBB).filter(AccountBB.sector_id == sector.id).first()
+            
+        # 4. Se realmente não existe em lugar nenhum, cria uma do zero
+        if not account:
+            account = AccountBB()
+            db.add(account)
 
-        account.login, account.senha, account.status = bb_login, bb_senha, "active"
+        # 5. Atualiza os dados: Move a conta pro setor correto e salva a senha
+        account.login = bb_login
+        account.senha = bb_senha
+        account.sector_id = sector.id
+        account.status = "active"
+        
         db.commit()
-        return jsonify({"mensagem": f"Conta {bb_login} vinculada ao setor {setor_nome}!"})
+        return jsonify({"mensagem": f"Conta {bb_login} vinculada ao setor {setor_nome} com sucesso!"})
+    except Exception as e:
+        db.rollback() # Desfaz a operação no banco para não travar a tabela
+        return jsonify({"erro": f"Erro no banco de dados: {str(e)}"}), 500
     finally:
         db.close()
 
