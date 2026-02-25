@@ -3,6 +3,7 @@ from flask_cors import CORS
 import redis
 import json
 import os
+import time
 from datetime import datetime
 from database import SessionLocal, Sector, AccountBB, init_db, seed_db
 from ad_integration import autenticar_e_obter_setor
@@ -10,12 +11,24 @@ from ad_integration import autenticar_e_obter_setor
 app = Flask(__name__)
 CORS(app)
 
-# Inicializa o Banco de Dados ao iniciar a API
-init_db()
-seed_db()
-
 # Conexão com o Redis (Fila e Cache Rápido)
 redis_client = redis.Redis.from_url(os.getenv('REDIS_URL', 'redis://localhost:6379/0'), decode_responses=True)
+
+def inicializar_sistema():
+    """Tenta inicializar o banco de dados com retentativas (Aguarda o Postgres subir)"""
+    tentativas = 10
+    while tentativas > 0:
+        try:
+            print(f"Tentando conectar ao banco de dados... ({11 - tentativas}/10)")
+            init_db()
+            seed_db()
+            print("✅ Banco de Dados conectado e tabelas sincronizadas!")
+            return True
+        except Exception as e:
+            print(f"⚠️ Banco de dados ainda não está pronto. Erro: {e}")
+            tentativas -= 1
+            time.sleep(5)
+    return False
 
 @app.route('/api/zerocore/status', methods=['GET'])
 def get_status():
@@ -55,7 +68,6 @@ def request_login():
     db = SessionLocal()
     try:
         # 2. Busca o Setor e a Conta vinculada no Banco de Dados
-        # Se o setor do AD não existir no nosso DB, criamos automaticamente
         sector = db.query(Sector).filter(Sector.nome == setor_nome).first()
         if not sector:
             sector = Sector(nome=setor_nome)
@@ -68,7 +80,7 @@ def request_login():
         if not account:
             return jsonify({
                 "status": "erro", 
-                "mensagem": f"Acesso negado: O setor {setor_nome} ainda não possui uma conta do BB vinculada pelo administrador."
+                "mensagem": f"Acesso negado: O setor {setor_nome} ainda não possui uma conta do BB vinculada."
             }), 403
 
         # 3. Verifica se existe Cookie válido (Pool de Sessões)
@@ -132,4 +144,9 @@ def serve_static(filename):
 
 if __name__ == '__main__':
     if not os.path.exists('static'): os.makedirs('static')
-    app.run(host='0.0.0.0', port=5000)
+    
+    # Tenta inicializar o banco antes de subir o servidor Flask
+    if inicializar_sistema():
+        app.run(host='0.0.0.0', port=5000)
+    else:
+        print("❌ ERRO CRÍTICO: Não foi possível conectar ao Banco de Dados após várias tentativas.")
