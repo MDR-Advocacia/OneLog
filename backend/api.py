@@ -43,6 +43,14 @@ def inicializar_sistema():
             time.sleep(5)
     return False
 
+# --- ROTAS DE PÁGINAS WEB ---
+
+@app.route('/admin')
+@app.route('/admin.html')
+def serve_admin():
+    """Serve a página HTML do painel administrativo"""
+    return send_from_directory('.', 'admin.html')
+
 # --- ROTAS DE OPERAÇÃO (EXTENSÃO) ---
 
 @app.route('/api/zerocore/status', methods=['GET'])
@@ -112,14 +120,17 @@ def renew_session():
     data = request.get_json(silent=True) or {}
     username = data.get('username')
     password = data.get('password')
-    setor_nome = data.get('setor')
+    # Aceita tanto no corpo JSON (novo padrão) quanto na URL (extensão antiga)
+    setor_nome = data.get('setor') or request.args.get('setor')
 
-    if not username or not password or not setor_nome:
-        return jsonify({"status": "erro", "mensagem": "Credenciais ou setor ausentes."}), 400
+    if not setor_nome:
+        return jsonify({"status": "erro", "mensagem": "Setor ausente."}), 400
 
-    ad_result = autenticar_e_obter_setor(username, password)
-    if ad_result['status'] == 'erro':
-        return jsonify({"status": "unauthorized", "mensagem": "Credenciais AD inválidas ou acesso revogado."}), 401
+    # Validação AD condicional: Só valida se a extensão enviar as credenciais (Modo Transição)
+    if username and password:
+        ad_result = autenticar_e_obter_setor(username, password)
+        if ad_result['status'] == 'erro':
+            return jsonify({"status": "unauthorized", "mensagem": "Credenciais AD inválidas ou acesso revogado."}), 401
 
     db = SessionLocal()
     try:
@@ -136,27 +147,27 @@ def renew_session():
                 redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Renovação de Marcapasso...", "concluido": False, "erro": False}))
                 redis_client.lpush("queue:login_requests", account.id)
                 
-                # MÉTRICA: Renovações do marcapasso também contam como trabalho do robô
                 redis_client.incr('metrics:robos_executados')
-                
                 return jsonify({"status": "queued"})
     finally:
         db.close()
     return jsonify({"status": "erro"}), 404
 
-@app.route('/api/zerocore/session', methods=['POST'])
+@app.route('/api/zerocore/session', methods=['GET', 'POST'])
 def get_session():
     data = request.get_json(silent=True) or {}
     username = data.get('username')
     password = data.get('password')
-    setor_nome = data.get('setor')
+    # Aceita requisições GET ou POST para compatibilidade com a extensão atual
+    setor_nome = data.get('setor') or request.args.get('setor')
 
-    if not username or not password or not setor_nome:
-        return jsonify({"status": "erro", "mensagem": "Credenciais ou setor ausentes."}), 400
+    if not setor_nome:
+        return jsonify({"status": "erro", "mensagem": "Setor ausente."}), 400
 
-    ad_result = autenticar_e_obter_setor(username, password)
-    if ad_result['status'] == 'erro':
-        return jsonify({"status": "unauthorized", "mensagem": "Credenciais AD inválidas ou acesso revogado."}), 401
+    if username and password:
+        ad_result = autenticar_e_obter_setor(username, password)
+        if ad_result['status'] == 'erro':
+            return jsonify({"status": "unauthorized", "mensagem": "Credenciais AD inválidas ou acesso revogado."}), 401
     
     db = SessionLocal()
     try:
@@ -186,12 +197,10 @@ def admin_dashboard_stats():
         
         queue_size = redis_client.llen("queue:login_requests")
         
-        # Recupera as métricas do Redis (Se for None, converte para 0)
         logins_solicitados = int(redis_client.get('metrics:logins_solicitados') or 0)
         cookies_injetados = int(redis_client.get('metrics:cookies_injetados') or 0)
         robos_executados = int(redis_client.get('metrics:robos_executados') or 0)
         
-        # Calcula a taxa de sucesso da blindagem (Economia AWS)
         economia_pct = 0
         if logins_solicitados > 0:
             economia_pct = round((cookies_injetados / logins_solicitados) * 100, 1)

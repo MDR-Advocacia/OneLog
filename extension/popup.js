@@ -51,13 +51,12 @@ document.getElementById('btn-access').addEventListener('click', () => {
     chrome.storage.local.get(["onelog_user"], (res) => {
         if(res.onelog_user) {
             errorMsg.style.display = "none";
-            chrome.runtime.sendMessage({ action: "START_RENEW_LOGIN", setor: res.onelog_user.setor });
+            chrome.runtime.sendMessage({ action: "START_RENEW_LOGIN" });
         }
     });
 });
 
 document.getElementById('btn-logout').addEventListener('click', () => {
-    // Agora o botão Sair também invoca a faxina no background!
     chrome.runtime.sendMessage({ action: "LOGOUT" }, () => showLogin());
 });
 
