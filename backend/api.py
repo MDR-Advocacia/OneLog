@@ -170,21 +170,20 @@ def get_session():
 @app.route('/api/admin/ad_sectors', methods=['GET'])
 @admin_required
 def admin_list_ad_sectors():
-    """Retorna todas as OUs do AD + OUs já registradas no banco (Garante lista preenchida)"""
+    """Retorna setores reais do AD mesclados com os do Banco de Dados (Sem Mocks)"""
+    
+    # 1. Puxa as OUs diretamente do seu Active Directory
     ad_ous = listar_ous_bb_ad()
 
+    # 2. Puxa setores que já existem cadastrados no seu Banco de Dados
     db = SessionLocal()
     try:
         db_sectors = [s.nome for s in db.query(Sector).all()]
     finally:
         db.close()
 
-    # Une as duas listas sem duplicatas e ordena alfabeticamente
+    # Une as duas listas sem duplicatas (set) e ordena alfabeticamente
     todos_setores = sorted(list(set(ad_ous + db_sectors)))
-
-    # Fallback caso o AD falhe e o banco esteja zerado
-    if not todos_setores:
-        todos_setores = ["BB_Acordos", "BB_Civel", "BB_Trabalhista", "GERAL"]
 
     return jsonify(todos_setores)
 
