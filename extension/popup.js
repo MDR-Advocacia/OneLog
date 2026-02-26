@@ -99,15 +99,19 @@ btnStart.addEventListener('click', async () => {
         } else {
             // Se está em fila, o pollStatus() vai cuidar de avisar quando terminar
             const checkInterval = setInterval(async () => {
-                const res = await fetch(`${API_URL}/api/zerocore/login`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ username: user, password: pass })
-                });
-                const nextData = await res.json();
-                if (nextData.status === "sucesso") {
-                    clearInterval(checkInterval);
-                    handleSuccess(nextData);
+                try { // Blindagem contra "Failed to Fetch"
+                    const res = await fetch(`${API_URL}/api/zerocore/login`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ username: user, password: pass })
+                    });
+                    const nextData = await res.json();
+                    if (nextData.status === "sucesso") {
+                        clearInterval(checkInterval);
+                        handleSuccess(nextData);
+                    }
+                } catch (err) {
+                    console.error("Aguardando estabilidade da rede/API...");
                 }
             }, 5000);
         }

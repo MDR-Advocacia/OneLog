@@ -113,6 +113,51 @@ def request_login():
     finally:
         db.close()
 
+@app.route('/api/zerocore/renew', methods=['POST'])
+def renew_session():
+    """Aciona a fila silenciosamente a pedido do background.js (Marcapasso)"""
+    setor_nome = request.args.get('setor')
+    if not setor_nome: return jsonify({"status": "erro", "mensagem": "Setor não informado."}), 400
+    
+    db = SessionLocal()
+    try:
+        sector = db.query(Sector).filter(Sector.nome == setor_nome).first()
+        if sector:
+            account = db.query(AccountBB).filter(AccountBB.sector_id == sector.id).first()
+            if account:
+                status_str = redis_client.get(f"status:{setor_nome}")
+                if status_str:
+                    current_status = json.loads(status_str)
+                    if not current_status.get("concluido") and not current_status.get("erro"):
+                        return jsonify({"status": "queued", "mensagem": "Robô já em execução."})
+
+                redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Renovação de Marcapasso...", "concluido": False, "erro": False}))
+                redis_client.lpush("queue:login_requests", account.id)
+                return jsonify({"status": "queued"})
+    finally:
+        db.close()
+    return jsonify({"status": "erro"}), 404
+
+@app.route('/api/zerocore/session', methods=['GET'])
+def get_session():
+    """Recupera apenas os cookies (Usado pelo background.js para evitar crash)"""
+    setor_nome = request.args.get('setor')
+    if not setor_nome: return jsonify({"status": "erro"}), 400
+    
+    db = SessionLocal()
+    try:
+        sector = db.query(Sector).filter(Sector.nome == setor_nome).first()
+        if sector:
+            account = db.query(AccountBB).filter(AccountBB.sector_id == sector.id).first()
+            if account and account.cookie_payload:
+                return jsonify({
+                    "status": "sucesso",
+                    "cookies": json.loads(account.cookie_payload)
+                })
+    finally:
+        db.close()
+    return jsonify({"status": "erro"}), 404
+
 # --- ROTAS ADMINISTRATIVAS ---
 @app.route('/api/admin/sectors', methods=['GET'])
 @admin_required
