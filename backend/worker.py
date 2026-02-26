@@ -68,29 +68,35 @@ def processar_login(account_id):
                     img = snapshot(sb, setor, f"02_antes_captcha_T{tentativa}")
                     
                     captcha_container = "div.cf-turnstile"
-                    if sb.is_element_visible(captcha_container):
-                        update_status(setor, "Cloudflare detectado. Aplicando bypass avançado...", imagem=img)
-                        sb.sleep(2)
-                        try:
-                            # 1ª Tentativa: Método Nativo UC
-                            sb.uc_gui_click_captcha()
-                        except Exception as e:
-                            logger.warning(f"uc_gui falhou. Entrando no iframe cirúrgico... Erro: {e}")
+                    senha_apareceu = False
+                    
+                    # A LÓGICA DO "CAPTCHA TEIMOSO": Tenta clicar e esperar até 3 vezes
+                    for tentativa_clique in range(1, 4):
+                        if sb.is_element_visible(captcha_container):
+                            update_status(setor, f"Cloudflare detectado. Clique simples (Tentativa {tentativa_clique}/3)...", imagem=img)
+                            sb.sleep(2)
                             try:
-                                # 2ª Tentativa: Entra dentro do Iframe do Cloudflare e clica como humano
-                                sb.switch_to_frame("iframe[src*='challenges.cloudflare']")
-                                sb.click("body")
-                                sb.switch_to_default_content()
-                            except Exception:
-                                # 3ª Tentativa: Clica no contêiner raiz
-                                sb.switch_to_default_content()
-                                sb.click(captcha_container)
+                                sb.click(captcha_container) # O clique simples e confiável
+                                logger.info(f">>> Clique no captcha realizado (Tentativa {tentativa_clique}).")
+                            except Exception as e:
+                                logger.warning(f"Aviso no clique: {e}")
                                 
-                        img = snapshot(sb, setor, f"03_pos_clique_T{tentativa}")
-                        update_status(setor, "Aguardando liberação automática do BB...", imagem=img)
+                            img = snapshot(sb, setor, f"03_pos_clique_T{tentativa}_C{tentativa_clique}")
+                        
+                        update_status(setor, "Aguardando campo de senha (até 30s)...", imagem=img)
+                        try:
+                            # Espera 30 segundos. Se a senha aparecer, ele sai do loop!
+                            sb.wait_for_element("#idToken3", timeout=30)
+                            senha_apareceu = True
+                            logger.info(">>> SUCESSO! Campo de senha apareceu!")
+                            break # Sai do for, pois a senha está na tela
+                        except Exception:
+                            logger.warning(f"Senha não apareceu após 30s (Clique {tentativa_clique}). Repetindo verificação...")
+                    
+                    # Se rodou os 3 cliques de 30s e a senha não veio, aí sim cancela a tentativa inteira
+                    if not senha_apareceu:
+                        raise Exception("Timeout absoluto: O campo de senha não apareceu após 3 verificações no Captcha.")
 
-                    update_status(setor, "Aguardando campo de senha...", imagem=img)
-                    sb.wait_for_element("#idToken3", timeout=45)
                     img = snapshot(sb, setor, f"04_senha_visivel_T{tentativa}")
                     
                     update_status(setor, "Digitando senha...", imagem=img)
