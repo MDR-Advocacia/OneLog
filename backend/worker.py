@@ -12,10 +12,8 @@ logger = logging.getLogger(__name__)
 
 redis_client = redis.Redis.from_url(os.getenv('REDIS_URL', 'redis://localhost:6379/0'), decode_responses=True)
 
-# A STRING DOURADA (Camuflagem para bater com a extensão)
-USER_AGENT_DOURADO = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-
-BASE_URL = "http://api-onelog.mdradvocacia.com"
+# Atualizado para HTTPS para bater com a sua infraestrutura do Coolify
+BASE_URL = "https://api-onelog.mdradvocacia.com"
 
 def update_status(setor, msg, concluido=False, erro=False, imagem=None):
     status = {"mensagem": msg, "concluido": concluido, "erro": erro, "imagem": imagem}
@@ -47,11 +45,10 @@ def processar_login(account_id):
         
         update_status(setor, "Iniciando robô...")
         
-        # xvfb=True cria o monitor virtual. headless=False garante que o navegador renderize.
-        # IMPORTANTE: REMOVIDO o agent=USER_AGENT_DOURADO. O UC Mode fará a camuflagem correta com o Linux!
+        # xvfb=True e headless=False são vitais no Linux para o Cloudflare não bloquear
         with SB(uc=True, test=True, headless=False, xvfb=True, proxy="socks5://206.42.43.192:45123") as sb:
             try:
-                logger.info(f">>> [INÍCIO] Login BB para {setor} - Lógica V5 (Original) + Prints.")
+                logger.info(f">>> [INÍCIO] Login BB para {setor} - Nova Lógica Simplificada e Paciente.")
                 
                 # 1. Início
                 update_status(setor, "Abrindo navegador...")
@@ -66,76 +63,60 @@ def processar_login(account_id):
                 sb.sleep(1)
                 sb.click("#loginButton_0")
                 
-                # 3. Cloudflare
+                # 3. Cloudflare (Apenas visualizamos e aguardamos)
                 update_status(setor, "Analisando Captcha...", imagem=img)
                 logger.info("Aguardando Cloudflare...")
                 sb.sleep(6)
                 img = snapshot(sb, setor, "02_antes_captcha")
-                update_status(setor, "Verificando desafio...", imagem=img)
                 
                 captcha_container = "div.cf-turnstile"
                 if sb.is_element_visible(captcha_container):
-                    update_status(setor, "Tentando clique no desafio...", imagem=img)
-                    logger.info("Captcha visível. Resolvendo problema de compatibilidade...")
+                    update_status(setor, "Cloudflare detectado. Interagindo...", imagem=img)
                     try:
-                        # Método oficial do SeleniumBase 4.24+ para burlar o Cloudflare Turnstile
-                        sb.uc_gui_click_captcha()
-                        logger.info(">>> CLIQUE REALIZADO COM SUCESSO (uc_gui_click_captcha).")
+                        # O único clique que se provou confiável no seu ambiente
+                        sb.click(captcha_container)
+                        logger.info(">>> Clique simples no Captcha realizado.")
                     except Exception as e:
-                        logger.warning(f"Erro no método principal: {e}. Tentando fallback...")
-                        try:
-                            sb.uc_click(captcha_container)
-                        except:
-                            sb.click(captcha_container)
+                        logger.warning(f"Erro ao clicar (pode já estar resolvendo sozinho): {e}")
                         
                     img = snapshot(sb, setor, "03_pos_clique")
-                    update_status(setor, "Clique efetuado, aguardando validação...", imagem=img)
-                    sb.sleep(20)
-                
-                img = snapshot(sb, setor, "04_esperando_token")
-                update_status(setor, "Processando validação passiva...", imagem=img)
+                    update_status(setor, "Aguardando liberação automática do BB...", imagem=img)
 
-                # 4. Verificação de Token
-                token = sb.get_attribute("#clientScriptOutputData", "value")
-                if token:
-                    logger.info("Token OK. Forçando submit...")
-                    sb.execute_script('document.querySelector("input[type=submit]").click();')
-                    sb.sleep(5)
-                
-                # 5. Senha
+                # 4. Senha (O Pulo do Gato: Deixamos o próprio site do BB carregar o HTML da senha)
                 update_status(setor, "Aguardando campo de senha...", imagem=img)
-                img = snapshot(sb, setor, "05_aguardando_senha")
                 
-                sb.wait_for_element("#idToken3", timeout=30)
+                # Aumentamos o timeout para 45 segundos para dar tempo de o Cloudflare terminar
+                sb.wait_for_element("#idToken3", timeout=45)
                 logger.info(">>> SUCESSO! Campo de senha apareceu!")
-                img = snapshot(sb, setor, "06_senha_visivel")
+                img = snapshot(sb, setor, "04_senha_visivel")
                 
                 update_status(setor, "Digitando senha...", imagem=img)
                 sb.type("#idToken3", senha)
                 sb.sleep(1)
-                sb.click("input#loginButton_0[name='callback_4']")
                 
+                # Note que o name do botão muda na etapa da senha
+                sb.click("input#loginButton_0[name='callback_4']")
                 update_status(setor, "Validando acesso...", imagem=img)
                 
-                # Validação
+                # 5. Validação
                 max_retries = 15
                 logged_in = False
                 for _ in range(max_retries):
                     current_url = sb.get_current_url()
                     if "juridico.bb.com.br" in current_url and "loginweb" not in current_url:
                         logged_in = True
-                        img = snapshot(sb, setor, "07_sucesso_portal")
+                        img = snapshot(sb, setor, "05_sucesso_portal")
                         break
                     sb.sleep(4)
                 
                 if logged_in:
                     cookies = sb.driver.get_cookies()
                     
-                    # Extrai o User-Agent REAL que passou pelo Cloudflare no servidor
+                    # Extrai o User-Agent que foi gerado nativamente e logou com sucesso
                     try:
                         real_ua = sb.execute_script("return navigator.userAgent;")
                     except:
-                        real_ua = USER_AGENT_DOURADO
+                        real_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
                     
                     # Salva a sessão no Banco de Dados (Cookie Pool)
                     account.cookie_payload = json.dumps(cookies)
@@ -145,7 +126,7 @@ def processar_login(account_id):
                     
                     update_status(setor, "Acesso concedido e salvo no Pool!", concluido=True, imagem=img)
                 else:
-                    raise Exception("Timeout ao aguardar redirecionamento após a senha.")
+                    raise Exception("Timeout ao aguardar o portal jurídico carregar após a senha.")
                 
             except Exception as e:
                 logger.error(f"FALHA: {e}")
@@ -155,7 +136,7 @@ def processar_login(account_id):
         db.close()
 
 if __name__ == "__main__":
-    logger.info("Worker Enterprise iniciado (Modo XVFB). Aguardando fila 'queue:login_requests'...")
+    logger.info("Worker Enterprise iniciado (Modo XVFB + Espera Paciente). Aguardando fila...")
     while True:
         try:
             _, account_id = redis_client.brpop("queue:login_requests")
