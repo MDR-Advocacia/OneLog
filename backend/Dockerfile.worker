@@ -2,8 +2,9 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
-# Instala dependências básicas do sistema
-RUN apt-get update && apt-get install -y \
+# Instala dependências básicas do sistema, desabilitando pacotes recomendados para poupar espaço
+# O apt-get clean no final garante que o cache do apt não encha o disco
+RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     gnupg \
     xvfb \
@@ -11,13 +12,15 @@ RUN apt-get update && apt-get install -y \
     gcc \
     unzip \
     curl \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Instala o Google Chrome de forma moderna (evita o erro do apt-key descontinuado)
+# Instala o Google Chrome de forma moderna e limpa o cache novamente
 RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg \
     && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
     && apt-get update \
-    && apt-get install -y google-chrome-stable \
+    && apt-get install -y --no-install-recommends google-chrome-stable \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 # Instala as dependências do Python
