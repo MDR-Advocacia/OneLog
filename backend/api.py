@@ -38,8 +38,16 @@ def inicializar_sistema():
             time.sleep(5)
     return False
 
-# --- ROTAS DA EXTENSÃO ---
+# --- ROTAS WEB (PAINEL E IMAGENS) ---
+@app.route('/admin', methods=['GET', 'POST'])
+def admin_panel():
+    return send_from_directory('/app', 'admin.html')
 
+@app.route('/static/<path:filename>')
+def serve_static(filename):
+    return send_from_directory('/app/static', filename)
+
+# --- ROTAS DE OPERAÇÃO (EXTENSÃO) ---
 @app.route('/api/zerocore/status', methods=['GET'])
 def get_status():
     setor_nome = request.args.get('setor')
@@ -55,6 +63,7 @@ def request_login():
     if not username or not password:
         return jsonify({"status": "erro", "mensagem": "Usuário e senha são obrigatórios."}), 400
 
+    # 1. Autentica no AD (Segurança de Rede)
     ad_result = autenticar_e_obter_setor(username, password)
     if ad_result['status'] == 'erro': return jsonify(ad_result), 401
 
@@ -63,12 +72,16 @@ def request_login():
     try:
         sector = db.query(Sector).filter(Sector.nome == setor_nome).first()
         if not sector:
-            sector = Sector(nome=setor_nome); db.add(sector); db.commit(); db.refresh(sector)
+            sector = Sector(nome=setor_nome)
+            db.add(sector)
+            db.commit()
+            db.refresh(sector)
             
         account = db.query(AccountBB).filter(AccountBB.sector_id == sector.id, AccountBB.status == 'active').first()
         if not account:
             return jsonify({"status": "erro", "mensagem": f"Setor {setor_nome} sem conta vinculada."}), 403
 
+        # 2. Verifica Pool de Cookies (ECONOMIZA PROCESSAMENTO AQUI)
         if account.cookie_payload and account.last_login_at:
             if (datetime.now() - account.last_login_at).total_seconds() / 60 < 20:
                 return jsonify({
@@ -77,37 +90,40 @@ def request_login():
                     "url": "https://juridico.bb.com.br/wfj"
                 })
         
-        redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Iniciando robô...", "concluido": False}))
+        # 3. TRAVA DO REDIS (Evita o Loop Eterno)
+        # Se chegou aqui, precisa de login novo. Mas já tem alguém fazendo?
+        status_str = redis_client.get(f"status:{setor_nome}")
+        if status_str:
+            current_status = json.loads(status_str)
+            # Se a missão anterior não terminou nem deu erro, o robô está trabalhando neste exato segundo.
+            if not current_status.get("concluido") and not current_status.get("erro"):
+                return jsonify({
+                    "status": "queued", 
+                    "setor": setor_nome, 
+                    "mensagem": "O robô já está trabalhando nesta conta. Aguarde..."
+                })
+
+        # 4. Aciona Robô (Apenas 1 por setor)
+        redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Iniciando robô...", "concluido": False, "erro": False}))
         redis_client.lpush("queue:login_requests", account.id)
+        
         return jsonify({"status": "queued", "setor": setor_nome})
     except Exception as e:
         return jsonify({"status": "erro", "mensagem": f"Erro interno na API: {str(e)}"}), 500
     finally:
         db.close()
 
-# --- ROTAS WEB (PAINEL E IMAGENS) ---
-
-@app.route('/admin', methods=['GET', 'POST'])
-def admin_panel():
-    """Rota para exibir o painel HTML"""
-    return send_from_directory('/app', 'admin.html')
-
-@app.route('/static/<path:filename>')
-def serve_static(filename):
-    """Rota para servir as imagens (Prints) do robô"""
-    return send_from_directory('/app/static', filename)
-
 # --- ROTAS ADMINISTRATIVAS ---
-
 @app.route('/api/admin/sectors', methods=['GET'])
 @admin_required
 def admin_list_sectors():
     db = SessionLocal()
     try:
         sectors = db.query(Sector).all()
-        return jsonify([{"id": s.id, "nome": s.nome} for s in sectors])
+        result = [{"id": s.id, "nome": s.nome} for s in sectors]
+        return jsonify(result)
     except Exception as e:
-        return jsonify({"erro": str(e)}), 500
+        return jsonify({"erro": f"Erro interno: {str(e)}"}), 500
     finally:
         db.close()
 
@@ -118,7 +134,7 @@ def admin_configure_account():
     setor_nome, bb_login, bb_senha = data.get('setor'), data.get('login'), data.get('senha')
 
     if not all([setor_nome, bb_login, bb_senha]):
-        return jsonify({"erro": "Dados incompletos."}), 400
+        return jsonify({"erro": "Dados incompletos. Envie setor, login e senha."}), 400
 
     db = SessionLocal()
     try:
@@ -127,17 +143,15 @@ def admin_configure_account():
             sector = Sector(nome=setor_nome); db.add(sector); db.commit(); db.refresh(sector)
 
         account = db.query(AccountBB).filter(AccountBB.login == bb_login).first()
-        if not account:
-            account = db.query(AccountBB).filter(AccountBB.sector_id == sector.id).first()
-        if not account:
-            account = AccountBB(); db.add(account)
+        if not account: account = db.query(AccountBB).filter(AccountBB.sector_id == sector.id).first()
+        if not account: account = AccountBB(); db.add(account)
 
         account.login, account.senha, account.sector_id, account.status = bb_login, bb_senha, sector.id, "active"
         db.commit()
-        return jsonify({"mensagem": f"Conta {bb_login} vinculada ao setor {setor_nome} com sucesso!"})
+        return jsonify({"mensagem": f"Conta vinculada ao setor {setor_nome} com sucesso!"})
     except Exception as e:
         db.rollback()
-        return jsonify({"erro": str(e)}), 500
+        return jsonify({"erro": f"Erro no banco de dados: {str(e)}"}), 500
     finally:
         db.close()
 
@@ -147,8 +161,5 @@ def api_reset():
     return jsonify({"status": "resetado"})
 
 if __name__ == '__main__':
-    # Garante que a pasta static existe na inicialização da API
-    if not os.path.exists('static'): os.makedirs('static')
-    
     if inicializar_sistema():
         app.run(host='0.0.0.0', port=5000)
