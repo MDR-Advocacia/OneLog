@@ -95,6 +95,7 @@ def processar_login(account_id):
                     update_status(setor, "Acesso concedido e salvo no Pool!", concluido=True, imagem=img)
                 else:
                     raise Exception("Timeout ao aguardar o portal jurídico carregar após a senha.")
+                
             except Exception as e:
                 logger.error(f"FALHA: {e}")
                 img = snapshot(sb, setor, "99_erro_fatal")
@@ -103,11 +104,13 @@ def processar_login(account_id):
         db.close()
 
 if __name__ == "__main__":
-    # O SEGREDO CONTRA O LOOP ETERNO: Limpa a fila antes de começar a ouvir
-    logger.info("Limpando fila antiga para evitar loop de missões duplicadas...")
+    # O SEGREDO CONTRA A TRAVA FANTASMA: Limpa fila e libera os "locks" do Redis de deploys anteriores
+    logger.info("Limpando fila antiga e destravando status fantasmas...")
     redis_client.delete("queue:login_requests")
+    for key in redis_client.scan_iter("status:*"):
+        redis_client.delete(key)
     
-    logger.info("Worker Enterprise iniciado. Aguardando missão...")
+    logger.info("Worker Enterprise iniciado (Modo XVFB + Espera Paciente). Aguardando missão...")
     while True:
         try:
             # Fica em 0% de CPU dormindo até receber um novo chamado (só 1 por vez)
