@@ -2,9 +2,15 @@
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>OneLog - Painel de Controle</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .status-active { color: #047857; background-color: #d1fae5; }
+        .status-maintenance { color: #b45309; background-color: #fef3c7; }
+        .status-disabled { color: #be123c; background-color: #ffe4e6; }
+    </style>
 </head>
 <body class="bg-gray-50 min-h-screen font-sans text-gray-800">
     <nav class="bg-blue-900 text-white p-4 shadow-md">
@@ -12,85 +18,202 @@
             <h1 class="text-xl font-bold flex items-center">
                 <i class="fas fa-robot text-blue-300 mr-3 text-2xl"></i> OneLog Enterprise
             </h1>
+            <button onclick="logout()" id="btn-sair" class="hidden text-sm bg-blue-800 hover:bg-blue-700 px-4 py-2 rounded font-bold transition">Sair do Painel</button>
         </div>
     </nav>
 
     <main class="container mx-auto p-6 mt-4">
         
         <!-- Tela Login Admin -->
-        <div id="auth-section" class="bg-white p-6 rounded-xl shadow-sm border border-gray-100 max-w-md mx-auto mt-10 text-center">
-            <h2 class="font-bold text-lg mb-4">Autenticação Administrativa</h2>
-            <input type="password" id="admin-token" placeholder="Chave Admin" class="w-full p-2 border rounded mb-4 focus:outline-none focus:border-blue-500">
-            <button onclick="loadSectors()" class="bg-blue-600 text-white px-4 py-2 rounded w-full font-bold hover:bg-blue-700">Entrar</button>
+        <div id="auth-section" class="bg-white p-8 rounded-xl shadow-sm border border-gray-100 max-w-md mx-auto mt-10 text-center">
+            <div class="w-16 h-16 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-4 text-2xl">
+                <i class="fas fa-lock"></i>
+            </div>
+            <h2 class="font-bold text-xl mb-6">Acesso Administrativo</h2>
+            <input type="password" id="admin-token" placeholder="Insira a Chave de Segurança" class="w-full p-3 border rounded mb-4 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 text-center tracking-widest">
+            <button onclick="loadDashboard()" class="bg-blue-600 text-white px-4 py-3 rounded w-full font-bold hover:bg-blue-700 shadow-md transition">Desbloquear Painel</button>
         </div>
 
-        <!-- Dashboard -->
+        <!-- Dashboard Completo -->
         <div id="dashboard-section" style="display:none;">
-            <div class="flex justify-between items-center mb-4">
-                <h2 class="text-xl font-bold text-gray-800"><i class="fas fa-university mr-2 text-gray-400"></i>Contas e Setores Mapeados</h2>
-            </div>
             
-            <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-100 mb-6 flex gap-4 items-end flex-wrap">
-                <div class="flex-1 min-w-[200px]">
-                    <label class="text-xs font-bold text-gray-500">Setor AD (ex: BB_Acordos)</label>
-                    <input type="text" id="new-setor" class="w-full p-2 border rounded mt-1 text-sm outline-none focus:border-blue-500">
+            <!-- KPIs (Key Performance Indicators) -->
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+                <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-100 border-l-4 border-l-blue-500">
+                    <h3 class="text-gray-500 text-xs font-bold uppercase tracking-wider">Acessos Solicitados</h3>
+                    <p class="text-3xl font-black text-gray-800 mt-2" id="kpi-logins">0</p>
+                    <p class="text-xs text-gray-400 mt-1">Cliques em "Entrar" nas extensões</p>
                 </div>
-                <div class="flex-1 min-w-[200px]">
-                    <label class="text-xs font-bold text-gray-500">Login Banco do Brasil</label>
-                    <input type="text" id="new-login" class="w-full p-2 border rounded mt-1 text-sm outline-none focus:border-blue-500">
+                
+                <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-100 border-l-4 border-l-green-500">
+                    <h3 class="text-gray-500 text-xs font-bold uppercase tracking-wider">Cookies Injetados (Cache)</h3>
+                    <p class="text-3xl font-black text-green-600 mt-2" id="kpi-cookies">0</p>
+                    <p class="text-xs text-gray-400 mt-1">Navegações sem rodar o robô</p>
                 </div>
-                <div class="flex-1 min-w-[200px]">
-                    <label class="text-xs font-bold text-gray-500">Senha Banco do Brasil</label>
-                    <input type="password" id="new-senha" class="w-full p-2 border rounded mt-1 text-sm outline-none focus:border-blue-500">
+
+                <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-100 border-l-4 border-l-yellow-500">
+                    <h3 class="text-gray-500 text-xs font-bold uppercase tracking-wider">Execuções do Robô</h3>
+                    <p class="text-3xl font-black text-yellow-600 mt-2 flex items-center gap-3">
+                        <span id="kpi-robos">0</span>
+                        <span class="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded-full"><span id="kpi-fila">0</span> na fila agora</span>
+                    </p>
+                    <p class="text-xs text-gray-400 mt-1">Vezes que o robô foi chamado</p>
                 </div>
-                <button onclick="saveAccount()" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-6 rounded shadow transition">Salvar Vínculo</button>
+
+                <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-100 border-l-4 border-l-purple-500">
+                    <h3 class="text-gray-500 text-xs font-bold uppercase tracking-wider">Eficiência do Pool (Economia)</h3>
+                    <p class="text-3xl font-black text-purple-600 mt-2"><span id="kpi-economia">0</span>%</p>
+                    <p class="text-xs text-gray-400 mt-1">Contas em uso: <span id="kpi-contas">0/0</span></p>
+                </div>
             </div>
 
-            <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-                <table class="w-full text-left border-collapse">
-                    <thead class="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider">
-                        <tr>
-                            <th class="p-4 font-semibold">Setor (AD)</th>
-                            <th class="p-4 font-semibold">Status de Mapeamento</th>
-                        </tr>
-                    </thead>
-                    <tbody class="text-sm divide-y divide-gray-100" id="accounts-table">
-                        <!-- Conteúdo dinâmico via JS -->
-                    </tbody>
-                </table>
+            <!-- Tabela e Mapeamento -->
+            <div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
+                <h2 class="text-2xl font-bold text-gray-800"><i class="fas fa-id-card-alt mr-2 text-gray-400"></i>Gestão do Pool de Contas</h2>
+                <button onclick="toggleForm()" class="bg-blue-600 text-white px-4 py-2 rounded font-bold hover:bg-blue-700 shadow transition flex items-center">
+                    <i class="fas fa-plus mr-2"></i> Nova Conta / Vínculo
+                </button>
+            </div>
+            
+            <!-- Formulário Nova Conta -->
+            <div id="new-account-form" class="bg-white p-5 rounded-xl shadow-sm border border-blue-100 mb-6 flex-wrap gap-4 items-end" style="display: none;">
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 w-full">
+                    <div>
+                        <label class="text-xs font-bold text-gray-500 uppercase tracking-wide">Setor AD (ex: BB_Acordos)</label>
+                        <input type="text" id="new-setor" class="w-full p-2 border rounded mt-1 outline-none focus:border-blue-500 font-mono uppercase">
+                    </div>
+                    <div>
+                        <label class="text-xs font-bold text-gray-500 uppercase tracking-wide">Login B.B (Matrícula)</label>
+                        <input type="text" id="new-login" class="w-full p-2 border rounded mt-1 outline-none focus:border-blue-500 font-mono uppercase">
+                    </div>
+                    <div>
+                        <label class="text-xs font-bold text-gray-500 uppercase tracking-wide">Senha Banco do Brasil</label>
+                        <input type="password" id="new-senha" class="w-full p-2 border rounded mt-1 outline-none focus:border-blue-500 font-mono">
+                    </div>
+                </div>
+                <div class="flex justify-end mt-4">
+                    <button onclick="saveAccount()" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-6 rounded shadow transition">
+                        <i class="fas fa-save mr-2"></i> Salvar no Banco de Dados
+                    </button>
+                </div>
+            </div>
+
+            <!-- Tabela Principal -->
+            <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left border-collapse min-w-[800px]">
+                        <thead class="bg-gray-100 text-gray-600 text-xs uppercase tracking-wider border-b border-gray-200">
+                            <tr>
+                                <th class="p-4 font-semibold">Conta Banco do Brasil</th>
+                                <th class="p-4 font-semibold">Setor Mapeado (AD)</th>
+                                <th class="p-4 font-semibold text-center">Status de Uso</th>
+                                <th class="p-4 font-semibold">Sessão / Último Login</th>
+                                <th class="p-4 font-semibold text-center">Ações Gerenciais</th>
+                            </tr>
+                        </thead>
+                        <tbody class="text-sm divide-y divide-gray-100" id="accounts-table">
+                            <!-- Renderizado via JS -->
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </div>
     </main>
 
     <script>
         let currentToken = "";
+        let autoRefreshInterval;
 
-        async function loadSectors() {
-            const tokenInput = document.getElementById('admin-token').value;
+        function toggleForm() {
+            const form = document.getElementById('new-account-form');
+            form.style.display = form.style.display === 'none' ? 'flex' : 'none';
+        }
+
+        function logout() {
+            currentToken = "";
+            clearInterval(autoRefreshInterval);
+            document.getElementById('admin-token').value = "";
+            document.getElementById('auth-section').style.display = "block";
+            document.getElementById('dashboard-section').style.display = "none";
+            document.getElementById('btn-sair').classList.add('hidden');
+        }
+
+        async function loadDashboard() {
+            const tokenInput = document.getElementById('admin-token').value || currentToken;
             if(!tokenInput) return alert("Digite a chave.");
-            
+            currentToken = tokenInput;
+
             try {
-                const res = await fetch('/api/admin/sectors', { headers: { 'X-Admin-Token': tokenInput } });
-                if(!res.ok) throw new Error("Chave inválida");
+                await updateData(); // Chamada primária
                 
-                const data = await res.json();
-                currentToken = tokenInput;
                 document.getElementById('auth-section').style.display = "none";
                 document.getElementById('dashboard-section').style.display = "block";
+                document.getElementById('btn-sair').classList.remove('hidden');
                 
-                const tbody = document.getElementById('accounts-table');
-                tbody.innerHTML = "";
-                data.forEach(s => {
-                    tbody.innerHTML += `
-                        <tr class="hover:bg-gray-50">
-                            <td class="p-4 font-bold text-gray-700"><i class="far fa-folder text-blue-400 mr-2"></i>${s.nome}</td>
-                            <td class="p-4"><span class="bg-green-100 text-green-800 px-3 py-1 rounded-full text-xs font-bold">Banco de Dados Ativo</span></td>
-                        </tr>
-                    `;
-                });
+                // Inicia atualização dos KPIs em tempo real a cada 5 segundos
+                if(autoRefreshInterval) clearInterval(autoRefreshInterval);
+                autoRefreshInterval = setInterval(updateData, 5000);
             } catch(e) {
-                alert("Acesso Negado.");
+                alert("Acesso Negado. Chave incorreta.");
+                logout();
             }
+        }
+
+        async function updateData() {
+            // Busca Métricas dos KPIs
+            const resStats = await fetch('/api/admin/dashboard_stats', { headers: { 'X-Admin-Token': currentToken } });
+            if(!resStats.ok) throw new Error("Token Invalido");
+            const stats = await resStats.json();
+            
+            document.getElementById('kpi-logins').innerText = stats.logins_solicitados;
+            document.getElementById('kpi-cookies').innerText = stats.cookies_injetados;
+            document.getElementById('kpi-robos').innerText = stats.robos_executados;
+            document.getElementById('kpi-fila').innerText = stats.queue_size;
+            document.getElementById('kpi-economia').innerText = stats.economia_pct;
+            document.getElementById('kpi-contas').innerText = `${stats.active_accounts}/${stats.total_accounts}`;
+
+            // Busca a Tabela de Contas
+            const resAcc = await fetch('/api/admin/accounts', { headers: { 'X-Admin-Token': currentToken } });
+            const accounts = await resAcc.json();
+            renderTable(accounts);
+        }
+
+        function renderTable(accounts) {
+            const tbody = document.getElementById('accounts-table');
+            tbody.innerHTML = "";
+            
+            if (accounts.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="5" class="p-8 text-center text-gray-500">Nenhuma conta cadastrada no Pool.</td></tr>`;
+                return;
+            }
+
+            accounts.forEach(acc => {
+                const isAct = acc.status === 'active' ? 'selected' : '';
+                const isMnt = acc.status === 'maintenance' ? 'selected' : '';
+                const isDis = acc.status === 'disabled' ? 'selected' : '';
+                
+                let badgeColor = acc.status === 'active' ? 'status-active' : (acc.status === 'maintenance' ? 'status-maintenance' : 'status-disabled');
+
+                tbody.innerHTML += `
+                    <tr class="hover:bg-gray-50 transition">
+                        <td class="p-4 font-mono font-bold text-gray-800"><i class="fas fa-user-tie text-gray-400 mr-2"></i>${acc.login}</td>
+                        <td class="p-4 font-bold text-blue-600"><i class="fas fa-network-wired text-blue-300 mr-2"></i>${acc.setor}</td>
+                        <td class="p-4 text-center">
+                            <select onchange="changeStatus(${acc.id}, this.value)" class="${badgeColor} text-xs font-bold px-3 py-1.5 rounded-full border-0 outline-none cursor-pointer text-center appearance-none">
+                                <option value="active" class="bg-white text-gray-800" ${isAct}>Ativa (Liberada)</option>
+                                <option value="maintenance" class="bg-white text-gray-800" ${isMnt}>Em Manutenção</option>
+                                <option value="disabled" class="bg-white text-gray-800" ${isDis}>Desativada</option>
+                            </select>
+                        </td>
+                        <td class="p-4 text-gray-500 text-xs"><i class="far fa-clock mr-1"></i> ${acc.last_login}</td>
+                        <td class="p-4 text-center">
+                            <button onclick="deleteAccount(${acc.id})" class="text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 p-2 rounded-lg transition" title="Excluir Conta">
+                                <i class="fas fa-trash-alt"></i>
+                            </button>
+                        </td>
+                    </tr>
+                `;
+            });
         }
 
         async function saveAccount() {
@@ -107,13 +230,42 @@
             });
 
             if(res.ok) {
-                alert("Conta vinculada com sucesso!");
                 document.getElementById('new-setor').value = '';
                 document.getElementById('new-login').value = '';
                 document.getElementById('new-senha').value = '';
-                loadSectors(); // Recarrega a tabela
+                toggleForm();
+                updateData(); // Atualiza painel inteiro
             } else {
                 alert("Erro ao salvar conta no Banco de Dados.");
+            }
+        }
+
+        async function changeStatus(accountId, newStatus) {
+            try {
+                const res = await fetch(`/api/admin/accounts/${accountId}/status`, {
+                    method: 'PUT',
+                    headers: { 'X-Admin-Token': currentToken, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ status: newStatus })
+                });
+                if(res.ok) updateData();
+                else alert("Falha ao atualizar o status.");
+            } catch(e) {
+                alert("Erro de conexão.");
+            }
+        }
+
+        async function deleteAccount(accountId) {
+            if(!confirm("Tem certeza que deseja excluir esta conta do robô? Esta ação é irreversível.")) return;
+
+            try {
+                const res = await fetch(`/api/admin/accounts/${accountId}`, {
+                    method: 'DELETE',
+                    headers: { 'X-Admin-Token': currentToken }
+                });
+                if(res.ok) updateData();
+                else alert("Falha ao excluir a conta.");
+            } catch(e) {
+                alert("Erro de conexão.");
             }
         }
     </script>

@@ -33,6 +33,11 @@ class AccountBB(Base):
     user_agent_used = Column(String, nullable=True)
     last_login_at = Column(DateTime, nullable=True)
     
+    # Novas colunas de estatísticas
+    login_requests = Column(Integer, default=0)
+    cache_hits = Column(Integer, default=0)
+    robot_runs = Column(Integer, default=0)
+    
     sector_id = Column(Integer, ForeignKey("sectors.id"), nullable=True)
     sector = relationship("Sector", back_populates="accounts")
 
@@ -54,8 +59,8 @@ def seed_db():
         # IMPORTANTE: Altere aqui para as suas credenciais de teste temporárias.
         # Depois gerenciaremos isso pelo painel Admin.
         conta_teste = AccountBB(
-            login="C1350841", 
-            senha="05564268", 
+            login="12345678", 
+            senha="TUA_SENHA_AQUI", 
             sector_id=geral.id,
             status="active"
         )

@@ -12,19 +12,24 @@ from functools import wraps
 app = Flask(__name__)
 CORS(app)
 
+# Configurações de Segurança
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "mudar-urgente")
+
+# Conexão com o Redis
 redis_client = redis.Redis.from_url(os.getenv('REDIS_URL', 'redis://localhost:6379/0'), decode_responses=True)
 
 def admin_required(f):
+    """Decorator para proteger rotas administrativas"""
     @wraps(f)
     def decorated_function(*args, **kwargs):
         token = request.headers.get("X-Admin-Token")
         if not token or token != ADMIN_TOKEN:
-            return jsonify({"erro": "Acesso negado: Chave administrativa inválida."}), 403
+            return jsonify({"erro": "Acesso negado: Chave administrativa inválida ou ausente."}), 403
         return f(*args, **kwargs)
     return decorated_function
 
 def inicializar_sistema():
+    """Tenta inicializar o banco de dados com retentativas"""
     tentativas = 10
     while tentativas > 0:
         try:
@@ -38,16 +43,8 @@ def inicializar_sistema():
             time.sleep(5)
     return False
 
-# --- ROTAS WEB (PAINEL E IMAGENS) ---
-@app.route('/admin', methods=['GET', 'POST'])
-def admin_panel():
-    return send_from_directory('/app', 'admin.html')
-
-@app.route('/static/<path:filename>')
-def serve_static(filename):
-    return send_from_directory('/app/static', filename)
-
 # --- ROTAS DE OPERAÇÃO (EXTENSÃO) ---
+
 @app.route('/api/zerocore/status', methods=['GET'])
 def get_status():
     setor_nome = request.args.get('setor')
@@ -63,11 +60,15 @@ def request_login():
     if not username or not password:
         return jsonify({"status": "erro", "mensagem": "Usuário e senha são obrigatórios."}), 400
 
-    # 1. Autentica no AD (Segurança de Rede)
+    # 1. Autentica no AD
     ad_result = autenticar_e_obter_setor(username, password)
     if ad_result['status'] == 'erro': return jsonify(ad_result), 401
 
     setor_nome = ad_result['setor']
+    
+    # MÉTRICA: Contabiliza um usuário real solicitando login
+    redis_client.incr('metrics:logins_solicitados')
+    
     db = SessionLocal()
     try:
         sector = db.query(Sector).filter(Sector.nome == setor_nome).first()
@@ -77,35 +78,28 @@ def request_login():
             db.commit()
             db.refresh(sector)
             
-        account = db.query(AccountBB).filter(AccountBB.sector_id == sector.id, AccountBB.status == 'active').first()
+        account = db.query(AccountBB).filter(AccountBB.sector_id == sector.id, AccountBB.status == 'active').order_by(AccountBB.id.asc()).first()
+        
         if not account:
             return jsonify({"status": "erro", "mensagem": f"Setor {setor_nome} sem conta vinculada."}), 403
 
-        # 2. Verifica Pool de Cookies (ECONOMIZA PROCESSAMENTO AQUI)
+        # 2. Verifica Pool de Cookies
         if account.cookie_payload and account.last_login_at:
             if (datetime.now() - account.last_login_at).total_seconds() / 60 < 20:
+                # MÉTRICA: Contabiliza economia de recurso (Injeção direta de Cookie)
+                redis_client.incr('metrics:cookies_injetados')
                 return jsonify({
                     "status": "sucesso", "setor": setor_nome,
                     "cookies": json.loads(account.cookie_payload),
                     "url": "https://juridico.bb.com.br/wfj"
                 })
         
-        # 3. TRAVA DO REDIS (Evita o Loop Eterno)
-        # Se chegou aqui, precisa de login novo. Mas já tem alguém fazendo?
-        status_str = redis_client.get(f"status:{setor_nome}")
-        if status_str:
-            current_status = json.loads(status_str)
-            # Se a missão anterior não terminou nem deu erro, o robô está trabalhando neste exato segundo.
-            if not current_status.get("concluido") and not current_status.get("erro"):
-                return jsonify({
-                    "status": "queued", 
-                    "setor": setor_nome, 
-                    "mensagem": "O robô já está trabalhando nesta conta. Aguarde..."
-                })
-
-        # 4. Aciona Robô (Apenas 1 por setor)
-        redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Iniciando robô...", "concluido": False, "erro": False}))
+        # 3. Aciona Robô
+        redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Iniciando robô...", "concluido": False}))
         redis_client.lpush("queue:login_requests", account.id)
+        
+        # MÉTRICA: Contabiliza execução forçada do robô
+        redis_client.incr('metrics:robos_executados')
         
         return jsonify({"status": "queued", "setor": setor_nome})
     except Exception as e:
@@ -115,15 +109,23 @@ def request_login():
 
 @app.route('/api/zerocore/renew', methods=['POST'])
 def renew_session():
-    """Aciona a fila silenciosamente a pedido do background.js (Marcapasso)"""
-    setor_nome = request.args.get('setor')
-    if not setor_nome: return jsonify({"status": "erro", "mensagem": "Setor não informado."}), 400
-    
+    data = request.get_json(silent=True) or {}
+    username = data.get('username')
+    password = data.get('password')
+    setor_nome = data.get('setor')
+
+    if not username or not password or not setor_nome:
+        return jsonify({"status": "erro", "mensagem": "Credenciais ou setor ausentes."}), 400
+
+    ad_result = autenticar_e_obter_setor(username, password)
+    if ad_result['status'] == 'erro':
+        return jsonify({"status": "unauthorized", "mensagem": "Credenciais AD inválidas ou acesso revogado."}), 401
+
     db = SessionLocal()
     try:
         sector = db.query(Sector).filter(Sector.nome == setor_nome).first()
         if sector:
-            account = db.query(AccountBB).filter(AccountBB.sector_id == sector.id).first()
+            account = db.query(AccountBB).filter(AccountBB.sector_id == sector.id, AccountBB.status == 'active').order_by(AccountBB.id.asc()).first()
             if account:
                 status_str = redis_client.get(f"status:{setor_nome}")
                 if status_str:
@@ -133,22 +135,34 @@ def renew_session():
 
                 redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Renovação de Marcapasso...", "concluido": False, "erro": False}))
                 redis_client.lpush("queue:login_requests", account.id)
+                
+                # MÉTRICA: Renovações do marcapasso também contam como trabalho do robô
+                redis_client.incr('metrics:robos_executados')
+                
                 return jsonify({"status": "queued"})
     finally:
         db.close()
     return jsonify({"status": "erro"}), 404
 
-@app.route('/api/zerocore/session', methods=['GET'])
+@app.route('/api/zerocore/session', methods=['POST'])
 def get_session():
-    """Recupera apenas os cookies (Usado pelo background.js para evitar crash)"""
-    setor_nome = request.args.get('setor')
-    if not setor_nome: return jsonify({"status": "erro"}), 400
+    data = request.get_json(silent=True) or {}
+    username = data.get('username')
+    password = data.get('password')
+    setor_nome = data.get('setor')
+
+    if not username or not password or not setor_nome:
+        return jsonify({"status": "erro", "mensagem": "Credenciais ou setor ausentes."}), 400
+
+    ad_result = autenticar_e_obter_setor(username, password)
+    if ad_result['status'] == 'erro':
+        return jsonify({"status": "unauthorized", "mensagem": "Credenciais AD inválidas ou acesso revogado."}), 401
     
     db = SessionLocal()
     try:
         sector = db.query(Sector).filter(Sector.nome == setor_nome).first()
         if sector:
-            account = db.query(AccountBB).filter(AccountBB.sector_id == sector.id).first()
+            account = db.query(AccountBB).filter(AccountBB.sector_id == sector.id, AccountBB.status == 'active').order_by(AccountBB.id.asc()).first()
             if account and account.cookie_payload:
                 return jsonify({
                     "status": "sucesso",
@@ -158,7 +172,42 @@ def get_session():
         db.close()
     return jsonify({"status": "erro"}), 404
 
-# --- ROTAS ADMINISTRATIVAS ---
+
+# --- ROTAS ADMINISTRATIVAS E DASHBOARD ---
+
+@app.route('/api/admin/dashboard_stats', methods=['GET'])
+@admin_required
+def admin_dashboard_stats():
+    """Retorna os dados vitais para os cartões superiores do Painel Admin"""
+    db = SessionLocal()
+    try:
+        total_accounts = db.query(AccountBB).count()
+        active_accounts = db.query(AccountBB).filter(AccountBB.status == 'active').count()
+        
+        queue_size = redis_client.llen("queue:login_requests")
+        
+        # Recupera as métricas do Redis (Se for None, converte para 0)
+        logins_solicitados = int(redis_client.get('metrics:logins_solicitados') or 0)
+        cookies_injetados = int(redis_client.get('metrics:cookies_injetados') or 0)
+        robos_executados = int(redis_client.get('metrics:robos_executados') or 0)
+        
+        # Calcula a taxa de sucesso da blindagem (Economia AWS)
+        economia_pct = 0
+        if logins_solicitados > 0:
+            economia_pct = round((cookies_injetados / logins_solicitados) * 100, 1)
+
+        return jsonify({
+            "active_accounts": active_accounts,
+            "total_accounts": total_accounts,
+            "queue_size": queue_size,
+            "logins_solicitados": logins_solicitados,
+            "cookies_injetados": cookies_injetados,
+            "robos_executados": robos_executados,
+            "economia_pct": economia_pct
+        })
+    finally:
+        db.close()
+
 @app.route('/api/admin/sectors', methods=['GET'])
 @admin_required
 def admin_list_sectors():
@@ -176,7 +225,9 @@ def admin_list_sectors():
 @admin_required
 def admin_configure_account():
     data = request.get_json(silent=True) or {}
-    setor_nome, bb_login, bb_senha = data.get('setor'), data.get('login'), data.get('senha')
+    setor_nome = data.get('setor')
+    bb_login = data.get('login')
+    bb_senha = data.get('senha')
 
     if not all([setor_nome, bb_login, bb_senha]):
         return jsonify({"erro": "Dados incompletos. Envie setor, login e senha."}), 400
@@ -185,18 +236,84 @@ def admin_configure_account():
     try:
         sector = db.query(Sector).filter(Sector.nome == setor_nome).first()
         if not sector:
-            sector = Sector(nome=setor_nome); db.add(sector); db.commit(); db.refresh(sector)
+            sector = Sector(nome=setor_nome)
+            db.add(sector)
+            db.commit()
+            db.refresh(sector)
 
         account = db.query(AccountBB).filter(AccountBB.login == bb_login).first()
-        if not account: account = db.query(AccountBB).filter(AccountBB.sector_id == sector.id).first()
-        if not account: account = AccountBB(); db.add(account)
+        if not account:
+            account = db.query(AccountBB).filter(AccountBB.sector_id == sector.id).first()
+        if not account:
+            account = AccountBB()
+            db.add(account)
 
-        account.login, account.senha, account.sector_id, account.status = bb_login, bb_senha, sector.id, "active"
+        account.login = bb_login
+        account.senha = bb_senha
+        account.sector_id = sector.id
+        account.status = "active"
+        
         db.commit()
-        return jsonify({"mensagem": f"Conta vinculada ao setor {setor_nome} com sucesso!"})
+        return jsonify({"mensagem": f"Conta {bb_login} vinculada ao setor {setor_nome} com sucesso!"})
     except Exception as e:
-        db.rollback()
+        db.rollback() 
         return jsonify({"erro": f"Erro no banco de dados: {str(e)}"}), 500
+    finally:
+        db.close()
+
+@app.route('/api/admin/accounts', methods=['GET'])
+@admin_required
+def admin_list_accounts():
+    db = SessionLocal()
+    try:
+        accounts = db.query(AccountBB).all()
+        result = []
+        for acc in accounts:
+            sector_nome = acc.sector.nome if acc.sector else "Sem Setor"
+            result.append({
+                "id": acc.id,
+                "login": acc.login,
+                "setor": sector_nome,
+                "status": acc.status,
+                "last_login": acc.last_login_at.strftime("%d/%m/%Y %H:%M") if acc.last_login_at else "Nunca conectou"
+            })
+        return jsonify(result)
+    finally:
+        db.close()
+
+@app.route('/api/admin/accounts/<int:account_id>/status', methods=['PUT'])
+@admin_required
+def admin_update_status(account_id):
+    data = request.get_json(silent=True) or {}
+    new_status = data.get('status')
+    
+    if new_status not in ['active', 'maintenance', 'disabled']:
+        return jsonify({"erro": "Status inválido."}), 400
+        
+    db = SessionLocal()
+    try:
+        acc = db.query(AccountBB).filter(AccountBB.id == account_id).first()
+        if not acc:
+            return jsonify({"erro": "Conta não encontrada."}), 404
+            
+        acc.status = new_status
+        db.commit()
+        return jsonify({"mensagem": "Status atualizado com sucesso!"})
+    finally:
+        db.close()
+
+@app.route('/api/admin/accounts/<int:account_id>', methods=['DELETE'])
+@admin_required
+def admin_delete_account(account_id):
+    db = SessionLocal()
+    try:
+        acc = db.query(AccountBB).filter(AccountBB.id == account_id).first()
+        if not acc:
+            return jsonify({"erro": "Conta não encontrada."}), 404
+            
+        db.delete(acc)
+        db.commit()
+        return jsonify({"mensagem": "Conta excluída permanentemente."})
     finally:
         db.close()
 
@@ -206,5 +323,6 @@ def api_reset():
     return jsonify({"status": "resetado"})
 
 if __name__ == '__main__':
+    if not os.path.exists('static'): os.makedirs('static')
     if inicializar_sistema():
         app.run(host='0.0.0.0', port=5000)
