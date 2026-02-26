@@ -98,6 +98,10 @@ def request_login():
         db.close()
 
 # --- ROTAS ADMINISTRATIVAS (PROTEGIDAS) ---
+@app.route('/admin', methods=['GET'])
+def admin_panel():
+    """Serve a página HTML do painel administrativo"""
+    return send_from_directory('.', 'admin.html')
 
 @app.route('/api/admin/sectors', methods=['GET'])
 @admin_required
