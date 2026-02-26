@@ -13,8 +13,11 @@ logger = logging.getLogger(__name__)
 redis_client = redis.Redis.from_url(os.getenv('REDIS_URL', 'redis://localhost:6379/0'), decode_responses=True)
 BASE_URL = "https://api-onelog.mdradvocacia.com"
 
-# MODO TURBO: Se for False, o robô não tira prints. Fica mais rápido e economiza disco.
+# MODO TURBO
 DEBUG_MODE = os.getenv("DEBUG_MODE", "False").lower() == "true"
+
+# A CAPA DA INVISIBILIDADE: Sincronizada perfeitamente com o rules.json da Extensão
+USER_AGENT_WINDOWS = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
 def update_status(setor, msg, concluido=False, erro=False, imagem=None):
     status = {"mensagem": msg, "concluido": concluido, "erro": erro, "imagem": imagem}
@@ -22,7 +25,6 @@ def update_status(setor, msg, concluido=False, erro=False, imagem=None):
     logger.info(f"[{setor}] {msg}")
 
 def snapshot(sb, setor, nome_arquivo):
-    """Tira print apenas se o DEBUG_MODE estiver ativado"""
     if not DEBUG_MODE: return None
     
     if not os.path.exists('static'): os.makedirs('static')
@@ -45,11 +47,11 @@ def processar_login(account_id):
         update_status(setor, "Iniciando robô...")
         max_tentativas_gerais = 3
         
-        # Loop de Retentativa ("Amnésia Total")
         for tentativa in range(1, max_tentativas_gerais + 1):
             logger.info(f"=== INICIANDO TENTATIVA {tentativa}/{max_tentativas_gerais} PARA {setor} ===")
             
-            with SB(uc=True, test=True, headless=False, xvfb=True, proxy="socks5://206.42.43.192:45123") as sb:
+            # AGENT ATIVADO: Força o Cloudflare a enxergar o Linux da AWS como um Windows corporativo
+            with SB(uc=True, test=True, headless=False, xvfb=True, proxy="socks5://206.42.43.192:45123", agent=USER_AGENT_WINDOWS) as sb:
                 try:
                     update_status(setor, f"Abrindo navegador (Tentativa {tentativa}/{max_tentativas_gerais})...")
                     sb.open('https://loginweb.bb.com.br/sso/XUI/?realm=/paj&goto=https://juridico.bb.com.br/wfj#login')
@@ -67,10 +69,23 @@ def processar_login(account_id):
                     
                     captcha_container = "div.cf-turnstile"
                     if sb.is_element_visible(captcha_container):
-                        update_status(setor, "Cloudflare detectado. Interagindo...", imagem=img)
+                        update_status(setor, "Cloudflare detectado. Aplicando bypass avançado...", imagem=img)
+                        sb.sleep(2)
                         try:
-                            sb.click(captcha_container)
-                        except Exception: pass
+                            # 1ª Tentativa: Método Nativo UC
+                            sb.uc_gui_click_captcha()
+                        except Exception as e:
+                            logger.warning(f"uc_gui falhou. Entrando no iframe cirúrgico... Erro: {e}")
+                            try:
+                                # 2ª Tentativa: Entra dentro do Iframe do Cloudflare e clica como humano
+                                sb.switch_to_frame("iframe[src*='challenges.cloudflare']")
+                                sb.click("body")
+                                sb.switch_to_default_content()
+                            except Exception:
+                                # 3ª Tentativa: Clica no contêiner raiz
+                                sb.switch_to_default_content()
+                                sb.click(captcha_container)
+                                
                         img = snapshot(sb, setor, f"03_pos_clique_T{tentativa}")
                         update_status(setor, "Aguardando liberação automática do BB...", imagem=img)
 
@@ -96,12 +111,9 @@ def processar_login(account_id):
                     
                     if logged_in:
                         cookies = sb.driver.get_cookies()
-                        try: real_ua = sb.execute_script("return navigator.userAgent;")
-                        except: real_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-                        
                         account.cookie_payload = json.dumps(cookies)
                         account.last_login_at = datetime.now()
-                        account.user_agent_used = real_ua
+                        account.user_agent_used = USER_AGENT_WINDOWS
                         db.commit()
                         update_status(setor, "Acesso concedido e salvo no Pool!", concluido=True, imagem=img)
                         return # SUCESSO!
