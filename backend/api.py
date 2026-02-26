@@ -98,10 +98,6 @@ def request_login():
         db.close()
 
 # --- ROTAS ADMINISTRATIVAS (PROTEGIDAS) ---
-@app.route('/admin', methods=['GET'])
-def admin_panel():
-    """Serve a página HTML do painel administrativo"""
-    return send_from_directory('.', 'admin.html')
 
 @app.route('/api/admin/sectors', methods=['GET'])
 @admin_required
@@ -167,6 +163,16 @@ def admin_configure_account():
 def api_reset():
     redis_client.delete(f"status:{request.args.get('setor', 'GERAL')}")
     return jsonify({"status": "resetado"})
+
+# Rota para servir a página do Painel Administrativo
+@app.route('/admin', methods=['GET'])
+def admin_panel():
+    return send_from_directory('.', 'admin.html')
+
+# Rota para servir as imagens dos prints do robô
+@app.route('/static/<path:filename>')
+def serve_static(filename):
+    return send_from_directory('static', filename)
 
 if __name__ == '__main__':
     if not os.path.exists('static'): os.makedirs('static')
