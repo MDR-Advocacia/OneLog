@@ -2,7 +2,6 @@ const API_URL = "https://api-onelog.mdradvocacia.com";
 
 let currentState = { isWorking: false, step: "", error: "" };
 
-// Ouve os comandos do Popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "START_FULL_LOGIN") {
         performFullLogin(request.user, request.pass);
@@ -16,7 +15,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         chrome.storage.local.remove(['onelog_user', 'onelog_active_setor']);
         updateState(false, "", "");
         chrome.alarms.clear("renew_session");
-        sendResponse({status: "logout"});
+        
+        // Limpa os cookies ao sair para não deixar rastro
+        limparCookiesAntigos().then(() => {
+            sendResponse({status: "logout"});
+        });
+        return true;
     }
 });
 
@@ -42,7 +46,6 @@ async function performFullLogin(user, pass) {
         const data = await res.json();
         const setor = data.setor;
         
-        // Login aprovado! Salva pra sempre no Chrome.
         chrome.storage.local.set({ "onelog_user": { username: user, setor: setor } });
         
         if (data.status === "sucesso") await finalizeLogin(data.cookies, setor);
@@ -75,7 +78,7 @@ async function pollStatusUntilDone(setor) {
             
             if (data.mensagem) updateState(true, data.mensagem);
             
-            if (data.erro || fallbackTimer > 150) { // Timeout segurança 5 min (Considerando os retries do bot)
+            if (data.erro || fallbackTimer > 150) { 
                 updateState(false, "", "Falha no robô. Tente novamente.");
                 return;
             }
@@ -91,27 +94,64 @@ async function pollStatusUntilDone(setor) {
     }
 }
 
+// --- FUNÇÕES DE LIMPEZA E INJEÇÃO (A MÁGICA ACONTECE AQUI) ---
+
+async function limparCookiesAntigos() {
+    return new Promise((resolve) => {
+        // Busca TODOS os cookies ligados ao domínio do Banco do Brasil
+        chrome.cookies.getAll({ domain: "bb.com.br" }, (cookies) => {
+            if (cookies.length === 0) {
+                resolve();
+                return;
+            }
+            
+            const promessasDeRemocao = cookies.map(cookie => {
+                return new Promise((res) => {
+                    let prefix = cookie.secure ? "https://" : "http://";
+                    let cleanDomain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
+                    let url = prefix + cleanDomain + cookie.path;
+                    
+                    // Remove o cookie antigo
+                    chrome.cookies.remove({ url: url, name: cookie.name }, () => res());
+                });
+            });
+            
+            Promise.all(promessasDeRemocao).then(resolve);
+        });
+    });
+}
+
 async function finalizeLogin(cookies, setor) {
-    updateState(true, "Injetando blindagem...");
+    updateState(true, "Limpando resíduos e injetando blindagem...");
     
+    // 1. Apaga tudo que é velho antes de injetar o novo!
+    await limparCookiesAntigos();
+    
+    // 2. Injeta a sessão nova e 100% limpa do robô
     const cookiePromises = cookies.map(cookie => {
         return new Promise((resolve) => {
-            if (cookie.domain.includes("juridico.bb.com.br")) { resolve(); return; }
             let cleanDomain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
-            chrome.cookies.set({ url: "https://" + cleanDomain + cookie.path, name: cookie.name, value: cookie.value, domain: cookie.domain, path: cookie.path, secure: true, sameSite: "no_restriction" }, resolve);
+            chrome.cookies.set({ 
+                url: "https://" + cleanDomain + cookie.path, 
+                name: cookie.name, 
+                value: cookie.value, 
+                domain: cookie.domain, 
+                path: cookie.path, 
+                secure: true, 
+                sameSite: "no_restriction" 
+            }, resolve);
         });
     });
 
     await Promise.all(cookiePromises);
     updateState(true, "Abrindo Portal...");
     
-    // Inicia marcapasso seguro usando storage local
     chrome.storage.local.set({ "onelog_active_setor": setor });
     chrome.alarms.create("renew_session", { delayInMinutes: 20, periodInMinutes: 20 });
     
     setTimeout(() => {
         chrome.tabs.create({ url: "https://juridico.bb.com.br/wfj" });
-        updateState(false, "", ""); // Limpa status
+        updateState(false, "", ""); 
     }, 1000);
 }
 

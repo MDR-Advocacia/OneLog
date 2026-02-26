@@ -16,9 +16,6 @@ BASE_URL = "https://api-onelog.mdradvocacia.com"
 # MODO TURBO
 DEBUG_MODE = os.getenv("DEBUG_MODE", "False").lower() == "true"
 
-# A CAPA DA INVISIBILIDADE: Sincronizada perfeitamente com o rules.json da Extensão
-USER_AGENT_WINDOWS = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-
 def update_status(setor, msg, concluido=False, erro=False, imagem=None):
     status = {"mensagem": msg, "concluido": concluido, "erro": erro, "imagem": imagem}
     redis_client.set(f"status:{setor}", json.dumps(status))
@@ -50,13 +47,19 @@ def processar_login(account_id):
         for tentativa in range(1, max_tentativas_gerais + 1):
             logger.info(f"=== INICIANDO TENTATIVA {tentativa}/{max_tentativas_gerais} PARA {setor} ===")
             
-            # AGENT ATIVADO: Força o Cloudflare a enxergar o Linux da AWS como um Windows corporativo
-            with SB(uc=True, test=True, headless=False, xvfb=True, proxy="socks5://206.42.43.192:45123", agent=USER_AGENT_WINDOWS) as sb:
+            with SB(uc=True, test=True, headless=False, xvfb=True, proxy="socks5://206.42.43.192:45123") as sb:
                 try:
                     update_status(setor, f"Abrindo navegador (Tentativa {tentativa}/{max_tentativas_gerais})...")
                     sb.open('https://loginweb.bb.com.br/sso/XUI/?realm=/paj&goto=https://juridico.bb.com.br/wfj#login')
+                    
+                    # A MÁGICA: Limpa a sujeira do Cloudflare antes de começar a agir
+                    logger.info("Executando faxina de cookies e cache (Esterilização da sessão)...")
+                    sb.delete_all_cookies()
+                    sb.execute_script("window.localStorage.clear(); window.sessionStorage.clear();")
+                    sb.refresh() # Recarrega a página com a reputação zerada
+                    sb.sleep(4)
+                    
                     img = snapshot(sb, setor, f"01_inicio_T{tentativa}")
-                    sb.sleep(5)
                     
                     update_status(setor, "Digitando usuário...", imagem=img)
                     sb.type("#idToken1", usuario)
@@ -68,35 +71,26 @@ def processar_login(account_id):
                     img = snapshot(sb, setor, f"02_antes_captcha_T{tentativa}")
                     
                     captcha_container = "div.cf-turnstile"
-                    senha_apareceu = False
                     
-                    # A LÓGICA DO "CAPTCHA TEIMOSO": Tenta clicar e esperar até 3 vezes
-                    for tentativa_clique in range(1, 4):
-                        if sb.is_element_visible(captcha_container):
-                            update_status(setor, f"Cloudflare detectado. Clique simples (Tentativa {tentativa_clique}/3)...", imagem=img)
-                            sb.sleep(2)
-                            try:
-                                sb.click(captcha_container) # O clique simples e confiável
-                                logger.info(f">>> Clique no captcha realizado (Tentativa {tentativa_clique}).")
-                            except Exception as e:
-                                logger.warning(f"Aviso no clique: {e}")
-                                
-                            img = snapshot(sb, setor, f"03_pos_clique_T{tentativa}_C{tentativa_clique}")
-                        
-                        update_status(setor, "Aguardando campo de senha (até 30s)...", imagem=img)
+                    # Se o Captcha aparecer, clicamos APENAS UMA VEZ.
+                    # Se falhar, é melhor fechar o navegador todo do que clicar de novo e piorar o shadowban.
+                    if sb.is_element_visible(captcha_container):
+                        update_status(setor, "Cloudflare detectado. Clique único e decisivo...", imagem=img)
+                        sb.sleep(2)
                         try:
-                            # Espera 30 segundos. Se a senha aparecer, ele sai do loop!
-                            sb.wait_for_element("#idToken3", timeout=30)
-                            senha_apareceu = True
-                            logger.info(">>> SUCESSO! Campo de senha apareceu!")
-                            break # Sai do for, pois a senha está na tela
-                        except Exception:
-                            logger.warning(f"Senha não apareceu após 30s (Clique {tentativa_clique}). Repetindo verificação...")
+                            sb.click(captcha_container) 
+                            logger.info(">>> Clique no captcha realizado.")
+                        except Exception as e:
+                            logger.warning(f"Aviso no clique: {e}")
+                            
+                        img = snapshot(sb, setor, f"03_pos_clique_T{tentativa}")
                     
-                    # Se rodou os 3 cliques de 30s e a senha não veio, aí sim cancela a tentativa inteira
-                    if not senha_apareceu:
-                        raise Exception("Timeout absoluto: O campo de senha não apareceu após 3 verificações no Captcha.")
-
+                    update_status(setor, "Aguardando campo de senha...", imagem=img)
+                    
+                    # Dá 35 segundos. Se a senha não aparecer, o Try/Except estoura, fecha o Chrome e tenta do zero.
+                    sb.wait_for_element("#idToken3", timeout=35)
+                    logger.info(">>> SUCESSO! Campo de senha apareceu!")
+                    
                     img = snapshot(sb, setor, f"04_senha_visivel_T{tentativa}")
                     
                     update_status(setor, "Digitando senha...", imagem=img)
@@ -117,9 +111,12 @@ def processar_login(account_id):
                     
                     if logged_in:
                         cookies = sb.driver.get_cookies()
+                        try: real_ua = sb.execute_script("return navigator.userAgent;")
+                        except: real_ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                        
                         account.cookie_payload = json.dumps(cookies)
                         account.last_login_at = datetime.now()
-                        account.user_agent_used = USER_AGENT_WINDOWS
+                        account.user_agent_used = real_ua
                         db.commit()
                         update_status(setor, "Acesso concedido e salvo no Pool!", concluido=True, imagem=img)
                         return # SUCESSO!
@@ -134,7 +131,7 @@ def processar_login(account_id):
                         logger.error(f"FALHA DEFINITIVA APÓS {max_tentativas_gerais} TENTATIVAS.")
                         update_status(setor, "Falha no processo. Tente acessar novamente.", erro=True, imagem=img)
                     else:
-                        update_status(setor, f"Falha temporária. Reiniciando robô (Tentativa {tentativa+1})...", imagem=img)
+                        update_status(setor, f"Sessão queimada. Reiniciando navegador do zero (Tentativa {tentativa+1})...", imagem=img)
                         time.sleep(3)
     finally:
         db.close()

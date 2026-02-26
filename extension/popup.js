@@ -5,7 +5,6 @@ const errorMsg = document.getElementById('error-msg');
 const statusText = document.getElementById('status-text');
 const loggedUserName = document.getElementById('logged-user-name');
 
-// Ao abrir o popup, verifica quem está no comando
 chrome.storage.local.get(["onelog_user"], (res) => {
     checkBackgroundState(res.onelog_user);
 });
@@ -23,13 +22,11 @@ function checkBackgroundState(savedUser) {
     });
 }
 
-// Escuta atualizações ao vivo do Background
 chrome.runtime.onMessage.addListener((request) => {
     if (request.action === "STATE_UPDATE") {
         if (request.state.isWorking) {
             showWorking(request.state.step);
         } else {
-            // Se terminou com sucesso, o popup se auto-destrói pois a aba abrirá.
             if (!request.state.error) window.close();
             else {
                 chrome.storage.local.get(["onelog_user"], (res) => {
@@ -41,7 +38,6 @@ chrome.runtime.onMessage.addListener((request) => {
     }
 });
 
-// Ações dos Botões
 document.getElementById('btn-login').addEventListener('click', () => {
     const user = document.getElementById('username').value;
     const pass = document.getElementById('password').value;
@@ -61,10 +57,10 @@ document.getElementById('btn-access').addEventListener('click', () => {
 });
 
 document.getElementById('btn-logout').addEventListener('click', () => {
+    // Agora o botão Sair também invoca a faxina no background!
     chrome.runtime.sendMessage({ action: "LOGOUT" }, () => showLogin());
 });
 
-// Manipuladores de Telas
 function showLogin() { viewLogin.style.display = "block"; viewLogged.style.display = "none"; viewWorking.style.display = "none"; }
 function showLogged(user) { viewLogin.style.display = "none"; viewLogged.style.display = "block"; viewWorking.style.display = "none"; loggedUserName.innerText = `👤 ${user.username} (${user.setor})`; }
 function showWorking(msg) { viewLogin.style.display = "none"; viewLogged.style.display = "none"; viewWorking.style.display = "block"; statusText.innerText = msg; }
