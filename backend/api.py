@@ -12,14 +12,10 @@ from functools import wraps
 app = Flask(__name__)
 CORS(app)
 
-# Configurações de Segurança
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "mudar-urgente")
-
-# Conexão com o Redis
 redis_client = redis.Redis.from_url(os.getenv('REDIS_URL', 'redis://localhost:6379/0'), decode_responses=True)
 
 def admin_required(f):
-    """Decorator para proteger rotas administrativas"""
     @wraps(f)
     def decorated_function(*args, **kwargs):
         token = request.headers.get("X-Admin-Token")
@@ -29,7 +25,6 @@ def admin_required(f):
     return decorated_function
 
 def inicializar_sistema():
-    """Tenta inicializar o banco de dados com retentativas"""
     tentativas = 10
     while tentativas > 0:
         try:
@@ -43,16 +38,15 @@ def inicializar_sistema():
             time.sleep(5)
     return False
 
-# --- ROTAS DE PÁGINAS WEB ---
-
+# --- ROTAS DE PÁGINAS WEB (CORRIGIDO) ---
 @app.route('/admin')
 @app.route('/admin.html')
 def serve_admin():
-    """Serve a página HTML do painel administrativo"""
-    return send_from_directory('.', 'admin.html')
+    """Serve a página HTML do painel buscando o diretório real do container"""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    return send_from_directory(base_dir, 'admin.html')
 
 # --- ROTAS DE OPERAÇÃO (EXTENSÃO) ---
-
 @app.route('/api/zerocore/status', methods=['GET'])
 def get_status():
     setor_nome = request.args.get('setor')
@@ -68,13 +62,10 @@ def request_login():
     if not username or not password:
         return jsonify({"status": "erro", "mensagem": "Usuário e senha são obrigatórios."}), 400
 
-    # 1. Autentica no AD
     ad_result = autenticar_e_obter_setor(username, password)
     if ad_result['status'] == 'erro': return jsonify(ad_result), 401
 
     setor_nome = ad_result['setor']
-    
-    # MÉTRICA: Contabiliza um usuário real solicitando login
     redis_client.incr('metrics:logins_solicitados')
     
     db = SessionLocal()
@@ -89,12 +80,10 @@ def request_login():
         account = db.query(AccountBB).filter(AccountBB.sector_id == sector.id, AccountBB.status == 'active').order_by(AccountBB.id.asc()).first()
         
         if not account:
-            return jsonify({"status": "erro", "mensagem": f"Setor {setor_nome} sem conta vinculada."}), 403
+            return jsonify({"status": "erro", "mensagem": f"Setor {setor_nome} sem conta vinculada ou ativa."}), 403
 
-        # 2. Verifica Pool de Cookies
         if account.cookie_payload and account.last_login_at:
             if (datetime.now() - account.last_login_at).total_seconds() / 60 < 20:
-                # MÉTRICA: Contabiliza economia de recurso (Injeção direta de Cookie)
                 redis_client.incr('metrics:cookies_injetados')
                 return jsonify({
                     "status": "sucesso", "setor": setor_nome,
@@ -102,11 +91,8 @@ def request_login():
                     "url": "https://juridico.bb.com.br/wfj"
                 })
         
-        # 3. Aciona Robô
         redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Iniciando robô...", "concluido": False}))
         redis_client.lpush("queue:login_requests", account.id)
-        
-        # MÉTRICA: Contabiliza execução forçada do robô
         redis_client.incr('metrics:robos_executados')
         
         return jsonify({"status": "queued", "setor": setor_nome})
@@ -120,17 +106,15 @@ def renew_session():
     data = request.get_json(silent=True) or {}
     username = data.get('username')
     password = data.get('password')
-    # Aceita tanto no corpo JSON (novo padrão) quanto na URL (extensão antiga)
     setor_nome = data.get('setor') or request.args.get('setor')
 
     if not setor_nome:
         return jsonify({"status": "erro", "mensagem": "Setor ausente."}), 400
 
-    # Validação AD condicional: Só valida se a extensão enviar as credenciais (Modo Transição)
     if username and password:
         ad_result = autenticar_e_obter_setor(username, password)
         if ad_result['status'] == 'erro':
-            return jsonify({"status": "unauthorized", "mensagem": "Credenciais AD inválidas ou acesso revogado."}), 401
+            return jsonify({"status": "unauthorized", "mensagem": "Credenciais AD inválidas."}), 401
 
     db = SessionLocal()
     try:
@@ -146,7 +130,6 @@ def renew_session():
 
                 redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Renovação de Marcapasso...", "concluido": False, "erro": False}))
                 redis_client.lpush("queue:login_requests", account.id)
-                
                 redis_client.incr('metrics:robos_executados')
                 return jsonify({"status": "queued"})
     finally:
@@ -158,7 +141,6 @@ def get_session():
     data = request.get_json(silent=True) or {}
     username = data.get('username')
     password = data.get('password')
-    # Aceita requisições GET ou POST para compatibilidade com a extensão atual
     setor_nome = data.get('setor') or request.args.get('setor')
 
     if not setor_nome:
@@ -167,7 +149,7 @@ def get_session():
     if username and password:
         ad_result = autenticar_e_obter_setor(username, password)
         if ad_result['status'] == 'erro':
-            return jsonify({"status": "unauthorized", "mensagem": "Credenciais AD inválidas ou acesso revogado."}), 401
+            return jsonify({"status": "unauthorized", "mensagem": "Credenciais AD inválidas."}), 401
     
     db = SessionLocal()
     try:
@@ -185,11 +167,9 @@ def get_session():
 
 
 # --- ROTAS ADMINISTRATIVAS E DASHBOARD ---
-
 @app.route('/api/admin/dashboard_stats', methods=['GET'])
 @admin_required
 def admin_dashboard_stats():
-    """Retorna os dados vitais para os cartões superiores do Painel Admin"""
     db = SessionLocal()
     try:
         total_accounts = db.query(AccountBB).count()
@@ -223,10 +203,7 @@ def admin_list_sectors():
     db = SessionLocal()
     try:
         sectors = db.query(Sector).all()
-        result = [{"id": s.id, "nome": s.nome} for s in sectors]
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({"erro": f"Erro interno: {str(e)}"}), 500
+        return jsonify([{"id": s.id, "nome": s.nome} for s in sectors])
     finally:
         db.close()
 
@@ -239,7 +216,7 @@ def admin_configure_account():
     bb_senha = data.get('senha')
 
     if not all([setor_nome, bb_login, bb_senha]):
-        return jsonify({"erro": "Dados incompletos. Envie setor, login e senha."}), 400
+        return jsonify({"erro": "Dados incompletos."}), 400
 
     db = SessionLocal()
     try:
@@ -263,10 +240,10 @@ def admin_configure_account():
         account.status = "active"
         
         db.commit()
-        return jsonify({"mensagem": f"Conta {bb_login} vinculada ao setor {setor_nome} com sucesso!"})
+        return jsonify({"mensagem": "Sucesso!"})
     except Exception as e:
         db.rollback() 
-        return jsonify({"erro": f"Erro no banco de dados: {str(e)}"}), 500
+        return jsonify({"erro": f"Erro BD: {str(e)}"}), 500
     finally:
         db.close()
 
@@ -302,8 +279,7 @@ def admin_update_status(account_id):
     db = SessionLocal()
     try:
         acc = db.query(AccountBB).filter(AccountBB.id == account_id).first()
-        if not acc:
-            return jsonify({"erro": "Conta não encontrada."}), 404
+        if not acc: return jsonify({"erro": "Conta não encontrada."}), 404
             
         acc.status = new_status
         db.commit()
@@ -317,8 +293,7 @@ def admin_delete_account(account_id):
     db = SessionLocal()
     try:
         acc = db.query(AccountBB).filter(AccountBB.id == account_id).first()
-        if not acc:
-            return jsonify({"erro": "Conta não encontrada."}), 404
+        if not acc: return jsonify({"erro": "Conta não encontrada."}), 404
             
         db.delete(acc)
         db.commit()
