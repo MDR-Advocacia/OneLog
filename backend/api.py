@@ -6,7 +6,7 @@ import os
 import time
 from datetime import datetime
 from database import SessionLocal, Sector, AccountBB, init_db, seed_db
-from ad_integration import autenticar_e_obter_setor
+from ad_integration import autenticar_e_obter_setor, listar_ous_bb_ad
 from functools import wraps
 
 app = Flask(__name__)
@@ -38,11 +38,10 @@ def inicializar_sistema():
             time.sleep(5)
     return False
 
-# --- ROTAS DE PÁGINAS WEB (CORRIGIDO) ---
+# --- ROTAS DE PÁGINAS WEB ---
 @app.route('/admin')
 @app.route('/admin.html')
 def serve_admin():
-    """Serve a página HTML do painel buscando o diretório real do container"""
     base_dir = os.path.dirname(os.path.abspath(__file__))
     return send_from_directory(base_dir, 'admin.html')
 
@@ -167,6 +166,28 @@ def get_session():
 
 
 # --- ROTAS ADMINISTRATIVAS E DASHBOARD ---
+
+@app.route('/api/admin/ad_sectors', methods=['GET'])
+@admin_required
+def admin_list_ad_sectors():
+    """Retorna todas as OUs do AD + OUs já registradas no banco (Garante lista preenchida)"""
+    ad_ous = listar_ous_bb_ad()
+
+    db = SessionLocal()
+    try:
+        db_sectors = [s.nome for s in db.query(Sector).all()]
+    finally:
+        db.close()
+
+    # Une as duas listas sem duplicatas e ordena alfabeticamente
+    todos_setores = sorted(list(set(ad_ous + db_sectors)))
+
+    # Fallback caso o AD falhe e o banco esteja zerado
+    if not todos_setores:
+        todos_setores = ["BB_Acordos", "BB_Civel", "BB_Trabalhista", "GERAL"]
+
+    return jsonify(todos_setores)
+
 @app.route('/api/admin/dashboard_stats', methods=['GET'])
 @admin_required
 def admin_dashboard_stats():

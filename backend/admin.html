@@ -61,7 +61,7 @@
                 </div>
 
                 <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-100 border-l-4 border-l-purple-500">
-                    <h3 class="text-gray-500 text-xs font-bold uppercase tracking-wider">Eficiência do Pool (Economia)</h3>
+                    <h3 class="text-gray-500 text-xs font-bold uppercase tracking-wider">Eficiência do Pool</h3>
                     <p class="text-3xl font-black text-purple-600 mt-2"><span id="kpi-economia">0</span>%</p>
                     <p class="text-xs text-gray-400 mt-1">Contas em uso: <span id="kpi-contas">0/0</span></p>
                 </div>
@@ -75,12 +75,15 @@
                 </button>
             </div>
             
-            <!-- Formulário Nova Conta -->
+            <!-- Formulário Nova Conta (Agora dinâmico!) -->
             <div id="new-account-form" class="bg-white p-5 rounded-xl shadow-sm border border-blue-100 mb-6 flex-wrap gap-4 items-end" style="display: none;">
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-4 w-full">
                     <div>
-                        <label class="text-xs font-bold text-gray-500 uppercase tracking-wide">Setor AD (ex: BB_Acordos)</label>
-                        <input type="text" id="new-setor" class="w-full p-2 border rounded mt-1 outline-none focus:border-blue-500 font-mono uppercase">
+                        <label class="text-xs font-bold text-gray-500 uppercase tracking-wide">Setor (OU do Active Directory)</label>
+                        <!-- A mágica acontece aqui: A listagem será puxada direto da API -->
+                        <select id="new-setor" class="w-full p-2 border rounded mt-1 outline-none focus:border-blue-500 font-mono uppercase bg-white">
+                            <option value="">Carregando do AD...</option>
+                        </select>
                     </div>
                     <div>
                         <label class="text-xs font-bold text-gray-500 uppercase tracking-wide">Login B.B (Matrícula)</label>
@@ -144,13 +147,13 @@
             currentToken = tokenInput;
 
             try {
-                await updateData(); // Chamada primária
+                await updateData(); 
+                await loadADSectors(); // Carrega as OUs para o formulário
                 
                 document.getElementById('auth-section').style.display = "none";
                 document.getElementById('dashboard-section').style.display = "block";
                 document.getElementById('btn-sair').classList.remove('hidden');
                 
-                // Inicia atualização dos KPIs em tempo real a cada 5 segundos
                 if(autoRefreshInterval) clearInterval(autoRefreshInterval);
                 autoRefreshInterval = setInterval(updateData, 5000);
             } catch(e) {
@@ -159,8 +162,23 @@
             }
         }
 
+        async function loadADSectors() {
+            try {
+                const res = await fetch('/api/admin/ad_sectors', { headers: { 'X-Admin-Token': currentToken } });
+                if(res.ok) {
+                    const sectors = await res.json();
+                    const select = document.getElementById('new-setor');
+                    select.innerHTML = '<option value="">-- SELECIONE A OU --</option>';
+                    sectors.forEach(s => {
+                        select.innerHTML += `<option value="${s}">${s}</option>`;
+                    });
+                }
+            } catch(e) {
+                console.error("Erro ao carregar OUs do AD", e);
+            }
+        }
+
         async function updateData() {
-            // Busca Métricas dos KPIs
             const resStats = await fetch('/api/admin/dashboard_stats', { headers: { 'X-Admin-Token': currentToken } });
             if(!resStats.ok) throw new Error("Token Invalido");
             const stats = await resStats.json();
@@ -172,7 +190,6 @@
             document.getElementById('kpi-economia').innerText = stats.economia_pct;
             document.getElementById('kpi-contas').innerText = `${stats.active_accounts}/${stats.total_accounts}`;
 
-            // Busca a Tabela de Contas
             const resAcc = await fetch('/api/admin/accounts', { headers: { 'X-Admin-Token': currentToken } });
             const accounts = await resAcc.json();
             renderTable(accounts);
@@ -234,7 +251,7 @@
                 document.getElementById('new-login').value = '';
                 document.getElementById('new-senha').value = '';
                 toggleForm();
-                updateData(); // Atualiza painel inteiro
+                updateData(); 
             } else {
                 alert("Erro ao salvar conta no Banco de Dados.");
             }
