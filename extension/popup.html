@@ -4,28 +4,32 @@
     <meta charset="UTF-8">
     <title>OneLog Pro</title>
     <style>
-        body { font-family: 'Segoe UI', sans-serif; background-color: #f0f2f5; margin: 0; width: 340px; color: #333; }
-        .container { background: white; padding: 20px; text-align: center; }
+        body { font-family: 'Segoe UI', sans-serif; background-color: #f0f2f5; margin: 0; width: 320px; color: #333; }
+        .container { background: white; padding: 25px 20px; text-align: center; }
         h2 { color: #003366; font-size: 18px; margin: 0 0 15px 0; display: flex; align-items: center; justify-content: center; gap: 8px;}
         
+        /* Telas */
+        #view-login, #view-logged, #view-working { display: none; }
+        
+        /* Formulário */
         .login-box { text-align: left; margin-bottom: 15px; }
         label { font-size: 11px; font-weight: bold; color: #666; display: block; margin-bottom: 4px; }
         input { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px; margin-bottom: 10px; box-sizing: border-box; font-size: 13px; }
         input:focus { border-color: #003366; outline: none; }
-
-        .step-list { list-style: none; padding: 0; margin: 15px 0; text-align: left; max-height: 120px; overflow-y: auto; font-size: 12px; border-top: 1px solid #eee; display: none; }
-        .step-item { padding: 5px 0; border-bottom: 1px solid #f9f9f9; color: #555; display: flex; align-items: center; }
-        .step-icon { margin-right: 8px; color: #2e7d32; font-weight: bold; }
         
-        .loader { border: 3px solid #f3f3f3; border-top: 3px solid #003366; border-radius: 50%; width: 20px; height: 20px; animation: spin 1s linear infinite; margin: 10px auto; display: none; }
+        /* Status */
+        .user-badge { background: #e3f2fd; color: #003366; padding: 10px; border-radius: 8px; font-weight: bold; margin-bottom: 15px; font-size: 13px;}
+        .status-text { font-size: 13px; font-weight: bold; color: #003366; margin: 15px 0; min-height: 20px;}
+        .loader { border: 3px solid #f3f3f3; border-top: 3px solid #003366; border-radius: 50%; width: 24px; height: 24px; animation: spin 1s linear infinite; margin: 0 auto; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-        
-        .debug-area { margin-top: 10px; display: none; border-radius: 6px; overflow: hidden; border: 1px solid #ddd; }
-        .debug-area img { width: 100%; display: block; }
-        .debug-label { background: #333; color: white; font-size: 9px; padding: 3px; text-align: center;}
 
-        button { background-color: #003366; color: white; border: none; padding: 12px; border-radius: 6px; cursor: pointer; width: 100%; font-weight: bold; transition: background 0.2s;}
-        button:hover { background-color: #002244; }
+        /* Botões */
+        button { border: none; padding: 12px; border-radius: 6px; cursor: pointer; width: 100%; font-weight: bold; transition: background 0.2s; font-size: 13px;}
+        .btn-primary { background-color: #003366; color: white; margin-bottom: 8px;}
+        .btn-primary:hover { background-color: #002244; }
+        .btn-secondary { background-color: #f0f2f5; color: #d32f2f; }
+        .btn-secondary:hover { background-color: #ffebee; }
+        
         .error { color: #d32f2f; font-size: 12px; font-weight: bold; margin-top: 10px; display: none;}
         .footer { font-size: 10px; color: #888; margin-top: 15px; border-top: 1px solid #eee; padding-top: 8px;}
     </style>
@@ -34,177 +38,34 @@
     <div class="container">
         <h2>🛡️ OneLog Enterprise</h2>
         
-        <div id="login-form">
+        <!-- Tela 1: Usuário não logado -->
+        <div id="view-login">
             <div class="login-box">
                 <label>USUÁRIO DA REDE (AD)</label>
                 <input type="text" id="username" placeholder="ex: rildon.silva" spellcheck="false">
                 <label>SENHA DO WINDOWS</label>
                 <input type="password" id="password" placeholder="••••••••">
             </div>
-            <button id="btn-start">Entrar e Acessar Portal</button>
+            <button id="btn-login" class="btn-primary">Entrar e Salvar Conta</button>
         </div>
 
-        <div class="loader" id="loader"></div>
-        <ul class="step-list" id="step-list"></ul>
-        
-        <div class="debug-area" id="debug-area">
-            <div class="debug-label">Visão do Robô (RPA)</div>
-            <img id="debug-img" src="" alt="Screenshot">
+        <!-- Tela 2: Usuário já logado e salvo no disco -->
+        <div id="view-logged">
+            <div class="user-badge" id="logged-user-name">👤 Usuário</div>
+            <button id="btn-access" class="btn-primary">Acessar Portal BB</button>
+            <button id="btn-logout" class="btn-secondary">Sair da Conta</button>
+        </div>
+
+        <!-- Tela 3: Robô trabalhando -->
+        <div id="view-working">
+            <div class="loader"></div>
+            <div class="status-text" id="status-text">Conectando...</div>
+            <p style="font-size:10px; color:#666; margin-top: 10px; background: #fff8e1; padding: 8px; border-radius: 4px;">Você pode clicar fora desta janela e continuar trabalhando. A aba abrirá sozinha quando terminar.</p>
         </div>
 
         <div id="error-msg" class="error"></div>
         <div class="footer">Autenticação via MDR.LOCAL</div>
     </div>
-    
-    <script>
-        const API_URL = "https://api-onelog.mdradvocacia.com";
-        const btnStart = document.getElementById('btn-start');
-        const loader = document.getElementById('loader');
-        const stepList = document.getElementById('step-list');
-        const debugArea = document.getElementById('debug-area');
-        const debugImg = document.getElementById('debug-img');
-        const errorMsg = document.getElementById('error-msg');
-        const loginForm = document.getElementById('login-form');
-        
-        let isPolling = false;
-        let lastMsg = "";
-        let lastImg = "";
-        let activeSetor = "";
-
-        function addLog(msg) {
-            if (!msg || msg === lastMsg) return;
-            lastMsg = msg;
-            const li = document.createElement('li');
-            li.className = 'step-item';
-            li.innerHTML = `<span class="step-icon">✓</span> ${msg}`;
-            stepList.appendChild(li);
-            stepList.scrollTop = stepList.scrollHeight;
-        }
-
-        function resetUI(showError = true) {
-            isPolling = false;
-            loader.style.display = "none";
-            loginForm.style.display = "block";
-            if(showError) errorMsg.style.display = "block";
-        }
-
-        btnStart.addEventListener('click', async () => {
-            const user = document.getElementById('username').value;
-            const pass = document.getElementById('password').value;
-
-            if (!user || !pass) {
-                errorMsg.innerText = "Preencha usuário e senha do Windows.";
-                errorMsg.style.display = "block";
-                return;
-            }
-
-            loginForm.style.display = "none";
-            loader.style.display = "block";
-            errorMsg.style.display = "none";
-            stepList.innerHTML = "";
-            stepList.style.display = "block";
-            debugArea.style.display = "none";
-            
-            addLog("Autenticando no Active Directory...");
-
-            try {
-                // Requisição ÚNICA para autenticar e pedir o cookie
-                const res = await fetch(`${API_URL}/api/zerocore/login`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ username: user, password: pass })
-                });
-
-                if (res.status === 401 || res.status === 403) {
-                    const errData = await res.json();
-                    errorMsg.innerText = errData.mensagem || "Acesso Negado.";
-                    resetUI();
-                    return;
-                }
-
-                const data = await res.json();
-                activeSetor = data.setor;
-
-                if (data.status === "sucesso") {
-                    addLog("Sessão recuperada do Pool de Cookies!");
-                    finalizeLogin(data.cookies);
-                } else if (data.status === "queued") {
-                    addLog("Ação enviada para o Robô (Fila).");
-                    isPolling = true;
-                    pollStatus();
-                } else {
-                    errorMsg.innerText = "Erro do servidor: " + JSON.stringify(data);
-                    resetUI();
-                }
-
-            } catch (e) {
-                errorMsg.innerText = "Erro de rede ao conectar no servidor.";
-                resetUI();
-            }
-        });
-
-        // Loop de observação (Não sobrecarrega o AD, apenas lê o status do Redis)
-        async function pollStatus() {
-            if (!isPolling || !activeSetor) return;
-            try {
-                const res = await fetch(`${API_URL}/api/zerocore/status?setor=${activeSetor}`);
-                const data = await res.json();
-                
-                if (data.mensagem) addLog(data.mensagem);
-                
-                if (data.imagem && data.imagem !== lastImg) {
-                    lastImg = data.imagem;
-                    debugImg.src = data.imagem + "?t=" + Date.now();
-                    debugArea.style.display = "block";
-                }
-
-                if (data.erro) {
-                    errorMsg.innerText = "Falha no robô. Tente novamente.";
-                    resetUI();
-                    return;
-                }
-
-                if (data.concluido) {
-                    isPolling = false;
-                    addLog("Robô finalizou! Baixando sessão segura...");
-                    
-                    // Busca a sessão do banco agora que o robô terminou
-                    const resSessao = await fetch(`${API_URL}/api/zerocore/session?setor=${activeSetor}`);
-                    const sessionData = await resSessao.json();
-                    
-                    if (sessionData.status === "sucesso") {
-                        finalizeLogin(sessionData.cookies);
-                    } else {
-                        errorMsg.innerText = "Erro ao recuperar cookies da sessão nova.";
-                        resetUI();
-                    }
-                } else {
-                    setTimeout(pollStatus, 2000); // Continua assistindo
-                }
-            } catch (e) {
-                setTimeout(pollStatus, 2000);
-            }
-        }
-
-        function finalizeLogin(cookies) {
-            let processed = 0;
-            cookies.forEach(cookie => {
-                if (cookie.domain.includes("juridico.bb.com.br")) {
-                    processed++; return;
-                }
-                let cleanDomain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
-                let url = "https://" + cleanDomain + cookie.path;
-                chrome.cookies.set({ url: url, name: cookie.name, value: cookie.value, domain: cookie.domain, path: cookie.path, secure: true, sameSite: "no_restriction" }, () => {
-                    processed++;
-                    if (processed === cookies.length) {
-                        addLog("Abrindo Portal...");
-                        // Aciona o Marcapasso silencioso!
-                        chrome.runtime.sendMessage({action: "START_HEARTBEAT", setor: activeSetor});
-                        setTimeout(() => { window.location.href = "https://juridico.bb.com.br/wfj"; }, 1000);
-                    }
-                });
-            });
-        }
-    </script>
+    <script src="popup.js"></script>
 </body>
 </html>
