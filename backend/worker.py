@@ -15,7 +15,7 @@ redis_client = redis.Redis.from_url(os.getenv('REDIS_URL', 'redis://localhost:63
 # A STRING DOURADA (Camuflagem para bater com a extensão)
 USER_AGENT_DOURADO = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
-BASE_URL = "https://api-onelog.mdradvocacia.com"
+BASE_URL = "http://api-onelog.mdradvocacia.com"
 
 def update_status(setor, msg, concluido=False, erro=False, imagem=None):
     status = {"mensagem": msg, "concluido": concluido, "erro": erro, "imagem": imagem}
@@ -23,16 +23,11 @@ def update_status(setor, msg, concluido=False, erro=False, imagem=None):
     logger.info(f"[{setor}] {msg}")
 
 def snapshot(sb, setor, nome_arquivo):
-    """Tira print e retorna a URL pública para o frontend ver (Caminho Absoluto)"""
-    static_dir = '/app/static'
-    if not os.path.exists(static_dir): 
-        os.makedirs(static_dir)
-        
+    """Tira print e retorna a URL pública para o frontend ver"""
+    if not os.path.exists('static'): os.makedirs('static')
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"{setor}_{nome_arquivo}_{ts}.png"
-    filepath = os.path.join(static_dir, filename)
-    
-    sb.save_screenshot(filepath)
+    sb.save_screenshot(os.path.join("static", filename))
     
     img_url = f"{BASE_URL}/static/{filename}"
     logger.info(f"📸 Snapshot gerado: {img_url}")
@@ -52,8 +47,9 @@ def processar_login(account_id):
         
         update_status(setor, "Iniciando robô...")
         
-        # xvfb=True cria o monitor virtual. headless=False garante que o navegador renderize como no seu Mac.
-        with SB(uc=True, test=True, headless=False, xvfb=True, proxy="socks5://206.42.43.192:45123", agent=USER_AGENT_DOURADO) as sb:
+        # xvfb=True cria o monitor virtual. headless=False garante que o navegador renderize.
+        # IMPORTANTE: REMOVIDO o agent=USER_AGENT_DOURADO. O UC Mode fará a camuflagem correta com o Linux!
+        with SB(uc=True, test=True, headless=False, xvfb=True, proxy="socks5://206.42.43.192:45123") as sb:
             try:
                 logger.info(f">>> [INÍCIO] Login BB para {setor} - Lógica V5 (Original) + Prints.")
                 
@@ -82,26 +78,24 @@ def processar_login(account_id):
                     update_status(setor, "Tentando clique no desafio...", imagem=img)
                     logger.info("Captcha visível. Resolvendo problema de compatibilidade...")
                     try:
-                        # TRAVA DE SEGURANÇA: Tenta o método do seu Mac, se não achar, usa o método interno do container
-                        if hasattr(sb, 'uc_click'):
-                            sb.uc_click(captcha_container)
-                        elif hasattr(sb.driver, 'uc_click'):
-                            sb.driver.uc_click(captcha_container)
-                        else:
-                            # Ações simuladas com o mouse (Evita o 'click' puro que o Cloudflare odeia)
-                            sb.click_with_offset(captcha_container, 5, 5)
-                            
-                        logger.info(">>> CLIQUE REALIZADO COM SUCESSO.")
-                        img = snapshot(sb, setor, "03_pos_clique")
-                        update_status(setor, "Clique efetuado, aguardando validação...", imagem=img)
-                        sb.sleep(20)
+                        # Método oficial do SeleniumBase 4.24+ para burlar o Cloudflare Turnstile
+                        sb.uc_gui_click_captcha()
+                        logger.info(">>> CLIQUE REALIZADO COM SUCESSO (uc_gui_click_captcha).")
                     except Exception as e:
-                        logger.warning(f"Erro ao tentar clicar no Captcha: {e}")
+                        logger.warning(f"Erro no método principal: {e}. Tentando fallback...")
+                        try:
+                            sb.uc_click(captcha_container)
+                        except:
+                            sb.click(captcha_container)
+                        
+                    img = snapshot(sb, setor, "03_pos_clique")
+                    update_status(setor, "Clique efetuado, aguardando validação...", imagem=img)
+                    sb.sleep(20)
                 
                 img = snapshot(sb, setor, "04_esperando_token")
                 update_status(setor, "Processando validação passiva...", imagem=img)
 
-                # 4. Verificação de Token (Persistência da V5)
+                # 4. Verificação de Token
                 token = sb.get_attribute("#clientScriptOutputData", "value")
                 if token:
                     logger.info("Token OK. Forçando submit...")
@@ -137,10 +131,16 @@ def processar_login(account_id):
                 if logged_in:
                     cookies = sb.driver.get_cookies()
                     
+                    # Extrai o User-Agent REAL que passou pelo Cloudflare no servidor
+                    try:
+                        real_ua = sb.execute_script("return navigator.userAgent;")
+                    except:
+                        real_ua = USER_AGENT_DOURADO
+                    
                     # Salva a sessão no Banco de Dados (Cookie Pool)
                     account.cookie_payload = json.dumps(cookies)
                     account.last_login_at = datetime.now()
-                    account.user_agent_used = USER_AGENT_DOURADO
+                    account.user_agent_used = real_ua
                     db.commit()
                     
                     update_status(setor, "Acesso concedido e salvo no Pool!", concluido=True, imagem=img)
@@ -155,7 +155,7 @@ def processar_login(account_id):
         db.close()
 
 if __name__ == "__main__":
-    logger.info("Worker Enterprise iniciado. Aguardando fila...")
+    logger.info("Worker Enterprise iniciado (Modo XVFB). Aguardando fila 'queue:login_requests'...")
     while True:
         try:
             _, account_id = redis_client.brpop("queue:login_requests")

@@ -11,6 +11,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
+    # Banco de dados consome pouco, mas vamos limitar por segurança
     deploy:
       resources:
         limits:
@@ -43,6 +44,8 @@ services:
     depends_on:
       - redis
       - db
+    volumes:
+      - shared_static:/app/static
     restart: unless-stopped
     deploy:
       resources:
@@ -61,7 +64,7 @@ services:
       - DB_URL=postgresql://${DB_USER:-onelog}:${DB_PASS:-onelog_password}@db:5432/${DB_NAME:-onelog_db}
       - PYTHONUNBUFFERED=1
     volumes:
-      - ./static:/app/static
+      - shared_static:/app/static
     depends_on:
       - redis
       - db
@@ -69,11 +72,12 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.80'
-          memory: 800M
+          cpus: '0.80'        # Usa no máximo 80% de 1 vCPU
+          memory: 800M        # Se o Chrome "vazar" memória e passar de 800MB, o Docker reinicia o container
         reservations:
-          memory: 300M
+          memory: 300M        # Reserva o mínimo para o boot do Chrome
 
 volumes:
   postgres_data:
   redis_data:
+  shared_static:
