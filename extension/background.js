@@ -16,7 +16,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         updateState(false, "", "");
         chrome.alarms.clear("renew_session");
         
-        // Limpa a sujeira do navegador ao sair
         limparCookiesAntigos().then(() => {
             sendResponse({status: "logout"});
         });
@@ -46,7 +45,6 @@ async function performFullLogin(user, pass) {
         const data = await res.json();
         const setor = data.setor;
         
-        // ZERO TRUST: Salva as credenciais no disco criptografado do Chrome para enviar nas renovações
         chrome.storage.local.set({ "onelog_user": { username: user, password: pass, setor: setor } });
         
         if (data.status === "sucesso") await finalizeLogin(data.cookies, setor);
@@ -66,7 +64,7 @@ async function performRenewLogin() {
             const req = await fetch(`${API_URL}/api/zerocore/renew`, { 
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(res.onelog_user) // Envia as credenciais para provar que ainda é funcionário
+                body: JSON.stringify(res.onelog_user)
             });
 
             if(req.status === 401) {
@@ -108,7 +106,6 @@ async function pollStatusUntilDone() {
                     polling = false;
                     updateState(true, "Robô finalizou! Baixando sessão segura...");
                     
-                    // ZERO TRUST: Puxa o cookie provando quem é de novo
                     const resSessao = await fetch(`${API_URL}/api/zerocore/session`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -125,11 +122,8 @@ async function pollStatusUntilDone() {
     });
 }
 
-// --- ROTINA DE FAXINA E INJEÇÃO ---
-
 async function limparCookiesAntigos() {
     return new Promise((resolve) => {
-        // Busca TODOS os cookies do BB e apaga um por um (Esterilização)
         chrome.cookies.getAll({ domain: "bb.com.br" }, (cookies) => {
             if (cookies.length === 0) {
                 resolve();
@@ -151,7 +145,6 @@ async function limparCookiesAntigos() {
 async function finalizeLogin(cookies, setor) {
     updateState(true, "Limpando resíduos antigos...");
     
-    // O BANHO: Limpa o navegador antes de injetar
     await limparCookiesAntigos();
     
     updateState(true, "Injetando blindagem...");
@@ -176,6 +169,7 @@ async function finalizeLogin(cookies, setor) {
     chrome.alarms.create("renew_session", { delayInMinutes: 20, periodInMinutes: 20 });
     
     setTimeout(() => {
+        // Se já tiver uma janela do portal aberta, evita abrir outra (Opcional)
         chrome.tabs.create({ url: "https://juridico.bb.com.br/wfj" });
         updateState(false, "", ""); 
     }, 1000);
@@ -184,16 +178,8 @@ async function finalizeLogin(cookies, setor) {
 // O Marcapasso Silencioso e Seguro
 chrome.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === "renew_session") {
-        chrome.storage.local.get(["onelog_user"], async (result) => {
-            if (result.onelog_user) {
-                console.log("Renovando sessão background:", result.onelog_user.setor);
-                // Manda as credenciais no marcapasso também!
-                await fetch(`${API_URL}/api/zerocore/renew`, { 
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(result.onelog_user)
-                });
-            }
-        });
+        console.log("⏰ Marcapasso disparado! Renovando sessão e injetando...");
+        // CORREÇÃO: Usa a função completa que ativa o robô, faz o poll e INJETA os novos cookies no Chrome!
+        performRenewLogin();
     }
 });

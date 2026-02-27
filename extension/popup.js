@@ -51,7 +51,12 @@ document.getElementById('btn-access').addEventListener('click', () => {
     chrome.storage.local.get(["onelog_user"], (res) => {
         if(res.onelog_user) {
             errorMsg.style.display = "none";
-            chrome.runtime.sendMessage({ action: "START_RENEW_LOGIN" });
+            // CORREÇÃO MESTRA: Agora o botão chama FULL_LOGIN em vez de RENEW, permitindo pegar o cache rápido!
+            chrome.runtime.sendMessage({ 
+                action: "START_FULL_LOGIN", 
+                user: res.onelog_user.username, 
+                pass: res.onelog_user.password 
+            });
         }
     });
 });

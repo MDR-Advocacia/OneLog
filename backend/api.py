@@ -20,7 +20,7 @@ def admin_required(f):
     def decorated_function(*args, **kwargs):
         token = request.headers.get("X-Admin-Token")
         if not token or token != ADMIN_TOKEN:
-            return jsonify({"erro": "Acesso negado: Chave administrativa inválida ou ausente."}), 403
+            return jsonify({"erro": "Acesso negado."}), 403
         return f(*args, **kwargs)
     return decorated_function
 
@@ -79,10 +79,11 @@ def request_login():
         account = db.query(AccountBB).filter(AccountBB.sector_id == sector.id, AccountBB.status == 'active').order_by(AccountBB.id.asc()).first()
         
         if not account:
-            return jsonify({"status": "erro", "mensagem": f"Setor {setor_nome} sem conta vinculada ou ativa."}), 403
+            return jsonify({"status": "erro", "mensagem": f"Setor {setor_nome} sem conta."}), 403
 
+        # CORREÇÃO DO FUSO: Usando datetime.utcnow() para calcular corretamente
         if account.cookie_payload and account.last_login_at:
-            if (datetime.now() - account.last_login_at).total_seconds() / 60 < 20:
+            if (datetime.utcnow() - account.last_login_at).total_seconds() / 60 < 20:
                 redis_client.incr('metrics:cookies_injetados')
                 return jsonify({
                     "status": "sucesso", "setor": setor_nome,
@@ -113,7 +114,7 @@ def renew_session():
     if username and password:
         ad_result = autenticar_e_obter_setor(username, password)
         if ad_result['status'] == 'erro':
-            return jsonify({"status": "unauthorized", "mensagem": "Credenciais AD inválidas."}), 401
+            return jsonify({"status": "unauthorized", "mensagem": "Credenciais inválidas."}), 401
 
     db = SessionLocal()
     try:
@@ -121,6 +122,13 @@ def renew_session():
         if sector:
             account = db.query(AccountBB).filter(AccountBB.sector_id == sector.id, AccountBB.status == 'active').order_by(AccountBB.id.asc()).first()
             if account:
+                
+                # O ESCUDO ANTI-FLOOD: Se o cookie tiver menos de 15 minutos, NÃO RODA O ROBÔ!
+                if account.cookie_payload and account.last_login_at:
+                    if (datetime.utcnow() - account.last_login_at).total_seconds() / 60 < 15:
+                        redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Sessão quente retornada do Pool.", "concluido": True, "erro": False}))
+                        return jsonify({"status": "queued"}) # Engana a extensão, que faz o poll e pega o cookie direto
+                
                 status_str = redis_client.get(f"status:{setor_nome}")
                 if status_str:
                     current_status = json.loads(status_str)
@@ -166,25 +174,16 @@ def get_session():
 
 
 # --- ROTAS ADMINISTRATIVAS E DASHBOARD ---
-
 @app.route('/api/admin/ad_sectors', methods=['GET'])
 @admin_required
 def admin_list_ad_sectors():
-    """Retorna setores reais do AD mesclados com os do Banco de Dados (Sem Mocks)"""
-    
-    # 1. Puxa as OUs diretamente do seu Active Directory
     ad_ous = listar_ous_bb_ad()
-
-    # 2. Puxa setores que já existem cadastrados no seu Banco de Dados
     db = SessionLocal()
     try:
         db_sectors = [s.nome for s in db.query(Sector).all()]
     finally:
         db.close()
-
-    # Une as duas listas sem duplicatas (set) e ordena alfabeticamente
     todos_setores = sorted(list(set(ad_ous + db_sectors)))
-
     return jsonify(todos_setores)
 
 @app.route('/api/admin/dashboard_stats', methods=['GET'])
@@ -194,16 +193,11 @@ def admin_dashboard_stats():
     try:
         total_accounts = db.query(AccountBB).count()
         active_accounts = db.query(AccountBB).filter(AccountBB.status == 'active').count()
-        
         queue_size = redis_client.llen("queue:login_requests")
-        
         logins_solicitados = int(redis_client.get('metrics:logins_solicitados') or 0)
         cookies_injetados = int(redis_client.get('metrics:cookies_injetados') or 0)
         robos_executados = int(redis_client.get('metrics:robos_executados') or 0)
-        
-        economia_pct = 0
-        if logins_solicitados > 0:
-            economia_pct = round((cookies_injetados / logins_solicitados) * 100, 1)
+        economia_pct = round((cookies_injetados / logins_solicitados) * 100, 1) if logins_solicitados > 0 else 0
 
         return jsonify({
             "active_accounts": active_accounts,
@@ -258,7 +252,6 @@ def admin_configure_account():
         account.senha = bb_senha
         account.sector_id = sector.id
         account.status = "active"
-        
         db.commit()
         return jsonify({"mensagem": "Sucesso!"})
     except Exception as e:
@@ -292,15 +285,11 @@ def admin_list_accounts():
 def admin_update_status(account_id):
     data = request.get_json(silent=True) or {}
     new_status = data.get('status')
-    
-    if new_status not in ['active', 'maintenance', 'disabled']:
-        return jsonify({"erro": "Status inválido."}), 400
-        
+    if new_status not in ['active', 'maintenance', 'disabled']: return jsonify({"erro": "Status inválido."}), 400
     db = SessionLocal()
     try:
         acc = db.query(AccountBB).filter(AccountBB.id == account_id).first()
         if not acc: return jsonify({"erro": "Conta não encontrada."}), 404
-            
         acc.status = new_status
         db.commit()
         return jsonify({"mensagem": "Status atualizado com sucesso!"})
@@ -314,7 +303,6 @@ def admin_delete_account(account_id):
     try:
         acc = db.query(AccountBB).filter(AccountBB.id == account_id).first()
         if not acc: return jsonify({"erro": "Conta não encontrada."}), 404
-            
         db.delete(acc)
         db.commit()
         return jsonify({"mensagem": "Conta excluída permanentemente."})
