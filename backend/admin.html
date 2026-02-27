@@ -10,6 +10,9 @@
         .status-active { color: #047857; background-color: #d1fae5; }
         .status-maintenance { color: #b45309; background-color: #fef3c7; }
         .status-disabled { color: #be123c; background-color: #ffe4e6; }
+        /* Scroll customizado para a caixa de setores */
+        .custom-scroll::-webkit-scrollbar { width: 6px; }
+        .custom-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
     </style>
 </head>
 <body class="bg-gray-50 min-h-screen font-sans text-gray-800">
@@ -30,88 +33,55 @@
                 <i class="fas fa-lock"></i>
             </div>
             <h2 class="font-bold text-xl mb-6">Acesso Administrativo</h2>
-            <input type="password" id="admin-token" placeholder="Insira a Chave de Segurança" class="w-full p-3 border rounded mb-4 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 text-center tracking-widest">
-            <button onclick="loadDashboard()" class="bg-blue-600 text-white px-4 py-3 rounded w-full font-bold hover:bg-blue-700 shadow-md transition">Desbloquear Painel</button>
+            <input type="password" id="admin-token" placeholder="Insira a Chave de Segurança" class="w-full p-3 border rounded mb-4 focus:outline-none focus:border-blue-500 text-center tracking-widest">
+            <button onclick="loadDashboard()" class="bg-blue-600 text-white px-4 py-3 rounded w-full font-bold hover:bg-blue-700 transition">Desbloquear Painel</button>
         </div>
 
         <!-- Dashboard Completo -->
         <div id="dashboard-section" style="display:none;">
             
-            <!-- KPIs (Key Performance Indicators) -->
+            <!-- KPIs -->
             <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-                <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-100 border-l-4 border-l-blue-500">
-                    <h3 class="text-gray-500 text-xs font-bold uppercase tracking-wider">Acessos Solicitados</h3>
+                <div class="bg-white p-6 rounded-xl shadow-sm border-l-4 border-l-blue-500">
+                    <h3 class="text-gray-500 text-xs font-bold uppercase">Acessos Solicitados</h3>
                     <p class="text-3xl font-black text-gray-800 mt-2" id="kpi-logins">0</p>
-                    <p class="text-xs text-gray-400 mt-1">Cliques em "Entrar" nas extensões</p>
                 </div>
-                
-                <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-100 border-l-4 border-l-green-500">
-                    <h3 class="text-gray-500 text-xs font-bold uppercase tracking-wider">Cookies Injetados (Cache)</h3>
+                <div class="bg-white p-6 rounded-xl shadow-sm border-l-4 border-l-green-500">
+                    <h3 class="text-gray-500 text-xs font-bold uppercase">Cookies Injetados</h3>
                     <p class="text-3xl font-black text-green-600 mt-2" id="kpi-cookies">0</p>
-                    <p class="text-xs text-gray-400 mt-1">Navegações sem rodar o robô</p>
                 </div>
-
-                <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-100 border-l-4 border-l-yellow-500">
-                    <h3 class="text-gray-500 text-xs font-bold uppercase tracking-wider">Execuções do Robô</h3>
+                <div class="bg-white p-6 rounded-xl shadow-sm border-l-4 border-l-yellow-500">
+                    <h3 class="text-gray-500 text-xs font-bold uppercase">Execuções do Robô</h3>
                     <p class="text-3xl font-black text-yellow-600 mt-2 flex items-center gap-3">
                         <span id="kpi-robos">0</span>
-                        <span class="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded-full"><span id="kpi-fila">0</span> na fila agora</span>
+                        <span class="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded-full"><span id="kpi-fila">0</span> na fila</span>
                     </p>
-                    <p class="text-xs text-gray-400 mt-1">Vezes que o robô foi chamado</p>
                 </div>
-
-                <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-100 border-l-4 border-l-purple-500">
-                    <h3 class="text-gray-500 text-xs font-bold uppercase tracking-wider">Eficiência do Pool</h3>
+                <div class="bg-white p-6 rounded-xl shadow-sm border-l-4 border-l-purple-500">
+                    <h3 class="text-gray-500 text-xs font-bold uppercase">Eficiência do Pool</h3>
                     <p class="text-3xl font-black text-purple-600 mt-2"><span id="kpi-economia">0</span>%</p>
-                    <p class="text-xs text-gray-400 mt-1">Contas em uso: <span id="kpi-contas">0/0</span></p>
                 </div>
             </div>
 
-            <!-- Tabela e Mapeamento -->
+            <!-- Header da Tabela -->
             <div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
-                <h2 class="text-2xl font-bold text-gray-800"><i class="fas fa-id-card-alt mr-2 text-gray-400"></i>Gestão do Pool de Contas</h2>
-                <button onclick="toggleForm()" class="bg-blue-600 text-white px-4 py-2 rounded font-bold hover:bg-blue-700 shadow transition flex items-center">
-                    <i class="fas fa-plus mr-2"></i> Nova Conta / Vínculo
+                <h2 class="text-2xl font-bold text-gray-800"><i class="fas fa-users-cog mr-2 text-gray-400"></i>Pool de Contas BB</h2>
+                <button onclick="openModal()" class="bg-blue-600 text-white px-5 py-2.5 rounded-lg font-bold hover:bg-blue-700 shadow transition flex items-center">
+                    <i class="fas fa-user-plus mr-2"></i> Nova Conta BB
                 </button>
             </div>
             
-            <!-- Formulário Nova Conta (Agora dinâmico!) -->
-            <div id="new-account-form" class="bg-white p-5 rounded-xl shadow-sm border border-blue-100 mb-6 flex-wrap gap-4 items-end" style="display: none;">
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 w-full">
-                    <div>
-                        <label class="text-xs font-bold text-gray-500 uppercase tracking-wide">Setor (OU do Active Directory)</label>
-                        <!-- A mágica acontece aqui: A listagem será puxada direto da API -->
-                        <select id="new-setor" class="w-full p-2 border rounded mt-1 outline-none focus:border-blue-500 font-mono uppercase bg-white">
-                            <option value="">Carregando do AD...</option>
-                        </select>
-                    </div>
-                    <div>
-                        <label class="text-xs font-bold text-gray-500 uppercase tracking-wide">Login B.B (Matrícula)</label>
-                        <input type="text" id="new-login" class="w-full p-2 border rounded mt-1 outline-none focus:border-blue-500 font-mono uppercase">
-                    </div>
-                    <div>
-                        <label class="text-xs font-bold text-gray-500 uppercase tracking-wide">Senha Banco do Brasil</label>
-                        <input type="password" id="new-senha" class="w-full p-2 border rounded mt-1 outline-none focus:border-blue-500 font-mono">
-                    </div>
-                </div>
-                <div class="flex justify-end mt-4">
-                    <button onclick="saveAccount()" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-6 rounded shadow transition">
-                        <i class="fas fa-save mr-2"></i> Salvar no Banco de Dados
-                    </button>
-                </div>
-            </div>
-
             <!-- Tabela Principal -->
             <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                 <div class="overflow-x-auto">
                     <table class="w-full text-left border-collapse min-w-[800px]">
                         <thead class="bg-gray-100 text-gray-600 text-xs uppercase tracking-wider border-b border-gray-200">
                             <tr>
-                                <th class="p-4 font-semibold">Conta Banco do Brasil</th>
-                                <th class="p-4 font-semibold">Setor Mapeado (AD)</th>
-                                <th class="p-4 font-semibold text-center">Status de Uso</th>
-                                <th class="p-4 font-semibold">Sessão / Último Login</th>
-                                <th class="p-4 font-semibold text-center">Ações Gerenciais</th>
+                                <th class="p-4 font-semibold">Conta (Login)</th>
+                                <th class="p-4 font-semibold">Titular</th>
+                                <th class="p-4 font-semibold">Setores Vinculados</th>
+                                <th class="p-4 font-semibold text-center">Status</th>
+                                <th class="p-4 font-semibold text-center">Ações</th>
                             </tr>
                         </thead>
                         <tbody class="text-sm divide-y divide-gray-100" id="accounts-table">
@@ -123,14 +93,65 @@
         </div>
     </main>
 
+    <!-- Modal Adicionar / Editar Conta -->
+    <div id="account-modal" class="fixed inset-0 bg-black bg-opacity-50 hidden justify-center items-center z-50">
+        <div class="bg-white w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+            <div class="bg-blue-50 border-b border-blue-100 p-5 flex justify-between items-center">
+                <h3 class="font-bold text-xl text-blue-900" id="modal-title">Nova Conta BB</h3>
+                <button onclick="closeModal()" class="text-blue-400 hover:text-blue-700 text-xl">&times;</button>
+            </div>
+            
+            <div class="p-6 overflow-y-auto custom-scroll">
+                <input type="hidden" id="modal-account-id">
+                
+                <div class="grid grid-cols-2 gap-4 mb-4">
+                    <div>
+                        <label class="text-xs font-bold text-gray-500 uppercase">Login (Matrícula)</label>
+                        <input type="text" id="modal-login" class="w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500 font-mono uppercase bg-gray-50" placeholder="Ex: F1234567">
+                    </div>
+                    <div>
+                        <label class="text-xs font-bold text-gray-500 uppercase">Titular da Conta</label>
+                        <input type="text" id="modal-titular" class="w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500" placeholder="Nome Completo">
+                    </div>
+                </div>
+
+                <div class="mb-4">
+                    <label class="text-xs font-bold text-gray-500 uppercase">Senha Banco do Brasil</label>
+                    <input type="password" id="modal-senha" class="w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500 font-mono" placeholder="Digite a senha (ou deixe em branco para manter)">
+                </div>
+
+                <div class="mb-4">
+                    <label class="text-xs font-bold text-gray-500 uppercase">Status de Operação</label>
+                    <select id="modal-status" class="w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500">
+                        <option value="active">🟢 Ativa (Liberada para o Robô)</option>
+                        <option value="maintenance">🟡 Em Manutenção (Pausada)</option>
+                        <option value="disabled">🔴 Desativada</option>
+                    </select>
+                </div>
+
+                <div class="mb-2">
+                    <label class="text-xs font-bold text-gray-500 uppercase">Setores do AD Autorizados (Múltiplos)</label>
+                    <p class="text-xs text-gray-400 mb-2">Marque os setores que podem usar esta conta para acessar o portal.</p>
+                    <div id="modal-sectores-container" class="border rounded-lg p-3 bg-gray-50 max-h-40 overflow-y-auto custom-scroll grid grid-cols-2 gap-2">
+                        <!-- Checkboxes injetados aqui -->
+                    </div>
+                </div>
+            </div>
+            
+            <div class="p-5 border-t bg-gray-50 flex justify-end gap-3">
+                <button onclick="closeModal()" class="px-5 py-2 text-gray-600 font-bold hover:bg-gray-200 rounded transition">Cancelar</button>
+                <button onclick="saveAccount()" class="px-6 py-2 bg-blue-600 text-white font-bold rounded shadow hover:bg-blue-700 transition flex items-center">
+                    <i class="fas fa-save mr-2"></i> Salvar Conta
+                </button>
+            </div>
+        </div>
+    </div>
+
     <script>
         let currentToken = "";
         let autoRefreshInterval;
-
-        function toggleForm() {
-            const form = document.getElementById('new-account-form');
-            form.style.display = form.style.display === 'none' ? 'flex' : 'none';
-        }
+        let allAdSectors = [];
+        let globalAccountsData = [];
 
         function logout() {
             currentToken = "";
@@ -147,8 +168,8 @@
             currentToken = tokenInput;
 
             try {
+                await fetchADSectors();
                 await updateData(); 
-                await loadADSectors(); // Carrega as OUs para o formulário
                 
                 document.getElementById('auth-section').style.display = "none";
                 document.getElementById('dashboard-section').style.display = "block";
@@ -162,20 +183,11 @@
             }
         }
 
-        async function loadADSectors() {
+        async function fetchADSectors() {
             try {
                 const res = await fetch('/api/admin/ad_sectors', { headers: { 'X-Admin-Token': currentToken } });
-                if(res.ok) {
-                    const sectors = await res.json();
-                    const select = document.getElementById('new-setor');
-                    select.innerHTML = '<option value="">-- SELECIONE A OU --</option>';
-                    sectors.forEach(s => {
-                        select.innerHTML += `<option value="${s}">${s}</option>`;
-                    });
-                }
-            } catch(e) {
-                console.error("Erro ao carregar OUs do AD", e);
-            }
+                if(res.ok) allAdSectors = await res.json();
+            } catch(e) { console.error("Erro ao puxar OUs do AD"); }
         }
 
         async function updateData() {
@@ -188,11 +200,10 @@
             document.getElementById('kpi-robos').innerText = stats.robos_executados;
             document.getElementById('kpi-fila').innerText = stats.queue_size;
             document.getElementById('kpi-economia').innerText = stats.economia_pct;
-            document.getElementById('kpi-contas').innerText = `${stats.active_accounts}/${stats.total_accounts}`;
 
             const resAcc = await fetch('/api/admin/accounts', { headers: { 'X-Admin-Token': currentToken } });
-            const accounts = await resAcc.json();
-            renderTable(accounts);
+            globalAccountsData = await resAcc.json();
+            renderTable(globalAccountsData);
         }
 
         function renderTable(accounts) {
@@ -205,26 +216,27 @@
             }
 
             accounts.forEach(acc => {
-                const isAct = acc.status === 'active' ? 'selected' : '';
-                const isMnt = acc.status === 'maintenance' ? 'selected' : '';
-                const isDis = acc.status === 'disabled' ? 'selected' : '';
-                
                 let badgeColor = acc.status === 'active' ? 'status-active' : (acc.status === 'maintenance' ? 'status-maintenance' : 'status-disabled');
+                let statusText = acc.status === 'active' ? 'Ativa' : (acc.status === 'maintenance' ? 'Manutenção' : 'Desativada');
+                
+                // Múltiplos Chips para os Setores
+                let chipsHtml = acc.setores.length > 0 
+                    ? acc.setores.map(s => `<span class="bg-blue-100 text-blue-800 text-[10px] px-2 py-0.5 rounded border border-blue-200">${s}</span>`).join(" ")
+                    : `<span class="text-gray-400 text-xs italic">Nenhum setor vinculado</span>`;
 
                 tbody.innerHTML += `
-                    <tr class="hover:bg-gray-50 transition">
-                        <td class="p-4 font-mono font-bold text-gray-800"><i class="fas fa-user-tie text-gray-400 mr-2"></i>${acc.login}</td>
-                        <td class="p-4 font-bold text-blue-600"><i class="fas fa-network-wired text-blue-300 mr-2"></i>${acc.setor}</td>
+                    <tr class="hover:bg-gray-50 transition border-b border-gray-100">
+                        <td class="p-4 font-mono font-bold text-gray-800"><i class="fas fa-fingerprint text-gray-400 mr-2"></i>${acc.login}</td>
+                        <td class="p-4 font-semibold text-gray-700">${acc.titular}</td>
+                        <td class="p-4 flex flex-wrap gap-1 max-w-[250px]">${chipsHtml}</td>
                         <td class="p-4 text-center">
-                            <select onchange="changeStatus(${acc.id}, this.value)" class="${badgeColor} text-xs font-bold px-3 py-1.5 rounded-full border-0 outline-none cursor-pointer text-center appearance-none">
-                                <option value="active" class="bg-white text-gray-800" ${isAct}>Ativa (Liberada)</option>
-                                <option value="maintenance" class="bg-white text-gray-800" ${isMnt}>Em Manutenção</option>
-                                <option value="disabled" class="bg-white text-gray-800" ${isDis}>Desativada</option>
-                            </select>
+                            <span class="${badgeColor} px-3 py-1 rounded-full text-xs font-bold">${statusText}</span>
                         </td>
-                        <td class="p-4 text-gray-500 text-xs"><i class="far fa-clock mr-1"></i> ${acc.last_login}</td>
                         <td class="p-4 text-center">
-                            <button onclick="deleteAccount(${acc.id})" class="text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 p-2 rounded-lg transition" title="Excluir Conta">
+                            <button onclick="openModal(${acc.id})" class="text-blue-500 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 p-2 rounded transition mr-2" title="Configurar Conta">
+                                <i class="fas fa-cog"></i>
+                            </button>
+                            <button onclick="deleteAccount(${acc.id})" class="text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 p-2 rounded transition" title="Excluir Conta">
                                 <i class="fas fa-trash-alt"></i>
                             </button>
                         </td>
@@ -233,57 +245,100 @@
             });
         }
 
-        async function saveAccount() {
-            const setor = document.getElementById('new-setor').value;
-            const login = document.getElementById('new-login').value;
-            const senha = document.getElementById('new-senha').value;
-
-            if(!setor || !login || !senha) return alert("Preencha todos os campos.");
-
-            const res = await fetch('/api/admin/configure_account', {
-                method: 'POST',
-                headers: { 'X-Admin-Token': currentToken, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ setor, login, senha })
+        // --- LÓGICA DO MODAL ---
+        
+        function populateSectorCheckboxes(selectedSectors = []) {
+            const container = document.getElementById('modal-sectores-container');
+            container.innerHTML = "";
+            allAdSectors.forEach(sector => {
+                const isChecked = selectedSectors.includes(sector) ? "checked" : "";
+                container.innerHTML += `
+                    <label class="flex items-center space-x-2 text-sm text-gray-700 cursor-pointer hover:bg-gray-200 p-1 rounded transition">
+                        <input type="checkbox" value="${sector}" class="sector-checkbox form-checkbox h-4 w-4 text-blue-600 border-gray-300 rounded" ${isChecked}>
+                        <span class="truncate">${sector}</span>
+                    </label>
+                `;
             });
+        }
 
-            if(res.ok) {
-                document.getElementById('new-setor').value = '';
-                document.getElementById('new-login').value = '';
-                document.getElementById('new-senha').value = '';
-                toggleForm();
-                updateData(); 
+        function openModal(accountId = null) {
+            document.getElementById('account-modal').classList.remove('hidden');
+            document.getElementById('account-modal').classList.add('flex');
+            
+            if (accountId) {
+                // Modo Edição
+                document.getElementById('modal-title').innerText = "Configurar Conta BB";
+                const acc = globalAccountsData.find(a => a.id === accountId);
+                document.getElementById('modal-account-id').value = acc.id;
+                document.getElementById('modal-login').value = acc.login;
+                document.getElementById('modal-login').disabled = true; // Não muda o login
+                document.getElementById('modal-titular').value = acc.titular === "Não informado" ? "" : acc.titular;
+                document.getElementById('modal-senha').value = "";
+                document.getElementById('modal-status').value = acc.status;
+                populateSectorCheckboxes(acc.setores);
             } else {
-                alert("Erro ao salvar conta no Banco de Dados.");
+                // Modo Criação
+                document.getElementById('modal-title').innerText = "Adicionar Nova Conta";
+                document.getElementById('modal-account-id').value = "";
+                document.getElementById('modal-login').value = "";
+                document.getElementById('modal-login').disabled = false;
+                document.getElementById('modal-titular').value = "";
+                document.getElementById('modal-senha').value = "";
+                document.getElementById('modal-status').value = "active";
+                populateSectorCheckboxes([]);
             }
         }
 
-        async function changeStatus(accountId, newStatus) {
+        function closeModal() {
+            document.getElementById('account-modal').classList.add('hidden');
+            document.getElementById('account-modal').classList.remove('flex');
+        }
+
+        async function saveAccount() {
+            const accountId = document.getElementById('modal-account-id').value;
+            const login = document.getElementById('modal-login').value;
+            const titular = document.getElementById('modal-titular').value;
+            const senha = document.getElementById('modal-senha').value;
+            const status = document.getElementById('modal-status').value;
+            
+            // Coleta os setores marcados
+            const checkedBoxes = document.querySelectorAll('.sector-checkbox:checked');
+            const setores = Array.from(checkedBoxes).map(cb => cb.value);
+
+            if (!login) return alert("O Login é obrigatório.");
+            if (!accountId && !senha) return alert("A senha é obrigatória para contas novas.");
+
+            const payload = { login, titular, status, setores };
+            if (senha) payload.senha = senha; // Só envia a senha se foi digitada
+
+            const url = accountId ? `/api/admin/accounts/${accountId}` : `/api/admin/accounts`;
+            const method = accountId ? 'PUT' : 'POST';
+
             try {
-                const res = await fetch(`/api/admin/accounts/${accountId}/status`, {
-                    method: 'PUT',
+                const res = await fetch(url, {
+                    method: method,
                     headers: { 'X-Admin-Token': currentToken, 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ status: newStatus })
+                    body: JSON.stringify(payload)
                 });
-                if(res.ok) updateData();
-                else alert("Falha ao atualizar o status.");
+
+                if(res.ok) {
+                    closeModal();
+                    updateData();
+                } else {
+                    const err = await res.json();
+                    alert(err.erro || "Falha ao salvar conta.");
+                }
             } catch(e) {
                 alert("Erro de conexão.");
             }
         }
 
         async function deleteAccount(accountId) {
-            if(!confirm("Tem certeza que deseja excluir esta conta do robô? Esta ação é irreversível.")) return;
-
+            if(!confirm("Atenção! Deseja remover esta conta permanentemente do sistema?")) return;
             try {
-                const res = await fetch(`/api/admin/accounts/${accountId}`, {
-                    method: 'DELETE',
-                    headers: { 'X-Admin-Token': currentToken }
-                });
+                const res = await fetch(`/api/admin/accounts/${accountId}`, { method: 'DELETE', headers: { 'X-Admin-Token': currentToken }});
                 if(res.ok) updateData();
-                else alert("Falha ao excluir a conta.");
-            } catch(e) {
-                alert("Erro de conexão.");
-            }
+            } catch(e) {}
         }
     </script>
 </body>

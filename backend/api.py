@@ -30,13 +30,30 @@ def inicializar_sistema():
         try:
             init_db()
             seed_db()
-            print("✅ Banco de Dados conectado!")
+            print("✅ Banco de Dados conectado e migrado!")
             return True
         except Exception as e:
             print(f"⚠️ Aguardando banco... {e}")
             tentativas -= 1
             time.sleep(5)
     return False
+
+def buscar_conta_para_setor(db, setor_nome):
+    """Lógica inteligente que busca a conta vinculada ao setor (nova arquitetura Múltiplos Setores ou Fallback antigo)"""
+    # 1. Tenta buscar pela nova estrutura de múltiplos setores (Ex: "|BB_Acordos|BB_Civel|")
+    account = db.query(AccountBB).filter(
+        AccountBB.status == 'active',
+        AccountBB.setores.like(f"%|{setor_nome}|%")
+    ).order_by(AccountBB.id.asc()).first()
+    
+    if account: return account
+    
+    # 2. Fallback de transição (Se for uma conta cadastrada no modelo antigo)
+    sector = db.query(Sector).filter(Sector.nome == setor_nome).first()
+    if sector:
+        return db.query(AccountBB).filter(AccountBB.sector_id == sector.id, AccountBB.status == 'active').order_by(AccountBB.id.asc()).first()
+    
+    return None
 
 # --- ROTAS DE PÁGINAS WEB ---
 @app.route('/admin')
@@ -69,19 +86,16 @@ def request_login():
     
     db = SessionLocal()
     try:
-        sector = db.query(Sector).filter(Sector.nome == setor_nome).first()
-        if not sector:
-            sector = Sector(nome=setor_nome)
-            db.add(sector)
+        # Registra o setor se ele for totalmente novo
+        if not db.query(Sector).filter(Sector.nome == setor_nome).first():
+            db.add(Sector(nome=setor_nome))
             db.commit()
-            db.refresh(sector)
             
-        account = db.query(AccountBB).filter(AccountBB.sector_id == sector.id, AccountBB.status == 'active').order_by(AccountBB.id.asc()).first()
+        account = buscar_conta_para_setor(db, setor_nome)
         
         if not account:
-            return jsonify({"status": "erro", "mensagem": f"Setor {setor_nome} sem conta."}), 403
+            return jsonify({"status": "erro", "mensagem": f"Setor {setor_nome} sem conta vinculada."}), 403
 
-        # CORREÇÃO DO FUSO: Usando datetime.utcnow() para calcular corretamente
         if account.cookie_payload and account.last_login_at:
             if (datetime.utcnow() - account.last_login_at).total_seconds() / 60 < 20:
                 redis_client.incr('metrics:cookies_injetados')
@@ -104,12 +118,10 @@ def request_login():
 @app.route('/api/zerocore/renew', methods=['POST'])
 def renew_session():
     data = request.get_json(silent=True) or {}
-    username = data.get('username')
-    password = data.get('password')
+    username, password = data.get('username'), data.get('password')
     setor_nome = data.get('setor') or request.args.get('setor')
 
-    if not setor_nome:
-        return jsonify({"status": "erro", "mensagem": "Setor ausente."}), 400
+    if not setor_nome: return jsonify({"status": "erro", "mensagem": "Setor ausente."}), 400
 
     if username and password:
         ad_result = autenticar_e_obter_setor(username, password)
@@ -118,27 +130,23 @@ def renew_session():
 
     db = SessionLocal()
     try:
-        sector = db.query(Sector).filter(Sector.nome == setor_nome).first()
-        if sector:
-            account = db.query(AccountBB).filter(AccountBB.sector_id == sector.id, AccountBB.status == 'active').order_by(AccountBB.id.asc()).first()
-            if account:
-                
-                # O ESCUDO ANTI-FLOOD: Se o cookie tiver menos de 15 minutos, NÃO RODA O ROBÔ!
-                if account.cookie_payload and account.last_login_at:
-                    if (datetime.utcnow() - account.last_login_at).total_seconds() / 60 < 15:
-                        redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Sessão quente retornada do Pool.", "concluido": True, "erro": False}))
-                        return jsonify({"status": "queued"}) # Engana a extensão, que faz o poll e pega o cookie direto
-                
-                status_str = redis_client.get(f"status:{setor_nome}")
-                if status_str:
-                    current_status = json.loads(status_str)
-                    if not current_status.get("concluido") and not current_status.get("erro"):
-                        return jsonify({"status": "queued", "mensagem": "Robô já em execução."})
+        account = buscar_conta_para_setor(db, setor_nome)
+        if account:
+            if account.cookie_payload and account.last_login_at:
+                if (datetime.utcnow() - account.last_login_at).total_seconds() / 60 < 15:
+                    redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Sessão quente retornada do Pool.", "concluido": True, "erro": False}))
+                    return jsonify({"status": "queued"})
+            
+            status_str = redis_client.get(f"status:{setor_nome}")
+            if status_str:
+                current_status = json.loads(status_str)
+                if not current_status.get("concluido") and not current_status.get("erro"):
+                    return jsonify({"status": "queued", "mensagem": "Robô já em execução."})
 
-                redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Renovação de Marcapasso...", "concluido": False, "erro": False}))
-                redis_client.lpush("queue:login_requests", account.id)
-                redis_client.incr('metrics:robos_executados')
-                return jsonify({"status": "queued"})
+            redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Renovação de Marcapasso...", "concluido": False, "erro": False}))
+            redis_client.lpush("queue:login_requests", account.id)
+            redis_client.incr('metrics:robos_executados')
+            return jsonify({"status": "queued"})
     finally:
         db.close()
     return jsonify({"status": "erro"}), 404
@@ -146,12 +154,10 @@ def renew_session():
 @app.route('/api/zerocore/session', methods=['GET', 'POST'])
 def get_session():
     data = request.get_json(silent=True) or {}
-    username = data.get('username')
-    password = data.get('password')
+    username, password = data.get('username'), data.get('password')
     setor_nome = data.get('setor') or request.args.get('setor')
 
-    if not setor_nome:
-        return jsonify({"status": "erro", "mensagem": "Setor ausente."}), 400
+    if not setor_nome: return jsonify({"status": "erro", "mensagem": "Setor ausente."}), 400
 
     if username and password:
         ad_result = autenticar_e_obter_setor(username, password)
@@ -160,18 +166,12 @@ def get_session():
     
     db = SessionLocal()
     try:
-        sector = db.query(Sector).filter(Sector.nome == setor_nome).first()
-        if sector:
-            account = db.query(AccountBB).filter(AccountBB.sector_id == sector.id, AccountBB.status == 'active').order_by(AccountBB.id.asc()).first()
-            if account and account.cookie_payload:
-                return jsonify({
-                    "status": "sucesso",
-                    "cookies": json.loads(account.cookie_payload)
-                })
+        account = buscar_conta_para_setor(db, setor_nome)
+        if account and account.cookie_payload:
+            return jsonify({"status": "sucesso", "cookies": json.loads(account.cookie_payload)})
     finally:
         db.close()
     return jsonify({"status": "erro"}), 404
-
 
 # --- ROTAS ADMINISTRATIVAS E DASHBOARD ---
 @app.route('/api/admin/ad_sectors', methods=['GET'])
@@ -211,101 +211,87 @@ def admin_dashboard_stats():
     finally:
         db.close()
 
-@app.route('/api/admin/sectors', methods=['GET'])
+@app.route('/api/admin/accounts', methods=['GET', 'POST'])
 @admin_required
-def admin_list_sectors():
+def gerenciar_contas():
     db = SessionLocal()
     try:
-        sectors = db.query(Sector).all()
-        return jsonify([{"id": s.id, "nome": s.nome} for s in sectors])
-    finally:
-        db.close()
+        if request.method == 'GET':
+            accounts = db.query(AccountBB).all()
+            result = []
+            for acc in accounts:
+                # Decodifica a string "|SetorA|SetorB|" para uma lista real no Frontend
+                lista_setores = [s for s in (acc.setores or "").split("|") if s]
+                
+                # Se for conta antiga que ainda não foi editada, pega o setor pelo ID
+                if not lista_setores and acc.sector:
+                    lista_setores = [acc.sector.nome]
 
-@app.route('/api/admin/configure_account', methods=['POST'])
-@admin_required
-def admin_configure_account():
-    data = request.get_json(silent=True) or {}
-    setor_nome = data.get('setor')
-    bb_login = data.get('login')
-    bb_senha = data.get('senha')
-
-    if not all([setor_nome, bb_login, bb_senha]):
-        return jsonify({"erro": "Dados incompletos."}), 400
-
-    db = SessionLocal()
-    try:
-        sector = db.query(Sector).filter(Sector.nome == setor_nome).first()
-        if not sector:
-            sector = Sector(nome=setor_nome)
-            db.add(sector)
+                result.append({
+                    "id": acc.id,
+                    "login": acc.login,
+                    "titular": acc.titular or "Não informado",
+                    "setores": lista_setores,
+                    "status": acc.status,
+                    "last_login": acc.last_login_at.strftime("%d/%m/%Y %H:%M") if acc.last_login_at else "Nunca conectou"
+                })
+            return jsonify(result)
+            
+        elif request.method == 'POST':
+            # Criação de Nova Conta
+            data = request.get_json() or {}
+            if not data.get('login') or not data.get('senha'):
+                return jsonify({"erro": "Login e Senha são obrigatórios"}), 400
+                
+            account = db.query(AccountBB).filter(AccountBB.login == data['login']).first()
+            if not account:
+                account = AccountBB(login=data['login'])
+                db.add(account)
+                
+            account.senha = data['senha']
+            account.titular = data.get('titular', '')
+            account.status = data.get('status', 'active')
+            
+            # Converte o array de setores para String delimitada: "|SetorA|SetorB|"
+            setores_lista = data.get('setores', [])
+            account.setores = "|" + "|".join(setores_lista) + "|" if setores_lista else ""
+            
             db.commit()
-            db.refresh(sector)
-
-        account = db.query(AccountBB).filter(AccountBB.login == bb_login).first()
-        if not account:
-            account = db.query(AccountBB).filter(AccountBB.sector_id == sector.id).first()
-        if not account:
-            account = AccountBB()
-            db.add(account)
-
-        account.login = bb_login
-        account.senha = bb_senha
-        account.sector_id = sector.id
-        account.status = "active"
-        db.commit()
-        return jsonify({"mensagem": "Sucesso!"})
+            return jsonify({"mensagem": "Conta criada com sucesso!"})
     except Exception as e:
-        db.rollback() 
-        return jsonify({"erro": f"Erro BD: {str(e)}"}), 500
+        db.rollback()
+        return jsonify({"erro": str(e)}), 500
     finally:
         db.close()
 
-@app.route('/api/admin/accounts', methods=['GET'])
+@app.route('/api/admin/accounts/<int:account_id>', methods=['PUT', 'DELETE'])
 @admin_required
-def admin_list_accounts():
-    db = SessionLocal()
-    try:
-        accounts = db.query(AccountBB).all()
-        result = []
-        for acc in accounts:
-            sector_nome = acc.sector.nome if acc.sector else "Sem Setor"
-            result.append({
-                "id": acc.id,
-                "login": acc.login,
-                "setor": sector_nome,
-                "status": acc.status,
-                "last_login": acc.last_login_at.strftime("%d/%m/%Y %H:%M") if acc.last_login_at else "Nunca conectou"
-            })
-        return jsonify(result)
-    finally:
-        db.close()
-
-@app.route('/api/admin/accounts/<int:account_id>/status', methods=['PUT'])
-@admin_required
-def admin_update_status(account_id):
-    data = request.get_json(silent=True) or {}
-    new_status = data.get('status')
-    if new_status not in ['active', 'maintenance', 'disabled']: return jsonify({"erro": "Status inválido."}), 400
+def editar_conta(account_id):
     db = SessionLocal()
     try:
         acc = db.query(AccountBB).filter(AccountBB.id == account_id).first()
         if not acc: return jsonify({"erro": "Conta não encontrada."}), 404
-        acc.status = new_status
-        db.commit()
-        return jsonify({"mensagem": "Status atualizado com sucesso!"})
-    finally:
-        db.close()
-
-@app.route('/api/admin/accounts/<int:account_id>', methods=['DELETE'])
-@admin_required
-def admin_delete_account(account_id):
-    db = SessionLocal()
-    try:
-        acc = db.query(AccountBB).filter(AccountBB.id == account_id).first()
-        if not acc: return jsonify({"erro": "Conta não encontrada."}), 404
-        db.delete(acc)
-        db.commit()
-        return jsonify({"mensagem": "Conta excluída permanentemente."})
+        
+        if request.method == 'DELETE':
+            db.delete(acc)
+            db.commit()
+            return jsonify({"mensagem": "Conta excluída."})
+            
+        elif request.method == 'PUT':
+            data = request.get_json() or {}
+            
+            if data.get('senha'): acc.senha = data['senha']
+            if 'titular' in data: acc.titular = data['titular']
+            if 'status' in data: acc.status = data['status']
+            if 'setores' in data:
+                setores_lista = data['setores']
+                acc.setores = "|" + "|".join(setores_lista) + "|" if setores_lista else ""
+            
+            db.commit()
+            return jsonify({"mensagem": "Conta atualizada com sucesso!"})
+    except Exception as e:
+        db.rollback()
+        return jsonify({"erro": str(e)}), 500
     finally:
         db.close()
 

@@ -7,7 +7,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         performFullLogin(request.user, request.pass);
         sendResponse({status: "started"});
     } else if (request.action === "START_RENEW_LOGIN") {
-        performRenewLogin();
+        performRenewLogin(false);
         sendResponse({status: "started"});
     } else if (request.action === "GET_STATE") {
         sendResponse(currentState);
@@ -29,6 +29,12 @@ function updateState(isWorking, step, error = "") {
 }
 
 async function performFullLogin(user, pass) {
+    // Escudo de Compatibilidade: Se o cache antigo não tem senha, força recadastro
+    if (!user || !pass) {
+        chrome.storage.local.remove(['onelog_user', 'onelog_active_setor']);
+        return updateState(false, "", "Segurança atualizada. Por favor, refaça o login.");
+    }
+
     updateState(true, "Autenticando no AD...");
     try {
         const res = await fetch(`${API_URL}/api/zerocore/login`, {
@@ -41,25 +47,34 @@ async function performFullLogin(user, pass) {
             const err = await res.json();
             return updateState(false, "", err.mensagem || "Acesso Negado pelo AD.");
         }
+
+        if (res.status === 400) {
+            return updateState(false, "", "Erro de dados. Tente sair da conta e entrar de novo.");
+        }
         
         const data = await res.json();
         const setor = data.setor;
         
+        // Salva a estrutura nova com a senha
         chrome.storage.local.set({ "onelog_user": { username: user, password: pass, setor: setor } });
         
-        if (data.status === "sucesso") await finalizeLogin(data.cookies, setor);
-        else if (data.status === "queued") await pollStatusUntilDone();
+        if (data.status === "sucesso") await finalizeLogin(data.cookies, setor, false);
+        else if (data.status === "queued") await pollStatusUntilDone(false);
         
     } catch (e) {
         updateState(false, "", "Erro de rede ao conectar no servidor.");
     }
 }
 
-async function performRenewLogin() {
+async function performRenewLogin(isBackground = false) {
     updateState(true, "Verificando credenciais e acordando robô...");
     try {
         chrome.storage.local.get(["onelog_user"], async (res) => {
-            if(!res.onelog_user) return updateState(false, "", "Sessão expirada. Faça login novamente.");
+            // Verifica se o usuário existe E se tem a senha salva (proteção contra cache velho)
+            if(!res.onelog_user || !res.onelog_user.password) {
+                chrome.storage.local.remove(['onelog_user']);
+                return updateState(false, "", "Sessão desatualizada. Faça login novamente.");
+            }
             
             const req = await fetch(`${API_URL}/api/zerocore/renew`, { 
                 method: 'POST',
@@ -72,14 +87,14 @@ async function performRenewLogin() {
                 return updateState(false, "", "Credenciais revogadas no AD. Acesso suspenso.");
             }
 
-            await pollStatusUntilDone();
+            await pollStatusUntilDone(isBackground);
         });
     } catch(e) {
         updateState(false, "", "Erro de rede ao falar com a API.");
     }
 }
 
-async function pollStatusUntilDone() {
+async function pollStatusUntilDone(isBackground = false) {
     chrome.storage.local.get(["onelog_user"], async (resUser) => {
         if(!resUser.onelog_user) return;
         const userObj = resUser.onelog_user;
@@ -114,7 +129,7 @@ async function pollStatusUntilDone() {
                     
                     const sessionData = await resSessao.json();
                     
-                    if (sessionData.status === "sucesso") await finalizeLogin(sessionData.cookies, setor);
+                    if (sessionData.status === "sucesso") await finalizeLogin(sessionData.cookies, setor, isBackground);
                     else updateState(false, "", "Erro ao recuperar cookies da sessão nova.");
                 }
             } catch(e) {}
@@ -142,7 +157,7 @@ async function limparCookiesAntigos() {
     });
 }
 
-async function finalizeLogin(cookies, setor) {
+async function finalizeLogin(cookies, setor, isBackground = false) {
     updateState(true, "Limpando resíduos antigos...");
     
     await limparCookiesAntigos();
@@ -164,22 +179,25 @@ async function finalizeLogin(cookies, setor) {
     });
 
     await Promise.all(cookiePromises);
-    updateState(true, "Abrindo Portal...");
     
     chrome.alarms.create("renew_session", { delayInMinutes: 20, periodInMinutes: 20 });
     
-    setTimeout(() => {
-        // Se já tiver uma janela do portal aberta, evita abrir outra (Opcional)
-        chrome.tabs.create({ url: "https://juridico.bb.com.br/wfj" });
-        updateState(false, "", ""); 
-    }, 1000);
+    if (!isBackground) {
+        updateState(true, "Abrindo Portal...");
+        setTimeout(() => {
+            chrome.tabs.create({ url: "https://juridico.bb.com.br/wfj" });
+            updateState(false, "", ""); 
+        }, 1000);
+    } else {
+        console.log("🔄 Sessão renovada silenciosamente em background (Sem abrir abas).");
+        updateState(false, "", "");
+    }
 }
 
 // O Marcapasso Silencioso e Seguro
 chrome.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === "renew_session") {
         console.log("⏰ Marcapasso disparado! Renovando sessão e injetando...");
-        // CORREÇÃO: Usa a função completa que ativa o robô, faz o poll e INJETA os novos cookies no Chrome!
-        performRenewLogin();
+        performRenewLogin(true);
     }
 });
