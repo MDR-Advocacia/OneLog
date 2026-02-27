@@ -7,9 +7,6 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
-        .status-active { color: #047857; background-color: #d1fae5; }
-        .status-maintenance { color: #b45309; background-color: #fef3c7; }
-        .status-disabled { color: #be123c; background-color: #ffe4e6; }
         /* Scroll customizado para a caixa de setores */
         .custom-scroll::-webkit-scrollbar { width: 6px; }
         .custom-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
@@ -74,13 +71,13 @@
             <!-- Tabela Principal -->
             <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                 <div class="overflow-x-auto">
-                    <table class="w-full text-left border-collapse min-w-[800px]">
+                    <table class="w-full text-left border-collapse min-w-[900px]">
                         <thead class="bg-gray-100 text-gray-600 text-xs uppercase tracking-wider border-b border-gray-200">
                             <tr>
                                 <th class="p-4 font-semibold">Conta (Login)</th>
                                 <th class="p-4 font-semibold">Titular</th>
                                 <th class="p-4 font-semibold">Setores Vinculados</th>
-                                <th class="p-4 font-semibold text-center">Status</th>
+                                <th class="p-4 font-semibold text-center">Status no Banco / Validade</th>
                                 <th class="p-4 font-semibold text-center">Ações</th>
                             </tr>
                         </thead>
@@ -117,16 +114,20 @@
 
                 <div class="mb-4">
                     <label class="text-xs font-bold text-gray-500 uppercase">Senha Banco do Brasil</label>
-                    <input type="password" id="modal-senha" class="w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500 font-mono" placeholder="Digite a senha (ou deixe em branco para manter)">
+                    <input type="password" id="modal-senha" class="w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500 font-mono" placeholder="Digite a senha (ou deixe em branco)">
                 </div>
 
-                <div class="mb-4">
-                    <label class="text-xs font-bold text-gray-500 uppercase">Status de Operação</label>
-                    <select id="modal-status" class="w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500">
-                        <option value="active">🟢 Ativa (Liberada para o Robô)</option>
-                        <option value="maintenance">🟡 Em Manutenção (Pausada)</option>
-                        <option value="disabled">🔴 Desativada</option>
-                    </select>
+                <div class="grid grid-cols-2 gap-4 mb-4">
+                    <div>
+                        <label class="text-xs font-bold text-gray-500 uppercase">Status perante o BB</label>
+                        <select id="modal-status" class="w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500 text-[11px] font-bold uppercase tracking-wide">
+                            <!-- Injetado pelo JS -->
+                        </select>
+                    </div>
+                    <div>
+                        <label class="text-xs font-bold text-gray-500 uppercase">Vencimento (60 dias)</label>
+                        <input type="date" id="modal-validade" class="w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500 text-sm text-gray-700">
+                    </div>
                 </div>
 
                 <div class="mb-2">
@@ -152,6 +153,22 @@
         let autoRefreshInterval;
         let allAdSectors = [];
         let globalAccountsData = [];
+
+        // Dicionário Oficial de Status baseado na planilha do escritório
+        const STATUS_CONFIG = {
+            'cadastro_inicial': { label: 'Cadastro Inicial', color: 'bg-teal-100 text-teal-800 border-teal-200' },
+            'solicitado_criacao': { label: 'Solicitado p/ Criação', color: 'bg-purple-200 text-purple-800 border-purple-300' },
+            'provisoria_recebida': { label: 'Provisória Recebida', color: 'bg-gray-200 text-gray-800 border-gray-300' },
+            'termo_enviado': { label: 'Termo Enviado', color: 'bg-blue-200 text-blue-800 border-blue-300' },
+            'termo_assinado': { label: 'Termo Assinado', color: 'bg-green-300 text-green-900 border-green-400' },
+            'pendente_assinatura': { label: 'Pendente Assinatura', color: 'bg-orange-600 text-white border-orange-700' },
+            'ativo': { label: 'Ativo', color: 'bg-green-700 text-white border-green-800' },
+            'problema_tecnico': { label: 'Problema Técnico', color: 'bg-yellow-200 text-yellow-800 border-yellow-300' },
+            'bloqueada': { label: 'Bloqueada', color: 'bg-red-700 text-white border-red-800' },
+            'desbloqueio_solicitado': { label: 'Desbloq. Solicitado', color: 'bg-yellow-400 text-yellow-900 border-yellow-500' },
+            'pedir_cancelamento': { label: 'Pedir Cancelamento', color: 'bg-blue-100 text-blue-800 border-blue-200' },
+            'pedi_cancelamento': { label: 'Pedi Cancelamento', color: 'bg-slate-300 text-slate-800 border-slate-400' }
+        };
 
         function logout() {
             currentToken = "";
@@ -216,21 +233,49 @@
             }
 
             accounts.forEach(acc => {
-                let badgeColor = acc.status === 'active' ? 'status-active' : (acc.status === 'maintenance' ? 'status-maintenance' : 'status-disabled');
-                let statusText = acc.status === 'active' ? 'Ativa' : (acc.status === 'maintenance' ? 'Manutenção' : 'Desativada');
+                // Compatibilidade com o status 'active' antigo para 'ativo'
+                let safeStatus = acc.status === 'active' ? 'ativo' : acc.status;
+                let conf = STATUS_CONFIG[safeStatus] || { label: safeStatus || 'Desconhecido', color: 'bg-gray-100 text-gray-800' };
                 
                 // Múltiplos Chips para os Setores
-                let chipsHtml = acc.setores.length > 0 
+                let chipsHtml = acc.setores && acc.setores.length > 0 
                     ? acc.setores.map(s => `<span class="bg-blue-100 text-blue-800 text-[10px] px-2 py-0.5 rounded border border-blue-200">${s}</span>`).join(" ")
                     : `<span class="text-gray-400 text-xs italic">Nenhum setor vinculado</span>`;
+
+                // Inteligência de Data e Validade
+                let validadeHtml = `<div class="mt-1.5 text-[10px] text-gray-400 italic">Sem data definida</div>`;
+                
+                // Se a conta está "quente" (Ativo, Provisória ou Assinado), verifica a data de validade (60 dias)
+                if (['ativo', 'provisoria_recebida', 'termo_assinado'].includes(safeStatus) && acc.data_validade) {
+                    let parts = acc.data_validade.split('-');
+                    let dataVal = new Date(parts[0], parts[1]-1, parts[2]);
+                    let hoje = new Date();
+                    hoje.setHours(0,0,0,0);
+                    
+                    let diffDias = Math.ceil((dataVal - hoje) / (1000 * 60 * 60 * 24));
+                    
+                    if (diffDias <= 10 && diffDias >= 0) {
+                        validadeHtml = `<div class="mt-1.5 text-[11px] text-orange-600 font-bold"><i class="fas fa-exclamation-triangle"></i> Vence em ${diffDias} dias</div>`;
+                    } else if (diffDias < 0) {
+                        validadeHtml = `<div class="mt-1.5 text-[11px] text-red-600 font-bold"><i class="fas fa-times-circle"></i> Vencida</div>`;
+                    } else {
+                        validadeHtml = `<div class="mt-1.5 text-[11px] text-green-600 font-bold"><i class="fas fa-check-circle"></i> Válida até ${dataVal.toLocaleDateString('pt-BR')}</div>`;
+                    }
+                } 
+                // Se a conta estiver bloqueada ou em transição, mostra a data da última modificação do status
+                else if (acc.status_updated_at) {
+                    let d = new Date(acc.status_updated_at);
+                    validadeHtml = `<div class="mt-1.5 text-[10px] text-gray-500 font-medium"><i class="fas fa-history"></i> Modificado em: ${d.toLocaleDateString('pt-BR')}</div>`;
+                }
 
                 tbody.innerHTML += `
                     <tr class="hover:bg-gray-50 transition border-b border-gray-100">
                         <td class="p-4 font-mono font-bold text-gray-800"><i class="fas fa-fingerprint text-gray-400 mr-2"></i>${acc.login}</td>
-                        <td class="p-4 font-semibold text-gray-700">${acc.titular}</td>
+                        <td class="p-4 font-semibold text-gray-700">${acc.titular || '-'}</td>
                         <td class="p-4 flex flex-wrap gap-1 max-w-[250px]">${chipsHtml}</td>
                         <td class="p-4 text-center">
-                            <span class="${badgeColor} px-3 py-1 rounded-full text-xs font-bold">${statusText}</span>
+                            <div class="${conf.color} border px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider inline-block shadow-sm">${conf.label}</div>
+                            ${validadeHtml}
                         </td>
                         <td class="p-4 text-center">
                             <button onclick="openModal(${acc.id})" class="text-blue-500 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 p-2 rounded transition mr-2" title="Configurar Conta">
@@ -253,7 +298,7 @@
             allAdSectors.forEach(sector => {
                 const isChecked = selectedSectors.includes(sector) ? "checked" : "";
                 container.innerHTML += `
-                    <label class="flex items-center space-x-2 text-sm text-gray-700 cursor-pointer hover:bg-gray-200 p-1 rounded transition">
+                    <label class="flex items-center space-x-2 text-sm text-gray-700 cursor-pointer hover:bg-gray-200 p-1.5 rounded transition">
                         <input type="checkbox" value="${sector}" class="sector-checkbox form-checkbox h-4 w-4 text-blue-600 border-gray-300 rounded" ${isChecked}>
                         <span class="truncate">${sector}</span>
                     </label>
@@ -261,21 +306,38 @@
             });
         }
 
+        function populateStatusDropdown() {
+            const select = document.getElementById('modal-status');
+            select.innerHTML = "";
+            for (const [key, val] of Object.entries(STATUS_CONFIG)) {
+                select.innerHTML += `<option value="${key}">${val.label}</option>`;
+            }
+        }
+
         function openModal(accountId = null) {
             document.getElementById('account-modal').classList.remove('hidden');
             document.getElementById('account-modal').classList.add('flex');
             
+            populateStatusDropdown();
+
             if (accountId) {
                 // Modo Edição
                 document.getElementById('modal-title').innerText = "Configurar Conta BB";
                 const acc = globalAccountsData.find(a => a.id === accountId);
+                
                 document.getElementById('modal-account-id').value = acc.id;
                 document.getElementById('modal-login').value = acc.login;
-                document.getElementById('modal-login').disabled = true; // Não muda o login
+                document.getElementById('modal-login').disabled = true;
                 document.getElementById('modal-titular').value = acc.titular === "Não informado" ? "" : acc.titular;
                 document.getElementById('modal-senha').value = "";
-                document.getElementById('modal-status').value = acc.status;
-                populateSectorCheckboxes(acc.setores);
+                
+                let safeStatus = acc.status === 'active' ? 'ativo' : acc.status;
+                document.getElementById('modal-status').value = safeStatus;
+                
+                // Preenche a data se houver
+                document.getElementById('modal-validade').value = acc.data_validade || "";
+                
+                populateSectorCheckboxes(acc.setores || []);
             } else {
                 // Modo Criação
                 document.getElementById('modal-title').innerText = "Adicionar Nova Conta";
@@ -284,7 +346,8 @@
                 document.getElementById('modal-login').disabled = false;
                 document.getElementById('modal-titular').value = "";
                 document.getElementById('modal-senha').value = "";
-                document.getElementById('modal-status').value = "active";
+                document.getElementById('modal-status').value = "cadastro_inicial";
+                document.getElementById('modal-validade').value = "";
                 populateSectorCheckboxes([]);
             }
         }
@@ -300,6 +363,7 @@
             const titular = document.getElementById('modal-titular').value;
             const senha = document.getElementById('modal-senha').value;
             const status = document.getElementById('modal-status').value;
+            const data_validade = document.getElementById('modal-validade').value;
             
             // Coleta os setores marcados
             const checkedBoxes = document.querySelectorAll('.sector-checkbox:checked');
@@ -308,8 +372,8 @@
             if (!login) return alert("O Login é obrigatório.");
             if (!accountId && !senha) return alert("A senha é obrigatória para contas novas.");
 
-            const payload = { login, titular, status, setores };
-            if (senha) payload.senha = senha; // Só envia a senha se foi digitada
+            const payload = { login, titular, status, setores, data_validade };
+            if (senha) payload.senha = senha;
 
             const url = accountId ? `/api/admin/accounts/${accountId}` : `/api/admin/accounts`;
             const method = accountId ? 'PUT' : 'POST';
