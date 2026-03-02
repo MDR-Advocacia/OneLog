@@ -25,7 +25,7 @@ def snapshot(sb, setor, nome_arquivo):
     if not DEBUG_MODE: return None
     
     if not os.path.exists('static'): os.makedirs('static')
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     filename = f"{setor}_{nome_arquivo}_{ts}.png"
     sb.save_screenshot(os.path.join("static", filename))
     img_url = f"{BASE_URL}/static/{filename}"
@@ -111,11 +111,25 @@ def processar_login(account_id):
                     
                     if logged_in:
                         cookies = sb.driver.get_cookies()
+                        
+                        # --- O SEU FILTRO ANTIGO (A RESTAURAÇÃO DO CONTINUE) ---
+                        cookies_limpos = []
+                        for cookie in cookies:
+                            nome_cookie = cookie['name']
+                            # AQUI ESTÃO OS VILÕES: TS01 e BIGipServer costumam matar a sessão
+                            if nome_cookie.startswith('TS01') or 'BIGipServer' in nome_cookie or nome_cookie == 'PD-S-SESSION-ID':
+                                logger.info(f"Filtro Ativado: Descartando o cookie malicioso -> {nome_cookie}")
+                                continue
+                            
+                            cookies_limpos.append(cookie)
+                            
                         try: real_ua = sb.execute_script("return navigator.userAgent;")
                         except: real_ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
                         
-                        account.cookie_payload = json.dumps(cookies)
-                        account.last_login_at = datetime.now()
+                        # Salva apenas a lista filtrada
+                        account.cookie_payload = json.dumps(cookies_limpos)
+                        # SOLUÇÃO FUSO HORÁRIO: Sempre salva em UTC absoluto
+                        account.last_login_at = datetime.utcnow()
                         account.user_agent_used = real_ua
                         db.commit()
                         update_status(setor, "Acesso concedido e salvo no Pool!", concluido=True, imagem=img)

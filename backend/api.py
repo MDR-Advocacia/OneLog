@@ -36,27 +36,6 @@ def inicializar_sistema():
             print(f"⚠️ Aguardando banco... {e}")
             tentativas -= 1
             time.sleep(5)
-    return False
-
-def buscar_conta_para_setor(db, setor_nome):
-    """Lógica inteligente que busca a conta vinculada ao setor (nova arquitetura Múltiplos Setores ou Fallback antigo)"""
-    # 1. Tenta buscar pela nova estrutura de múltiplos setores (Ex: "|BB_Acordos|BB_Civel|")
-    # Buscamos contas que não estejam bloqueadas (status perante o robô)
-    account = db.query(AccountBB).filter(
-        AccountBB.status.in_(['active', 'ativo', 'provisoria_recebida', 'termo_assinado']),
-        AccountBB.setores.like(f"%|{setor_nome}|%")
-    ).order_by(AccountBB.id.asc()).first()
-    
-    if account: return account
-    
-    # 2. Fallback de transição (Se for uma conta cadastrada no modelo antigo)
-    sector = db.query(Sector).filter(Sector.nome == setor_nome).first()
-    if sector:
-        return db.query(AccountBB).filter(
-            AccountBB.sector_id == sector.id, 
-            AccountBB.status.in_(['active', 'ativo', 'provisoria_recebida', 'termo_assinado'])
-        ).order_by(AccountBB.id.asc()).first()
-    
     return None
 
 # --- ROTAS DE PÁGINAS WEB ---
@@ -65,6 +44,12 @@ def buscar_conta_para_setor(db, setor_nome):
 def serve_admin():
     base_dir = os.path.dirname(os.path.abspath(__file__))
     return send_from_directory(base_dir, 'admin.html')
+
+@app.route('/privacidade')
+@app.route('/privacy')
+def serve_privacy():
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    return send_from_directory(base_dir, 'privacy.html')
 
 # --- ROTAS DE OPERAÇÃO (EXTENSÃO) ---
 @app.route('/api/zerocore/status', methods=['GET'])

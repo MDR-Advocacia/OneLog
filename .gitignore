@@ -1,5 +1,7 @@
 Ambiente Virtual Python
 
+*.zip
+
 venv/
 .env/
 pycache/
