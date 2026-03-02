@@ -38,6 +38,27 @@ def inicializar_sistema():
             time.sleep(5)
     return None
 
+# 👇 ESTA É A FUNÇÃO QUE TINHA SIDO ENGOLIDA! 👇
+def buscar_conta_para_setor(db, setor_nome):
+    """Lógica inteligente que busca a conta vinculada ao setor (nova arquitetura Múltiplos Setores ou Fallback antigo)"""
+    # 1. Tenta buscar pela nova estrutura de múltiplos setores (Ex: "|BB_Acordos|BB_Civel|")
+    account = db.query(AccountBB).filter(
+        AccountBB.status.in_(['active', 'ativo', 'provisoria_recebida', 'termo_assinado']),
+        AccountBB.setores.like(f"%|{setor_nome}|%")
+    ).order_by(AccountBB.id.asc()).first()
+    
+    if account: return account
+    
+    # 2. Fallback de transição (Se for uma conta cadastrada no modelo antigo)
+    sector = db.query(Sector).filter(Sector.nome == setor_nome).first()
+    if sector:
+        return db.query(AccountBB).filter(
+            AccountBB.sector_id == sector.id, 
+            AccountBB.status.in_(['active', 'ativo', 'provisoria_recebida', 'termo_assinado'])
+        ).order_by(AccountBB.id.asc()).first()
+    
+    return None
+
 # --- ROTAS DE PÁGINAS WEB ---
 @app.route('/admin')
 @app.route('/admin.html')
@@ -75,7 +96,6 @@ def request_login():
     
     db = SessionLocal()
     try:
-        # Registra o setor se ele for totalmente novo
         if not db.query(Sector).filter(Sector.nome == setor_nome).first():
             db.add(Sector(nome=setor_nome))
             db.commit()
@@ -85,7 +105,6 @@ def request_login():
         if not account:
             return jsonify({"status": "erro", "mensagem": f"Setor {setor_nome} sem conta válida/ativa vinculada."}), 403
 
-        # O uso do datetime.utcnow() garante que o fuso do banco/servidor seja irrelevante
         if account.cookie_payload and account.last_login_at:
             if (datetime.utcnow() - account.last_login_at).total_seconds() / 60 < 20:
                 redis_client.incr('metrics:cookies_injetados')
@@ -122,7 +141,6 @@ def renew_session():
     try:
         account = buscar_conta_para_setor(db, setor_nome)
         if account:
-            # ESCUDO ANTI-FLOOD: Bloqueia acionamento do robô se o cookie tem menos de 15 min
             if account.cookie_payload and account.last_login_at:
                 if (datetime.utcnow() - account.last_login_at).total_seconds() / 60 < 15:
                     redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Sessão quente retornada do Pool.", "concluido": True, "erro": False}))
@@ -183,7 +201,6 @@ def admin_dashboard_stats():
     db = SessionLocal()
     try:
         total_accounts = db.query(AccountBB).count()
-        # Consideramos 'ativas' todas que o robô pode puxar para gerar cookies
         active_accounts = db.query(AccountBB).filter(AccountBB.status.in_(['active', 'ativo', 'provisoria_recebida', 'termo_assinado'])).count()
         queue_size = redis_client.llen("queue:login_requests")
         logins_solicitados = int(redis_client.get('metrics:logins_solicitados') or 0)
@@ -212,10 +229,7 @@ def gerenciar_contas():
             accounts = db.query(AccountBB).all()
             result = []
             for acc in accounts:
-                # Decodifica a string "|SetorA|SetorB|" para uma lista real no Frontend
                 lista_setores = [s for s in (acc.setores or "").split("|") if s]
-                
-                # Se for conta antiga que ainda não foi editada, pega o setor pelo ID
                 if not lista_setores and acc.sector:
                     lista_setores = [acc.sector.nome]
 
@@ -232,7 +246,6 @@ def gerenciar_contas():
             return jsonify(result)
             
         elif request.method == 'POST':
-            # Criação de Nova Conta
             data = request.get_json() or {}
             if not data.get('login') or not data.get('senha'):
                 return jsonify({"erro": "Login e Senha são obrigatórios"}), 400
@@ -245,10 +258,9 @@ def gerenciar_contas():
             account.senha = data['senha']
             account.titular = data.get('titular', '')
             account.status = data.get('status', 'cadastro_inicial')
-            account.status_updated_at = datetime.utcnow() # Data da criação / primeiro status
+            account.status_updated_at = datetime.utcnow()
             account.data_validade = data.get('data_validade', '')
             
-            # Converte o array de setores para String delimitada: "|SetorA|SetorB|"
             setores_lista = data.get('setores', [])
             account.setores = "|" + "|".join(setores_lista) + "|" if setores_lista else ""
             
@@ -280,7 +292,6 @@ def editar_conta(account_id):
             if 'titular' in data: acc.titular = data['titular']
             if 'data_validade' in data: acc.data_validade = data['data_validade']
             
-            # Atualiza o timestamp se o status mudou
             if 'status' in data and acc.status != data['status']:
                 acc.status = data['status']
                 acc.status_updated_at = datetime.utcnow()
