@@ -34,79 +34,147 @@
             <button onclick="loadDashboard()" class="bg-blue-600 text-white px-4 py-3 rounded w-full font-bold hover:bg-blue-700 transition">Desbloquear Painel</button>
         </div>
 
-        <!-- SESSÃO DO DASHBOARD -->
-        <div id="dashboard-section" style="display:none;">
+        <!-- SISTEMA DE ABAS (PÓS-LOGIN) -->
+        <div id="main-content" style="display:none;">
             
-            <div class="mb-4">
-                <h2 class="text-xl font-bold text-gray-800"><i class="fas fa-chart-line mr-2 text-blue-500"></i>Métricas de Hoje</h2>
-                <p class="text-sm text-gray-500">O histórico completo será disponibilizado na nova tela de Analytics em breve.</p>
+            <div class="mb-6 border-b border-gray-200">
+                <nav class="-mb-px flex space-x-8">
+                    <button onclick="switchTab('dashboard')" id="tab-dashboard" class="border-blue-500 text-blue-600 whitespace-nowrap py-4 px-1 border-b-2 font-bold text-sm flex items-center gap-2">
+                        <i class="fas fa-satellite-dish"></i> Pool em Tempo Real
+                    </button>
+                    <button onclick="switchTab('analytics')" id="tab-analytics" class="border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm flex items-center gap-2">
+                        <i class="fas fa-chart-pie"></i> Histórico & Analytics
+                    </button>
+                </nav>
             </div>
 
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-                <div class="bg-white p-6 rounded-xl shadow-sm border-l-4 border-l-blue-500">
-                    <h3 class="text-gray-500 text-xs font-bold uppercase">Acessos Solicitados</h3>
-                    <p class="text-3xl font-black text-gray-800 mt-2" id="kpi-logins">0</p>
+            <!-- TELA 1: DASHBOARD EM TEMPO REAL -->
+            <div id="dashboard-section">
+                <div class="mb-4">
+                    <h2 class="text-xl font-bold text-gray-800">Métricas de Hoje</h2>
                 </div>
-                <div class="bg-white p-6 rounded-xl shadow-sm border-l-4 border-l-green-500">
-                    <h3 class="text-gray-500 text-xs font-bold uppercase">Cookies Injetados</h3>
-                    <p class="text-3xl font-black text-green-600 mt-2" id="kpi-cookies">0</p>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+                    <div class="bg-white p-6 rounded-xl shadow-sm border-l-4 border-l-blue-500">
+                        <h3 class="text-gray-500 text-xs font-bold uppercase">Acessos Solicitados</h3>
+                        <p class="text-3xl font-black text-gray-800 mt-2" id="kpi-logins">0</p>
+                    </div>
+                    <div class="bg-white p-6 rounded-xl shadow-sm border-l-4 border-l-green-500">
+                        <h3 class="text-gray-500 text-xs font-bold uppercase">Cookies Injetados</h3>
+                        <p class="text-3xl font-black text-green-600 mt-2" id="kpi-cookies">0</p>
+                    </div>
+                    <div class="bg-white p-6 rounded-xl shadow-sm border-l-4 border-l-yellow-500">
+                        <h3 class="text-gray-500 text-xs font-bold uppercase">Execuções do Robô</h3>
+                        <p class="text-3xl font-black text-yellow-600 mt-2 flex items-center gap-3">
+                            <span id="kpi-robos">0</span>
+                            <span class="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded-full"><span id="kpi-fila">0</span> na fila</span>
+                        </p>
+                    </div>
+                    <div class="bg-white p-6 rounded-xl shadow-sm border-l-4 border-l-purple-500">
+                        <h3 class="text-gray-500 text-xs font-bold uppercase">Eficiência do Pool</h3>
+                        <p class="text-3xl font-black text-purple-600 mt-2"><span id="kpi-economia">0</span>%</p>
+                    </div>
                 </div>
-                <div class="bg-white p-6 rounded-xl shadow-sm border-l-4 border-l-yellow-500">
-                    <h3 class="text-gray-500 text-xs font-bold uppercase">Execuções do Robô</h3>
-                    <p class="text-3xl font-black text-yellow-600 mt-2 flex items-center gap-3">
-                        <span id="kpi-robos">0</span>
-                        <span class="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded-full"><span id="kpi-fila">0</span> na fila</span>
-                    </p>
+
+                <div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-4 gap-4">
+                    <h2 class="text-2xl font-bold text-gray-800"><i class="fas fa-users-cog mr-2 text-gray-400"></i>Pool de Contas BB</h2>
+                    <button onclick="openModal()" class="bg-blue-600 text-white px-5 py-2.5 rounded-lg font-bold hover:bg-blue-700 shadow transition flex items-center">
+                        <i class="fas fa-user-plus mr-2"></i> Nova Conta BB
+                    </button>
                 </div>
-                <div class="bg-white p-6 rounded-xl shadow-sm border-l-4 border-l-purple-500">
-                    <h3 class="text-gray-500 text-xs font-bold uppercase">Eficiência do Pool</h3>
-                    <p class="text-3xl font-black text-purple-600 mt-2"><span id="kpi-economia">0</span>%</p>
+
+                <!-- BARRA DE PESQUISA E FILTROS -->
+                <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-200 mb-4 flex flex-col md:flex-row gap-4">
+                    <div class="flex-1 relative">
+                        <i class="fas fa-search absolute left-3 top-3 text-gray-400"></i>
+                        <input type="text" id="search-input" placeholder="Pesquisar matrícula, nome..." class="w-full pl-10 p-2 border rounded outline-none focus:border-blue-500" onkeyup="renderTable()">
+                    </div>
+                    <div class="w-full md:w-56">
+                        <select id="filter-status" class="w-full p-2 border rounded outline-none focus:border-blue-500" onchange="renderTable()">
+                            <option value="">Todos os Status</option>
+                        </select>
+                    </div>
+                    <div class="w-full md:w-56">
+                        <select id="filter-sector" class="w-full p-2 border rounded outline-none focus:border-blue-500" onchange="renderTable()">
+                            <option value="">Todos os Setores</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left border-collapse min-w-[900px]">
+                            <thead class="bg-gray-100 text-gray-600 text-xs uppercase tracking-wider border-b border-gray-200">
+                                <tr>
+                                    <th class="p-4 font-semibold sortable transition" onclick="sortTable('login')">Conta (Login) <i class="fas fa-sort ml-1"></i></th>
+                                    <th class="p-4 font-semibold sortable transition" onclick="sortTable('titular')">Titular <i class="fas fa-sort ml-1"></i></th>
+                                    <th class="p-4 font-semibold">Setores Vinculados</th>
+                                    <th class="p-4 font-semibold sortable transition text-center" onclick="sortTable('status')">Status / Validade <i class="fas fa-sort ml-1"></i></th>
+                                    <th class="p-4 font-semibold text-center">Ações</th>
+                                </tr>
+                            </thead>
+                            <tbody class="text-sm divide-y divide-gray-100" id="accounts-table">
+                                <!-- Renderizado via JS -->
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
 
-            <div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-4 gap-4">
-                <h2 class="text-2xl font-bold text-gray-800"><i class="fas fa-users-cog mr-2 text-gray-400"></i>Pool de Contas BB</h2>
-                <button onclick="openModal()" class="bg-blue-600 text-white px-5 py-2.5 rounded-lg font-bold hover:bg-blue-700 shadow transition flex items-center">
-                    <i class="fas fa-user-plus mr-2"></i> Nova Conta BB
-                </button>
+            <!-- TELA 2: ANALYTICS (HISTÓRICO) -->
+            <div id="analytics-section" style="display:none;">
+                <div class="bg-white p-5 rounded-xl shadow-sm border border-gray-200 mb-6 flex flex-col md:flex-row items-end md:items-center gap-4">
+                    <div>
+                        <label class="text-xs font-bold text-gray-500 uppercase block mb-1">Data Início</label>
+                        <input type="date" id="date-start" class="p-2 border rounded outline-none focus:border-blue-500 text-sm">
+                    </div>
+                    <div>
+                        <label class="text-xs font-bold text-gray-500 uppercase block mb-1">Data Fim</label>
+                        <input type="date" id="date-end" class="p-2 border rounded outline-none focus:border-blue-500 text-sm">
+                    </div>
+                    <button onclick="fetchAnalytics()" class="bg-blue-800 text-white px-6 py-2 rounded font-bold hover:bg-blue-700 transition h-[38px] flex items-center">
+                        <i class="fas fa-search mr-2"></i> Filtrar Histórico
+                    </button>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+                    <div class="bg-gradient-to-br from-blue-500 to-blue-700 p-6 rounded-xl shadow-sm text-white">
+                        <h3 class="text-blue-100 text-xs font-bold uppercase">Total de Acessos no Período</h3>
+                        <p class="text-4xl font-black mt-2" id="aly-total-logins">0</p>
+                    </div>
+                    <div class="bg-gradient-to-br from-green-500 to-green-700 p-6 rounded-xl shadow-sm text-white">
+                        <h3 class="text-green-100 text-xs font-bold uppercase">Cookies Fornecidos</h3>
+                        <p class="text-4xl font-black mt-2" id="aly-total-cookies">0</p>
+                    </div>
+                    <div class="bg-gradient-to-br from-purple-500 to-purple-700 p-6 rounded-xl shadow-sm text-white">
+                        <h3 class="text-purple-100 text-xs font-bold uppercase">Economia no Período</h3>
+                        <p class="text-4xl font-black mt-2"><span id="aly-economia">0</span>%</p>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <!-- Uso por Setor -->
+                    <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                        <div class="bg-gray-50 border-b border-gray-200 p-4">
+                            <h3 class="font-bold text-gray-700"><i class="fas fa-chart-bar mr-2 text-blue-500"></i>Ranking de Uso por Setor</h3>
+                        </div>
+                        <ul class="divide-y divide-gray-100 max-h-[400px] overflow-y-auto custom-scroll" id="aly-sectors-list">
+                            <li class="p-8 text-center text-gray-400">Clique em Filtrar para carregar.</li>
+                        </ul>
+                    </div>
+
+                    <!-- Uso por Conta -->
+                    <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                        <div class="bg-gray-50 border-b border-gray-200 p-4">
+                            <h3 class="font-bold text-gray-700"><i class="fas fa-id-card mr-2 text-green-500"></i>Ranking de Uso por Conta (Matrícula)</h3>
+                        </div>
+                        <ul class="divide-y divide-gray-100 max-h-[400px] overflow-y-auto custom-scroll" id="aly-accounts-list">
+                            <li class="p-8 text-center text-gray-400">Clique em Filtrar para carregar.</li>
+                        </ul>
+                    </div>
+                </div>
             </div>
 
-            <!-- BARRA DE PESQUISA E FILTROS -->
-            <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-200 mb-4 flex flex-col md:flex-row gap-4">
-                <div class="flex-1 relative">
-                    <i class="fas fa-search absolute left-3 top-3 text-gray-400"></i>
-                    <input type="text" id="search-input" placeholder="Pesquisar matrícula, nome..." class="w-full pl-10 p-2 border rounded outline-none focus:border-blue-500" onkeyup="renderTable()">
-                </div>
-                <div class="w-full md:w-56">
-                    <select id="filter-status" class="w-full p-2 border rounded outline-none focus:border-blue-500" onchange="renderTable()">
-                        <option value="">Todos os Status</option>
-                    </select>
-                </div>
-                <div class="w-full md:w-56">
-                    <select id="filter-sector" class="w-full p-2 border rounded outline-none focus:border-blue-500" onchange="renderTable()">
-                        <option value="">Todos os Setores</option>
-                    </select>
-                </div>
-            </div>
-            
-            <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                <div class="overflow-x-auto">
-                    <table class="w-full text-left border-collapse min-w-[900px]">
-                        <thead class="bg-gray-100 text-gray-600 text-xs uppercase tracking-wider border-b border-gray-200">
-                            <tr>
-                                <th class="p-4 font-semibold sortable transition" onclick="sortTable('login')">Conta (Login) <i class="fas fa-sort ml-1"></i></th>
-                                <th class="p-4 font-semibold sortable transition" onclick="sortTable('titular')">Titular <i class="fas fa-sort ml-1"></i></th>
-                                <th class="p-4 font-semibold">Setores Vinculados</th>
-                                <th class="p-4 font-semibold sortable transition text-center" onclick="sortTable('status')">Status / Validade <i class="fas fa-sort ml-1"></i></th>
-                                <th class="p-4 font-semibold text-center">Ações</th>
-                            </tr>
-                        </thead>
-                        <tbody class="text-sm divide-y divide-gray-100" id="accounts-table">
-                            <!-- Renderizado via JS -->
-                        </tbody>
-                    </table>
-                </div>
-            </div>
         </div>
     </main>
 
@@ -141,7 +209,6 @@
                     <div>
                         <label class="text-xs font-bold text-gray-500 uppercase">Status perante o BB</label>
                         <select id="modal-status" class="w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500 text-sm font-bold tracking-wide" onchange="checkCustomStatus()">
-                            <!-- Opções renderizadas via JS -->
                         </select>
                         <input type="text" id="modal-status-custom" class="hidden w-full p-2 border rounded mt-2 text-sm outline-none focus:border-blue-500" placeholder="Digite o novo status...">
                     </div>
@@ -154,7 +221,7 @@
                 <div class="mb-4">
                     <label class="text-xs font-bold text-gray-500 uppercase">Modificado em (Data Retroativa)</label>
                     <input type="date" id="modal-status-updated-at" class="w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500 text-sm text-gray-700">
-                    <p class="text-[10px] text-gray-400 mt-1">Deixe em branco para registrar como HOJE.</p>
+                    <p class="text-[10px] text-gray-400 mt-1">Apenas se precisar corrigir a data do histórico.</p>
                 </div>
 
                 <div class="mb-2">
@@ -179,16 +246,13 @@
         let allAdSectors = [];
         let globalAccountsData = [];
         
-        // Estado de Ordenação
         let sortCol = 'login';
         let sortAsc = true;
 
-        // Suporte a "Enter" no campo de login
         document.getElementById('admin-token').addEventListener('keypress', function (e) {
             if (e.key === 'Enter') loadDashboard();
         });
 
-        // Paleta base de cores para os status
         const STATUS_COLORS = {
             'ativo': 'bg-green-700 text-white border-green-800',
             'bloqueada': 'bg-red-700 text-white border-red-800',
@@ -199,9 +263,30 @@
 
         function getStatusVisual(status) {
             let s = status.toLowerCase();
-            let color = STATUS_COLORS[s] || 'bg-blue-50 text-blue-800 border-blue-200'; // Default para customizados
+            let color = STATUS_COLORS[s] || 'bg-blue-50 text-blue-800 border-blue-200';
             let label = status.replace(/_/g, ' ').toUpperCase();
             return { color, label };
+        }
+
+        // --- NAVEGAÇÃO ENTRE ABAS ---
+        function switchTab(tabName) {
+            const tabs = ['dashboard', 'analytics'];
+            tabs.forEach(t => {
+                document.getElementById(`tab-${t}`).className = "border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm flex items-center gap-2";
+                document.getElementById(`${t}-section`).style.display = "none";
+            });
+
+            document.getElementById(`tab-${tabName}`).className = "border-blue-500 text-blue-600 whitespace-nowrap py-4 px-1 border-b-2 font-bold text-sm flex items-center gap-2";
+            document.getElementById(`${tabName}-section`).style.display = "block";
+
+            if (tabName === 'analytics') {
+                const hoje = new Date().toISOString().split('T')[0];
+                let semanaPassada = new Date();
+                semanaPassada.setDate(semanaPassada.getDate() - 7);
+                document.getElementById('date-start').value = semanaPassada.toISOString().split('T')[0];
+                document.getElementById('date-end').value = hoje;
+                fetchAnalytics();
+            }
         }
 
         function logout() {
@@ -209,7 +294,7 @@
             clearInterval(autoRefreshInterval);
             document.getElementById('admin-token').value = "";
             document.getElementById('auth-section').style.display = "block";
-            document.getElementById('dashboard-section').style.display = "none";
+            document.getElementById('main-content').style.display = "none";
             document.getElementById('btn-sair').classList.add('hidden');
         }
 
@@ -223,7 +308,7 @@
                 await updateData(); 
                 
                 document.getElementById('auth-section').style.display = "none";
-                document.getElementById('dashboard-section').style.display = "block";
+                document.getElementById('main-content').style.display = "block";
                 document.getElementById('btn-sair').classList.remove('hidden');
                 
                 if(autoRefreshInterval) clearInterval(autoRefreshInterval);
@@ -259,7 +344,6 @@
             renderTable();
         }
 
-        // Atualiza as opções dos selects baseados nos dados existentes no banco
         function updateFiltersUI() {
             const statusSelect = document.getElementById('filter-status');
             const sectorSelect = document.getElementById('filter-sector');
@@ -268,36 +352,30 @@
             let currentSector = sectorSelect.value;
 
             let uniqueStatuses = new Set();
-            let uniqueSectors = new Set(allAdSectors); // Puxa do AD também
+            let uniqueSectors = new Set(allAdSectors); 
 
             globalAccountsData.forEach(acc => {
                 if(acc.status) uniqueStatuses.add(acc.status.toLowerCase());
                 if(acc.setores) acc.setores.forEach(s => uniqueSectors.add(s));
             });
 
-            // Reconstrói select de Status
             statusSelect.innerHTML = `<option value="">Todos os Status</option>`;
             Array.from(uniqueStatuses).sort().forEach(st => {
                 let label = st.replace(/_/g, ' ').toUpperCase();
                 statusSelect.innerHTML += `<option value="${st}">${label}</option>`;
             });
-            statusSelect.value = currentStatus; // Mantém a escolha
+            statusSelect.value = currentStatus; 
 
-            // Reconstrói select de Setor
             sectorSelect.innerHTML = `<option value="">Todos os Setores</option>`;
             Array.from(uniqueSectors).sort().forEach(sec => {
                 sectorSelect.innerHTML += `<option value="${sec}">${sec}</option>`;
             });
-            sectorSelect.value = currentSector; // Mantém a escolha
+            sectorSelect.value = currentSector; 
         }
 
         function sortTable(col) {
-            if (sortCol === col) {
-                sortAsc = !sortAsc; // Inverte ordem
-            } else {
-                sortCol = col;
-                sortAsc = true;
-            }
+            if (sortCol === col) sortAsc = !sortAsc;
+            else { sortCol = col; sortAsc = true; }
             renderTable();
         }
 
@@ -309,17 +387,10 @@
 
             tbody.innerHTML = "";
             
-            // 1. Aplicar Filtros
             let filteredData = globalAccountsData.filter(acc => {
                 let safeStatus = acc.status ? acc.status.toLowerCase() : 'desconhecido';
-                
-                // Filtro Status
                 if (filterS && safeStatus !== filterS) return false;
-                
-                // Filtro Setor
                 if (filterSec && (!acc.setores || !acc.setores.includes(filterSec))) return false;
-
-                // Filtro de Busca (Texto livre)
                 if (searchQ) {
                     let searchableStr = `${acc.login} ${acc.titular} ${safeStatus} ${(acc.setores || []).join(" ")}`.toLowerCase();
                     if (!searchableStr.includes(searchQ)) return false;
@@ -327,16 +398,12 @@
                 return true;
             });
 
-            // 2. Aplicar Ordenação
             filteredData.sort((a, b) => {
                 let valA = a[sortCol] || '';
                 let valB = b[sortCol] || '';
-                
                 if(sortCol === 'status') { valA = a.status || ''; valB = b.status || ''; }
-
                 if (typeof valA === 'string') valA = valA.toLowerCase();
                 if (typeof valB === 'string') valB = valB.toLowerCase();
-                
                 if (valA < valB) return sortAsc ? -1 : 1;
                 if (valA > valB) return sortAsc ? 1 : -1;
                 return 0;
@@ -347,7 +414,6 @@
                 return;
             }
 
-            // 3. Renderizar Linhas
             filteredData.forEach(acc => {
                 let safeStatus = acc.status || 'ativo';
                 let visual = getStatusVisual(safeStatus);
@@ -365,13 +431,9 @@
                     hoje.setHours(0,0,0,0);
                     let diffDias = Math.ceil((dataVal - hoje) / (1000 * 60 * 60 * 24));
                     
-                    if (diffDias <= 10 && diffDias >= 0) {
-                        validadeHtml = `<div class="mt-1.5 text-[11px] text-orange-600 font-bold"><i class="fas fa-exclamation-triangle"></i> Vence em ${diffDias} dias</div>`;
-                    } else if (diffDias < 0) {
-                        validadeHtml = `<div class="mt-1.5 text-[11px] text-red-600 font-bold"><i class="fas fa-times-circle"></i> Vencida</div>`;
-                    } else {
-                        validadeHtml = `<div class="mt-1.5 text-[11px] text-green-600 font-bold"><i class="fas fa-check-circle"></i> Válida até ${dataVal.toLocaleDateString('pt-BR')}</div>`;
-                    }
+                    if (diffDias <= 10 && diffDias >= 0) validadeHtml = `<div class="mt-1.5 text-[11px] text-orange-600 font-bold"><i class="fas fa-exclamation-triangle"></i> Vence em ${diffDias} dias</div>`;
+                    else if (diffDias < 0) validadeHtml = `<div class="mt-1.5 text-[11px] text-red-600 font-bold"><i class="fas fa-times-circle"></i> Vencida</div>`;
+                    else validadeHtml = `<div class="mt-1.5 text-[11px] text-green-600 font-bold"><i class="fas fa-check-circle"></i> Válida até ${dataVal.toLocaleDateString('pt-BR')}</div>`;
                 } 
                 
                 let modificadoHtml = "";
@@ -406,8 +468,6 @@
             });
         }
 
-        // --- LÓGICA DO MODAL ---
-        
         function populateSectorCheckboxes(selectedSectors = []) {
             const container = document.getElementById('modal-sectores-container');
             container.innerHTML = "";
@@ -430,8 +490,6 @@
             
             let uniqueStatuses = new Set(['ativo', 'bloqueada', 'cadastro_inicial']);
             globalAccountsData.forEach(acc => { if(acc.status) uniqueStatuses.add(acc.status.toLowerCase()); });
-            
-            // Força o status atual a estar na lista
             if(currentStatus) uniqueStatuses.add(currentStatus.toLowerCase());
 
             select.innerHTML = "";
@@ -449,9 +507,7 @@
             if (select.value === "_custom_") {
                 customInput.classList.remove('hidden');
                 customInput.focus();
-            } else {
-                customInput.classList.add('hidden');
-            }
+            } else customInput.classList.add('hidden');
         }
 
         function openModal(accountId = null) {
@@ -467,18 +523,12 @@
                 document.getElementById('modal-login').disabled = true;
                 document.getElementById('modal-titular').value = acc.titular === "Não informado" ? "" : acc.titular;
                 document.getElementById('modal-senha').value = "";
-                
                 populateModalStatus(acc.status);
-                
                 document.getElementById('modal-validade').value = acc.data_validade || "";
                 
-                // Formata a data ISO para o input type="date" (YYYY-MM-DD) se existir
                 let dateStr = "";
-                if(acc.status_updated_at) {
-                    dateStr = acc.status_updated_at.split('T')[0];
-                }
+                if(acc.status_updated_at) dateStr = acc.status_updated_at.split('T')[0];
                 document.getElementById('modal-status-updated-at').value = dateStr;
-                
                 populateSectorCheckboxes(acc.setores || []);
             } else {
                 document.getElementById('modal-title').innerText = "Adicionar Nova Conta";
@@ -506,9 +556,8 @@
             const titular = document.getElementById('modal-titular').value;
             const senha = document.getElementById('modal-senha').value;
             const data_validade = document.getElementById('modal-validade').value;
-            const status_updated_at = document.getElementById('modal-status-updated-at').value; // Nova data manual
+            const status_updated_at = document.getElementById('modal-status-updated-at').value; 
             
-            // Lógica de Status Customizado
             const selectStatus = document.getElementById('modal-status').value;
             let status = selectStatus;
             if(selectStatus === "_custom_") {
@@ -529,22 +578,10 @@
             const method = accountId ? 'PUT' : 'POST';
 
             try {
-                const res = await fetch(url, {
-                    method: method,
-                    headers: { 'X-Admin-Token': currentToken, 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-
-                if(res.ok) {
-                    closeModal();
-                    updateData();
-                } else {
-                    const err = await res.json();
-                    alert(err.erro || "Falha ao salvar conta.");
-                }
-            } catch(e) {
-                alert("Erro de conexão.");
-            }
+                const res = await fetch(url, { method: method, headers: { 'X-Admin-Token': currentToken, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                if(res.ok) { closeModal(); updateData(); } 
+                else { const err = await res.json(); alert(err.erro || "Falha ao salvar conta."); }
+            } catch(e) { alert("Erro de conexão."); }
         }
 
         async function deleteAccount(accountId) {
@@ -562,6 +599,58 @@
                 if(res.ok) updateData();
                 else alert("Erro ao limpar cookies no banco.");
             } catch(e) {}
+        }
+
+        // --- FETCH DA TELA DE ANALYTICS ---
+        async function fetchAnalytics() {
+            const start = document.getElementById('date-start').value;
+            const end = document.getElementById('date-end').value;
+            if(!start || !end) return alert("Preencha as datas.");
+
+            try {
+                const res = await fetch(`/api/admin/analytics?start=${start}&end=${end}`, { headers: { 'X-Admin-Token': currentToken }});
+                if(!res.ok) throw new Error();
+                const data = await res.json();
+
+                document.getElementById('aly-total-logins').innerText = data.total_logins;
+                document.getElementById('aly-total-cookies').innerText = data.total_cookies;
+                document.getElementById('aly-economia').innerText = data.economia_pct;
+
+                const sList = document.getElementById('aly-sectors-list');
+                sList.innerHTML = "";
+                if(data.sectors.length === 0) sList.innerHTML = `<li class="p-4 text-center text-gray-500">Sem dados no período.</li>`;
+                data.sectors.forEach(s => {
+                    let w = data.total_logins > 0 ? (s.count / data.total_logins) * 100 : 0;
+                    sList.innerHTML += `
+                        <li class="p-4 hover:bg-gray-50 flex items-center justify-between">
+                            <span class="font-bold text-gray-700 w-1/3">${s.name}</span>
+                            <div class="flex-1 mx-4 bg-gray-200 rounded-full h-2.5">
+                                <div class="bg-blue-500 h-2.5 rounded-full" style="width: ${w}%"></div>
+                            </div>
+                            <span class="text-sm font-bold text-blue-600">${s.count} acessos</span>
+                        </li>
+                    `;
+                });
+
+                const aList = document.getElementById('aly-accounts-list');
+                aList.innerHTML = "";
+                if(data.accounts.length === 0) aList.innerHTML = `<li class="p-4 text-center text-gray-500">Sem dados no período.</li>`;
+                data.accounts.forEach(a => {
+                    let w = data.total_cookies > 0 ? (a.count / data.total_cookies) * 100 : 0;
+                    aList.innerHTML += `
+                        <li class="p-4 hover:bg-gray-50 flex items-center justify-between">
+                            <span class="font-mono font-bold text-gray-600 w-1/4">${a.name}</span>
+                            <div class="flex-1 mx-4 bg-gray-200 rounded-full h-2.5">
+                                <div class="bg-green-500 h-2.5 rounded-full" style="width: ${w}%"></div>
+                            </div>
+                            <span class="text-sm font-bold text-green-600">${a.count} sessões ativas</span>
+                        </li>
+                    `;
+                });
+
+            } catch(e) {
+                alert("Erro ao buscar histórico.");
+            }
         }
     </script>
 </body>

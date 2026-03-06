@@ -4,7 +4,7 @@ import redis
 import json
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from database import SessionLocal, Sector, AccountBB, init_db, seed_db
 from ad_integration import autenticar_e_obter_setor, listar_ous_bb_ad
 from functools import wraps
@@ -91,6 +91,7 @@ def request_login():
     # 📊 Registo de métricas com data (Histórico Diário)
     hoje = datetime.utcnow().strftime('%Y-%m-%d')
     redis_client.incr(f'metrics:logins_solicitados:{hoje}')
+    redis_client.hincrby(f'metrics:sector_logins:{hoje}', setor_nome, 1)
     
     db = SessionLocal()
     try:
@@ -106,6 +107,7 @@ def request_login():
         if account.cookie_payload and account.last_login_at:
             if (datetime.utcnow() - account.last_login_at).total_seconds() / 60 < 20:
                 redis_client.incr(f'metrics:cookies_injetados:{hoje}')
+                redis_client.hincrby(f'metrics:account_logins:{hoje}', str(account.login), 1)
                 return jsonify({
                     "status": "sucesso", "setor": setor_nome,
                     "cookies": json.loads(account.cookie_payload),
@@ -115,7 +117,9 @@ def request_login():
         redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Iniciando robô...", "concluido": False}))
         task_payload = json.dumps({"id": account.id, "setor": setor_nome, "user_agent": user_agent})
         redis_client.lpush("queue:login_requests", task_payload)
+        
         redis_client.incr(f'metrics:robos_executados:{hoje}')
+        redis_client.hincrby(f'metrics:account_logins:{hoje}', str(account.login), 1)
         
         return jsonify({"status": "queued", "setor": setor_nome})
     except Exception as e:
@@ -142,9 +146,12 @@ def renew_session():
     try:
         account = buscar_conta_para_setor(db, setor_nome)
         if account:
+            redis_client.hincrby(f'metrics:sector_logins:{hoje}', setor_nome, 1)
+            
             if account.cookie_payload and account.last_login_at:
                 if (datetime.utcnow() - account.last_login_at).total_seconds() / 60 < 15:
                     redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Sessão quente retornada do Pool.", "concluido": True, "erro": False}))
+                    redis_client.hincrby(f'metrics:account_logins:{hoje}', str(account.login), 1)
                     return jsonify({"status": "queued"})
             
             status_str = redis_client.get(f"status:{setor_nome}")
@@ -156,7 +163,9 @@ def renew_session():
             redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Renovação de Marcapasso...", "concluido": False, "erro": False}))
             task_payload = json.dumps({"id": account.id, "setor": setor_nome, "user_agent": user_agent})
             redis_client.lpush("queue:login_requests", task_payload)
+            
             redis_client.incr(f'metrics:robos_executados:{hoje}')
+            redis_client.hincrby(f'metrics:account_logins:{hoje}', str(account.login), 1)
             return jsonify({"status": "queued"})
     finally:
         db.close()
@@ -224,6 +233,59 @@ def admin_dashboard_stats():
         })
     finally:
         db.close()
+
+# 📈 ROTA DE ANALYTICS (NOVA TELA)
+@app.route('/api/admin/analytics', methods=['GET'])
+@admin_required
+def admin_analytics():
+    start_str = request.args.get('start', datetime.utcnow().strftime('%Y-%m-%d'))
+    end_str = request.args.get('end', datetime.utcnow().strftime('%Y-%m-%d'))
+    
+    try:
+        start_date = datetime.strptime(start_str, '%Y-%m-%d')
+        end_date = datetime.strptime(end_str, '%Y-%m-%d')
+    except ValueError:
+        return jsonify({"erro": "Formato de data inválido. Use YYYY-MM-DD"}), 400
+
+    total_logins = 0
+    total_cookies = 0
+    sector_stats = {}
+    account_stats = {}
+    
+    current_date = start_date
+    while current_date <= end_date:
+        day_str = current_date.strftime('%Y-%m-%d')
+        
+        # Totais gerais
+        total_logins += int(redis_client.get(f'metrics:logins_solicitados:{day_str}') or 0)
+        total_cookies += int(redis_client.get(f'metrics:cookies_injetados:{day_str}') or 0)
+        
+        # Consolida setores
+        sectors = redis_client.hgetall(f'metrics:sector_logins:{day_str}')
+        for sec, count in sectors.items():
+            sector_stats[sec] = sector_stats.get(sec, 0) + int(count)
+            
+        # Consolida contas
+        accounts = redis_client.hgetall(f'metrics:account_logins:{day_str}')
+        for acc, count in accounts.items():
+            account_stats[acc] = account_stats.get(acc, 0) + int(count)
+            
+        current_date += timedelta(days=1)
+
+    # Ordena para o Top
+    sorted_sectors = [{"name": k, "count": v} for k, v in sorted(sector_stats.items(), key=lambda x: x[1], reverse=True)]
+    sorted_accounts = [{"name": k, "count": v} for k, v in sorted(account_stats.items(), key=lambda x: x[1], reverse=True)]
+
+    economia_pct = round((total_cookies / total_logins) * 100, 1) if total_logins > 0 else 0
+
+    return jsonify({
+        "period": f"{start_str} a {end_str}",
+        "total_logins": total_logins,
+        "total_cookies": total_cookies,
+        "economia_pct": economia_pct,
+        "sectors": sorted_sectors,
+        "accounts": sorted_accounts
+    })
 
 @app.route('/api/admin/accounts', methods=['GET', 'POST'])
 @admin_required
@@ -310,6 +372,7 @@ def editar_conta(account_id):
             if 'status' in data:
                 acc.status = data['status']
             
+            # LÓGICA DO MODIFICADO EM (Híbrido)
             if mudou_status:
                 # 1. Se mudou o status: Usa a data retroativa enviada ou, se vazio, a data de HOJE
                 if data.get('status_updated_at'):
