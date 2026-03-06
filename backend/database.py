@@ -33,7 +33,7 @@ class AccountBB(Base):
     
     # Controle de Validade (Planilha do Google)
     data_validade = Column(String, nullable=True) 
-    status_updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow) 
+    status_updated_at = Column(DateTime, default=datetime.utcnow) 
     
     # Dados de Sessão
     cookie_payload = Column(String, nullable=True)

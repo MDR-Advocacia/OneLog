@@ -87,7 +87,10 @@ def request_login():
     if ad_result['status'] == 'erro': return jsonify(ad_result), 401
 
     setor_nome = ad_result['setor']
-    redis_client.incr('metrics:logins_solicitados')
+    
+    # 📊 Registo de métricas com data (Histórico Diário)
+    hoje = datetime.utcnow().strftime('%Y-%m-%d')
+    redis_client.incr(f'metrics:logins_solicitados:{hoje}')
     
     db = SessionLocal()
     try:
@@ -102,7 +105,7 @@ def request_login():
 
         if account.cookie_payload and account.last_login_at:
             if (datetime.utcnow() - account.last_login_at).total_seconds() / 60 < 20:
-                redis_client.incr('metrics:cookies_injetados')
+                redis_client.incr(f'metrics:cookies_injetados:{hoje}')
                 return jsonify({
                     "status": "sucesso", "setor": setor_nome,
                     "cookies": json.loads(account.cookie_payload),
@@ -112,7 +115,7 @@ def request_login():
         redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Iniciando robô...", "concluido": False}))
         task_payload = json.dumps({"id": account.id, "setor": setor_nome, "user_agent": user_agent})
         redis_client.lpush("queue:login_requests", task_payload)
-        redis_client.incr('metrics:robos_executados')
+        redis_client.incr(f'metrics:robos_executados:{hoje}')
         
         return jsonify({"status": "queued", "setor": setor_nome})
     except Exception as e:
@@ -135,6 +138,7 @@ def renew_session():
             return jsonify({"status": "unauthorized", "mensagem": "Credenciais inválidas."}), 401
 
     db = SessionLocal()
+    hoje = datetime.utcnow().strftime('%Y-%m-%d')
     try:
         account = buscar_conta_para_setor(db, setor_nome)
         if account:
@@ -152,7 +156,7 @@ def renew_session():
             redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Renovação de Marcapasso...", "concluido": False, "erro": False}))
             task_payload = json.dumps({"id": account.id, "setor": setor_nome, "user_agent": user_agent})
             redis_client.lpush("queue:login_requests", task_payload)
-            redis_client.incr('metrics:robos_executados')
+            redis_client.incr(f'metrics:robos_executados:{hoje}')
             return jsonify({"status": "queued"})
     finally:
         db.close()
@@ -197,13 +201,16 @@ def admin_list_ad_sectors():
 @admin_required
 def admin_dashboard_stats():
     db = SessionLocal()
+    hoje = datetime.utcnow().strftime('%Y-%m-%d')
     try:
         total_accounts = db.query(AccountBB).count()
         active_accounts = db.query(AccountBB).filter(AccountBB.status.in_(['active', 'ativo', 'provisoria_recebida', 'termo_assinado'])).count()
         queue_size = redis_client.llen("queue:login_requests")
-        logins_solicitados = int(redis_client.get('metrics:logins_solicitados') or 0)
-        cookies_injetados = int(redis_client.get('metrics:cookies_injetados') or 0)
-        robos_executados = int(redis_client.get('metrics:robos_executados') or 0)
+        
+        # Puxa as métricas exclusivamente do dia de hoje
+        logins_solicitados = int(redis_client.get(f'metrics:logins_solicitados:{hoje}') or 0)
+        cookies_injetados = int(redis_client.get(f'metrics:cookies_injetados:{hoje}') or 0)
+        robos_executados = int(redis_client.get(f'metrics:robos_executados:{hoje}') or 0)
         economia_pct = round((cookies_injetados / logins_solicitados) * 100, 1) if logins_solicitados > 0 else 0
 
         return jsonify({
@@ -298,9 +305,28 @@ def editar_conta(account_id):
             if 'titular' in data: acc.titular = data['titular']
             if 'data_validade' in data: acc.data_validade = data['data_validade']
             
-            if 'status' in data and acc.status != data['status']:
+            # Identifica se o utilizador mudou de status
+            mudou_status = 'status' in data and acc.status != data['status']
+            if 'status' in data:
                 acc.status = data['status']
-                acc.status_updated_at = datetime.utcnow()
+            
+            if mudou_status:
+                # 1. Se mudou o status: Usa a data retroativa enviada ou, se vazio, a data de HOJE
+                if data.get('status_updated_at'):
+                    try:
+                        acc.status_updated_at = datetime.strptime(data['status_updated_at'], "%Y-%m-%d")
+                    except ValueError:
+                        acc.status_updated_at = datetime.utcnow()
+                else:
+                    acc.status_updated_at = datetime.utcnow()
+            else:
+                # 2. Se NÃO mudou o status: Só altera a data se o utilizador enviou uma específica (correção manual de histórico)
+                if data.get('status_updated_at'):
+                    try:
+                        nova_data = datetime.strptime(data['status_updated_at'], "%Y-%m-%d")
+                        acc.status_updated_at = nova_data
+                    except ValueError:
+                        pass
                 
             if 'setores' in data:
                 setores_lista = data['setores']
