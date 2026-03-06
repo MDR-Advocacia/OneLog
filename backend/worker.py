@@ -48,7 +48,6 @@ def processar_login(account_id, setor_solicitado, thread_id, client_ua=None):
         usuario, senha = account.login, account.senha
         
         # 🦎 O CAMALEÃO: Adota o User-Agent exato do cliente (Mac, Win, etc) 
-        # Se por algum motivo falhar, tem o Windows de fallback
         ua_to_use = client_ua if client_ua else "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         
         update_status(setor, "Iniciando robô camaleão...")
@@ -57,7 +56,6 @@ def processar_login(account_id, setor_solicitado, thread_id, client_ua=None):
         for tentativa in range(1, max_tentativas_gerais + 1):
             logger.info(f"[ROBÔ {thread_id}] === TENTATIVA {tentativa}/{max_tentativas_gerais} PARA {setor} ===")
             
-            # Injeta o 'agent=ua_to_use' na inicialização do Chrome
             with SB(uc=True, test=True, headless=False, xvfb=True, proxy="socks5://206.42.43.192:45123", agent=ua_to_use) as sb:
                 try:
                     update_status(setor, f"Abrindo navegador (Tentativa {tentativa}/{max_tentativas_gerais})...")
@@ -119,7 +117,7 @@ def processar_login(account_id, setor_solicitado, thread_id, client_ua=None):
                     if logged_in:
                         cookies = sb.driver.get_cookies()
                         
-                        # 🚨 A NOVA LISTA NEGRA TURBINADA 🚨
+                        # 🚨 A LISTA NEGRA FICA AQUI NO SERVIDOR AGORA 🚨
                         COOKIES_BLOQUEADOS = ["PD-S-SESSION-ID", "JSESSIONID", "cf_clearance", "__cf_bm"]
                         
                         cookies_limpos = []
@@ -128,7 +126,7 @@ def processar_login(account_id, setor_solicitado, thread_id, client_ua=None):
                             
                             # Filtra os cookies atrelados a IP e Balanceadores
                             if nome_cookie in COOKIES_BLOQUEADOS or nome_cookie.startswith('TS01') or 'BIGipServer' in nome_cookie:
-                                logger.info(f"[ROBÔ {thread_id}] Filtro Ativado: Descartando cookie tóxico/IP -> {nome_cookie}")
+                                logger.info(f"[ROBÔ {thread_id}] Filtro Ativado: Destruindo cookie tóxico/IP -> {nome_cookie}")
                                 continue
                                 
                             cookies_limpos.append(cookie)
@@ -160,17 +158,15 @@ def worker_loop(thread_id):
     """O loop infinito que cada robô executará de forma independente"""
     logger.info(f"[ROBÔ {thread_id}] Em posição e aguardando missões...")
     
-    # Cada thread precisa da sua própria conexão com o banco fechada e aberta
     while True:
         try:
-            # O redis blpop é atômico e thread-safe. Se 3 robôs pedem, só 1 pega a tarefa.
             _, task_data_str = redis_client.brpop("queue:login_requests")
             
             try:
                 task_data = json.loads(task_data_str)
                 account_id = task_data['id']
                 setor = task_data['setor']
-                client_ua = task_data.get('user_agent') # <--- Capturando o UA vindo da API!
+                client_ua = task_data.get('user_agent') 
             except Exception:
                 account_id = task_data_str
                 setor = "GERAL"
@@ -192,13 +188,11 @@ if __name__ == "__main__":
     
     logger.info(f"🚀 Iniciando a Frota OneLog com {MAX_WORKERS} Robôs em paralelo...")
     
-    # Inicia as Threads (Os clones do robô)
     threads = []
     for i in range(MAX_WORKERS):
         t = threading.Thread(target=worker_loop, args=(i + 1,), daemon=True)
         t.start()
         threads.append(t)
         
-    # Mantém o processo principal rodando para as threads não morrerem
     for t in threads:
         t.join()

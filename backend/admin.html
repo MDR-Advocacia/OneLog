@@ -7,9 +7,9 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
-        /* Scroll customizado para a caixa de setores */
         .custom-scroll::-webkit-scrollbar { width: 6px; }
         .custom-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        th.sortable:hover { background-color: #e2e8f0; cursor: pointer; }
     </style>
 </head>
 <body class="bg-gray-50 min-h-screen font-sans text-gray-800">
@@ -24,7 +24,7 @@
 
     <main class="container mx-auto p-6 mt-4">
         
-        <!-- Tela Login Admin -->
+        <!-- SESSÃO DE LOGIN -->
         <div id="auth-section" class="bg-white p-8 rounded-xl shadow-sm border border-gray-100 max-w-md mx-auto mt-10 text-center">
             <div class="w-16 h-16 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-4 text-2xl">
                 <i class="fas fa-lock"></i>
@@ -34,10 +34,14 @@
             <button onclick="loadDashboard()" class="bg-blue-600 text-white px-4 py-3 rounded w-full font-bold hover:bg-blue-700 transition">Desbloquear Painel</button>
         </div>
 
-        <!-- Dashboard Completo -->
+        <!-- SESSÃO DO DASHBOARD -->
         <div id="dashboard-section" style="display:none;">
             
-            <!-- KPIs -->
+            <div class="mb-4">
+                <h2 class="text-xl font-bold text-gray-800"><i class="fas fa-chart-line mr-2 text-blue-500"></i>Métricas de Hoje</h2>
+                <p class="text-sm text-gray-500">O histórico completo será disponibilizado na nova tela de Analytics em breve.</p>
+            </div>
+
             <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
                 <div class="bg-white p-6 rounded-xl shadow-sm border-l-4 border-l-blue-500">
                     <h3 class="text-gray-500 text-xs font-bold uppercase">Acessos Solicitados</h3>
@@ -60,24 +64,40 @@
                 </div>
             </div>
 
-            <!-- Header da Tabela -->
-            <div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
+            <div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-4 gap-4">
                 <h2 class="text-2xl font-bold text-gray-800"><i class="fas fa-users-cog mr-2 text-gray-400"></i>Pool de Contas BB</h2>
                 <button onclick="openModal()" class="bg-blue-600 text-white px-5 py-2.5 rounded-lg font-bold hover:bg-blue-700 shadow transition flex items-center">
                     <i class="fas fa-user-plus mr-2"></i> Nova Conta BB
                 </button>
             </div>
+
+            <!-- BARRA DE PESQUISA E FILTROS -->
+            <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-200 mb-4 flex flex-col md:flex-row gap-4">
+                <div class="flex-1 relative">
+                    <i class="fas fa-search absolute left-3 top-3 text-gray-400"></i>
+                    <input type="text" id="search-input" placeholder="Pesquisar matrícula, nome..." class="w-full pl-10 p-2 border rounded outline-none focus:border-blue-500" onkeyup="renderTable()">
+                </div>
+                <div class="w-full md:w-56">
+                    <select id="filter-status" class="w-full p-2 border rounded outline-none focus:border-blue-500" onchange="renderTable()">
+                        <option value="">Todos os Status</option>
+                    </select>
+                </div>
+                <div class="w-full md:w-56">
+                    <select id="filter-sector" class="w-full p-2 border rounded outline-none focus:border-blue-500" onchange="renderTable()">
+                        <option value="">Todos os Setores</option>
+                    </select>
+                </div>
+            </div>
             
-            <!-- Tabela Principal -->
             <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                 <div class="overflow-x-auto">
                     <table class="w-full text-left border-collapse min-w-[900px]">
                         <thead class="bg-gray-100 text-gray-600 text-xs uppercase tracking-wider border-b border-gray-200">
                             <tr>
-                                <th class="p-4 font-semibold">Conta (Login)</th>
-                                <th class="p-4 font-semibold">Titular</th>
+                                <th class="p-4 font-semibold sortable transition" onclick="sortTable('login')">Conta (Login) <i class="fas fa-sort ml-1"></i></th>
+                                <th class="p-4 font-semibold sortable transition" onclick="sortTable('titular')">Titular <i class="fas fa-sort ml-1"></i></th>
                                 <th class="p-4 font-semibold">Setores Vinculados</th>
-                                <th class="p-4 font-semibold text-center">Status no Banco / Validade</th>
+                                <th class="p-4 font-semibold sortable transition text-center" onclick="sortTable('status')">Status / Validade <i class="fas fa-sort ml-1"></i></th>
                                 <th class="p-4 font-semibold text-center">Ações</th>
                             </tr>
                         </thead>
@@ -90,7 +110,7 @@
         </div>
     </main>
 
-    <!-- Modal Adicionar / Editar Conta -->
+    <!-- MODAL DE EDIÇÃO / CRIAÇÃO -->
     <div id="account-modal" class="fixed inset-0 bg-black bg-opacity-50 hidden justify-center items-center z-50">
         <div class="bg-white w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
             <div class="bg-blue-50 border-b border-blue-100 p-5 flex justify-between items-center">
@@ -120,21 +140,26 @@
                 <div class="grid grid-cols-2 gap-4 mb-4">
                     <div>
                         <label class="text-xs font-bold text-gray-500 uppercase">Status perante o BB</label>
-                        <select id="modal-status" class="w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500 text-[11px] font-bold uppercase tracking-wide">
-                            <!-- Injetado pelo JS -->
+                        <select id="modal-status" class="w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500 text-sm font-bold tracking-wide" onchange="checkCustomStatus()">
+                            <!-- Opções renderizadas via JS -->
                         </select>
+                        <input type="text" id="modal-status-custom" class="hidden w-full p-2 border rounded mt-2 text-sm outline-none focus:border-blue-500" placeholder="Digite o novo status...">
                     </div>
                     <div>
-                        <label class="text-xs font-bold text-gray-500 uppercase">Vencimento (60 dias)</label>
+                        <label class="text-xs font-bold text-gray-500 uppercase">Vencimento (Opcional)</label>
                         <input type="date" id="modal-validade" class="w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500 text-sm text-gray-700">
                     </div>
                 </div>
 
+                <div class="mb-4">
+                    <label class="text-xs font-bold text-gray-500 uppercase">Modificado em (Data Retroativa)</label>
+                    <input type="date" id="modal-status-updated-at" class="w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500 text-sm text-gray-700">
+                    <p class="text-[10px] text-gray-400 mt-1">Deixe em branco para registrar como HOJE.</p>
+                </div>
+
                 <div class="mb-2">
-                    <label class="text-xs font-bold text-gray-500 uppercase">Setores do AD Autorizados (Múltiplos)</label>
-                    <p class="text-xs text-gray-400 mb-2">Marque os setores que podem usar esta conta para acessar o portal.</p>
+                    <label class="text-xs font-bold text-gray-500 uppercase">Setores do AD Autorizados</label>
                     <div id="modal-sectores-container" class="border rounded-lg p-3 bg-gray-50 max-h-40 overflow-y-auto custom-scroll grid grid-cols-2 gap-2">
-                        <!-- Checkboxes injetados aqui -->
                     </div>
                 </div>
             </div>
@@ -153,22 +178,31 @@
         let autoRefreshInterval;
         let allAdSectors = [];
         let globalAccountsData = [];
+        
+        // Estado de Ordenação
+        let sortCol = 'login';
+        let sortAsc = true;
 
-        // Dicionário Oficial de Status baseado na planilha do escritório
-        const STATUS_CONFIG = {
-            'cadastro_inicial': { label: 'Cadastro Inicial', color: 'bg-teal-100 text-teal-800 border-teal-200' },
-            'solicitado_criacao': { label: 'Solicitado p/ Criação', color: 'bg-purple-200 text-purple-800 border-purple-300' },
-            'provisoria_recebida': { label: 'Provisória Recebida', color: 'bg-gray-200 text-gray-800 border-gray-300' },
-            'termo_enviado': { label: 'Termo Enviado', color: 'bg-blue-200 text-blue-800 border-blue-300' },
-            'termo_assinado': { label: 'Termo Assinado', color: 'bg-green-300 text-green-900 border-green-400' },
-            'pendente_assinatura': { label: 'Pendente Assinatura', color: 'bg-orange-600 text-white border-orange-700' },
-            'ativo': { label: 'Ativo', color: 'bg-green-700 text-white border-green-800' },
-            'problema_tecnico': { label: 'Problema Técnico', color: 'bg-yellow-200 text-yellow-800 border-yellow-300' },
-            'bloqueada': { label: 'Bloqueada', color: 'bg-red-700 text-white border-red-800' },
-            'desbloqueio_solicitado': { label: 'Desbloq. Solicitado', color: 'bg-yellow-400 text-yellow-900 border-yellow-500' },
-            'pedir_cancelamento': { label: 'Pedir Cancelamento', color: 'bg-blue-100 text-blue-800 border-blue-200' },
-            'pedi_cancelamento': { label: 'Pedi Cancelamento', color: 'bg-slate-300 text-slate-800 border-slate-400' }
+        // Suporte a "Enter" no campo de login
+        document.getElementById('admin-token').addEventListener('keypress', function (e) {
+            if (e.key === 'Enter') loadDashboard();
+        });
+
+        // Paleta base de cores para os status
+        const STATUS_COLORS = {
+            'ativo': 'bg-green-700 text-white border-green-800',
+            'bloqueada': 'bg-red-700 text-white border-red-800',
+            'cadastro_inicial': 'bg-teal-100 text-teal-800 border-teal-200',
+            'provisoria_recebida': 'bg-gray-200 text-gray-800 border-gray-300',
+            'termo_assinado': 'bg-green-300 text-green-900 border-green-400'
         };
+
+        function getStatusVisual(status) {
+            let s = status.toLowerCase();
+            let color = STATUS_COLORS[s] || 'bg-blue-50 text-blue-800 border-blue-200'; // Default para customizados
+            let label = status.replace(/_/g, ' ').toUpperCase();
+            return { color, label };
+        }
 
         function logout() {
             currentToken = "";
@@ -204,7 +238,7 @@
             try {
                 const res = await fetch('/api/admin/ad_sectors', { headers: { 'X-Admin-Token': currentToken } });
                 if(res.ok) allAdSectors = await res.json();
-            } catch(e) { console.error("Erro ao puxar OUs do AD"); }
+            } catch(e) {}
         }
 
         async function updateData() {
@@ -220,38 +254,115 @@
 
             const resAcc = await fetch('/api/admin/accounts', { headers: { 'X-Admin-Token': currentToken } });
             globalAccountsData = await resAcc.json();
-            renderTable(globalAccountsData);
+            
+            updateFiltersUI();
+            renderTable();
         }
 
-        function renderTable(accounts) {
+        // Atualiza as opções dos selects baseados nos dados existentes no banco
+        function updateFiltersUI() {
+            const statusSelect = document.getElementById('filter-status');
+            const sectorSelect = document.getElementById('filter-sector');
+            
+            let currentStatus = statusSelect.value;
+            let currentSector = sectorSelect.value;
+
+            let uniqueStatuses = new Set();
+            let uniqueSectors = new Set(allAdSectors); // Puxa do AD também
+
+            globalAccountsData.forEach(acc => {
+                if(acc.status) uniqueStatuses.add(acc.status.toLowerCase());
+                if(acc.setores) acc.setores.forEach(s => uniqueSectors.add(s));
+            });
+
+            // Reconstrói select de Status
+            statusSelect.innerHTML = `<option value="">Todos os Status</option>`;
+            Array.from(uniqueStatuses).sort().forEach(st => {
+                let label = st.replace(/_/g, ' ').toUpperCase();
+                statusSelect.innerHTML += `<option value="${st}">${label}</option>`;
+            });
+            statusSelect.value = currentStatus; // Mantém a escolha
+
+            // Reconstrói select de Setor
+            sectorSelect.innerHTML = `<option value="">Todos os Setores</option>`;
+            Array.from(uniqueSectors).sort().forEach(sec => {
+                sectorSelect.innerHTML += `<option value="${sec}">${sec}</option>`;
+            });
+            sectorSelect.value = currentSector; // Mantém a escolha
+        }
+
+        function sortTable(col) {
+            if (sortCol === col) {
+                sortAsc = !sortAsc; // Inverte ordem
+            } else {
+                sortCol = col;
+                sortAsc = true;
+            }
+            renderTable();
+        }
+
+        function renderTable() {
             const tbody = document.getElementById('accounts-table');
+            const searchQ = document.getElementById('search-input').value.toLowerCase();
+            const filterS = document.getElementById('filter-status').value.toLowerCase();
+            const filterSec = document.getElementById('filter-sector').value;
+
             tbody.innerHTML = "";
             
-            if (accounts.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="5" class="p-8 text-center text-gray-500">Nenhuma conta cadastrada no Pool.</td></tr>`;
+            // 1. Aplicar Filtros
+            let filteredData = globalAccountsData.filter(acc => {
+                let safeStatus = acc.status ? acc.status.toLowerCase() : 'desconhecido';
+                
+                // Filtro Status
+                if (filterS && safeStatus !== filterS) return false;
+                
+                // Filtro Setor
+                if (filterSec && (!acc.setores || !acc.setores.includes(filterSec))) return false;
+
+                // Filtro de Busca (Texto livre)
+                if (searchQ) {
+                    let searchableStr = `${acc.login} ${acc.titular} ${safeStatus} ${(acc.setores || []).join(" ")}`.toLowerCase();
+                    if (!searchableStr.includes(searchQ)) return false;
+                }
+                return true;
+            });
+
+            // 2. Aplicar Ordenação
+            filteredData.sort((a, b) => {
+                let valA = a[sortCol] || '';
+                let valB = b[sortCol] || '';
+                
+                if(sortCol === 'status') { valA = a.status || ''; valB = b.status || ''; }
+
+                if (typeof valA === 'string') valA = valA.toLowerCase();
+                if (typeof valB === 'string') valB = valB.toLowerCase();
+                
+                if (valA < valB) return sortAsc ? -1 : 1;
+                if (valA > valB) return sortAsc ? 1 : -1;
+                return 0;
+            });
+
+            if (filteredData.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="5" class="p-8 text-center text-gray-500">Nenhum resultado encontrado.</td></tr>`;
                 return;
             }
 
-            accounts.forEach(acc => {
-                // Compatibilidade com o status 'active' antigo para 'ativo'
-                let safeStatus = acc.status === 'active' ? 'ativo' : acc.status;
-                let conf = STATUS_CONFIG[safeStatus] || { label: safeStatus || 'Desconhecido', color: 'bg-gray-100 text-gray-800' };
+            // 3. Renderizar Linhas
+            filteredData.forEach(acc => {
+                let safeStatus = acc.status || 'ativo';
+                let visual = getStatusVisual(safeStatus);
                 
-                // Múltiplos Chips para os Setores
                 let chipsHtml = acc.setores && acc.setores.length > 0 
                     ? acc.setores.map(s => `<span class="bg-blue-100 text-blue-800 text-[10px] px-2 py-0.5 rounded border border-blue-200">${s}</span>`).join(" ")
-                    : `<span class="text-gray-400 text-xs italic">Nenhum setor vinculado</span>`;
+                    : `<span class="text-gray-400 text-xs italic">Nenhum setor</span>`;
 
-                // Inteligência de Data e Validade
-                let validadeHtml = `<div class="mt-1.5 text-[10px] text-gray-400 italic">Sem data definida</div>`;
+                let validadeHtml = `<div class="mt-1.5 text-[10px] text-gray-400 italic">Sem data de vencimento</div>`;
                 
-                // Se a conta está "quente" (Ativo, Provisória ou Assinado), verifica a data de validade (60 dias)
-                if (['ativo', 'provisoria_recebida', 'termo_assinado'].includes(safeStatus) && acc.data_validade) {
+                if (['ativo', 'provisoria_recebida', 'termo_assinado'].includes(safeStatus.toLowerCase()) && acc.data_validade) {
                     let parts = acc.data_validade.split('-');
                     let dataVal = new Date(parts[0], parts[1]-1, parts[2]);
                     let hoje = new Date();
                     hoje.setHours(0,0,0,0);
-                    
                     let diffDias = Math.ceil((dataVal - hoje) / (1000 * 60 * 60 * 24));
                     
                     if (diffDias <= 10 && diffDias >= 0) {
@@ -262,10 +373,11 @@
                         validadeHtml = `<div class="mt-1.5 text-[11px] text-green-600 font-bold"><i class="fas fa-check-circle"></i> Válida até ${dataVal.toLocaleDateString('pt-BR')}</div>`;
                     }
                 } 
-                // Se a conta estiver bloqueada ou em transição, mostra a data da última modificação do status
-                else if (acc.status_updated_at) {
+                
+                let modificadoHtml = "";
+                if (acc.status_updated_at) {
                     let d = new Date(acc.status_updated_at);
-                    validadeHtml = `<div class="mt-1.5 text-[10px] text-gray-500 font-medium"><i class="fas fa-history"></i> Modificado em: ${d.toLocaleDateString('pt-BR')}</div>`;
+                    modificadoHtml = `<div class="mt-1 text-[10px] text-gray-500 font-medium"><i class="fas fa-history"></i> Modificado em: ${d.toLocaleDateString('pt-BR')}</div>`;
                 }
 
                 tbody.innerHTML += `
@@ -274,11 +386,15 @@
                         <td class="p-4 font-semibold text-gray-700">${acc.titular || '-'}</td>
                         <td class="p-4 flex flex-wrap gap-1 max-w-[250px]">${chipsHtml}</td>
                         <td class="p-4 text-center">
-                            <div class="${conf.color} border px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider inline-block shadow-sm">${conf.label}</div>
+                            <div class="${visual.color} border px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider inline-block shadow-sm">${visual.label}</div>
                             ${validadeHtml}
+                            ${modificadoHtml}
                         </td>
-                        <td class="p-4 text-center">
-                            <button onclick="openModal(${acc.id})" class="text-blue-500 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 p-2 rounded transition mr-2" title="Configurar Conta">
+                        <td class="p-4 text-center whitespace-nowrap">
+                            <button onclick="clearCookies(${acc.id})" class="text-orange-500 hover:text-orange-700 bg-orange-50 hover:bg-orange-100 p-2 rounded transition mr-1" title="Limpar Cookies da Sessão">
+                                <i class="fas fa-eraser"></i>
+                            </button>
+                            <button onclick="openModal(${acc.id})" class="text-blue-500 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 p-2 rounded transition mr-1" title="Configurar Conta">
                                 <i class="fas fa-cog"></i>
                             </button>
                             <button onclick="deleteAccount(${acc.id})" class="text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 p-2 rounded transition" title="Excluir Conta">
@@ -306,22 +422,43 @@
             });
         }
 
-        function populateStatusDropdown() {
+        function populateModalStatus(currentStatus = "ativo") {
             const select = document.getElementById('modal-status');
+            const customInput = document.getElementById('modal-status-custom');
+            customInput.classList.add('hidden');
+            customInput.value = "";
+            
+            let uniqueStatuses = new Set(['ativo', 'bloqueada', 'cadastro_inicial']);
+            globalAccountsData.forEach(acc => { if(acc.status) uniqueStatuses.add(acc.status.toLowerCase()); });
+            
+            // Força o status atual a estar na lista
+            if(currentStatus) uniqueStatuses.add(currentStatus.toLowerCase());
+
             select.innerHTML = "";
-            for (const [key, val] of Object.entries(STATUS_CONFIG)) {
-                select.innerHTML += `<option value="${key}">${val.label}</option>`;
+            uniqueStatuses.forEach(st => {
+                let label = st.replace(/_/g, ' ').toUpperCase();
+                let isSel = (st === currentStatus.toLowerCase()) ? "selected" : "";
+                select.innerHTML += `<option value="${st}" ${isSel}>${label}</option>`;
+            });
+            select.innerHTML += `<option value="_custom_">+ Outro (Personalizado)...</option>`;
+        }
+
+        function checkCustomStatus() {
+            const select = document.getElementById('modal-status');
+            const customInput = document.getElementById('modal-status-custom');
+            if (select.value === "_custom_") {
+                customInput.classList.remove('hidden');
+                customInput.focus();
+            } else {
+                customInput.classList.add('hidden');
             }
         }
 
         function openModal(accountId = null) {
             document.getElementById('account-modal').classList.remove('hidden');
             document.getElementById('account-modal').classList.add('flex');
-            
-            populateStatusDropdown();
 
             if (accountId) {
-                // Modo Edição
                 document.getElementById('modal-title').innerText = "Configurar Conta BB";
                 const acc = globalAccountsData.find(a => a.id === accountId);
                 
@@ -331,23 +468,29 @@
                 document.getElementById('modal-titular').value = acc.titular === "Não informado" ? "" : acc.titular;
                 document.getElementById('modal-senha').value = "";
                 
-                let safeStatus = acc.status === 'active' ? 'ativo' : acc.status;
-                document.getElementById('modal-status').value = safeStatus;
+                populateModalStatus(acc.status);
                 
-                // Preenche a data se houver
                 document.getElementById('modal-validade').value = acc.data_validade || "";
+                
+                // Formata a data ISO para o input type="date" (YYYY-MM-DD) se existir
+                let dateStr = "";
+                if(acc.status_updated_at) {
+                    dateStr = acc.status_updated_at.split('T')[0];
+                }
+                document.getElementById('modal-status-updated-at').value = dateStr;
                 
                 populateSectorCheckboxes(acc.setores || []);
             } else {
-                // Modo Criação
                 document.getElementById('modal-title').innerText = "Adicionar Nova Conta";
                 document.getElementById('modal-account-id').value = "";
                 document.getElementById('modal-login').value = "";
                 document.getElementById('modal-login').disabled = false;
                 document.getElementById('modal-titular').value = "";
                 document.getElementById('modal-senha').value = "";
-                document.getElementById('modal-status').value = "cadastro_inicial";
                 document.getElementById('modal-validade').value = "";
+                document.getElementById('modal-status-updated-at').value = "";
+                
+                populateModalStatus("cadastro_inicial");
                 populateSectorCheckboxes([]);
             }
         }
@@ -359,20 +502,27 @@
 
         async function saveAccount() {
             const accountId = document.getElementById('modal-account-id').value;
-            const login = document.getElementById('modal-login').value;
+            const login = document.getElementById('modal-login').value.toUpperCase();
             const titular = document.getElementById('modal-titular').value;
             const senha = document.getElementById('modal-senha').value;
-            const status = document.getElementById('modal-status').value;
             const data_validade = document.getElementById('modal-validade').value;
+            const status_updated_at = document.getElementById('modal-status-updated-at').value; // Nova data manual
             
-            // Coleta os setores marcados
+            // Lógica de Status Customizado
+            const selectStatus = document.getElementById('modal-status').value;
+            let status = selectStatus;
+            if(selectStatus === "_custom_") {
+                status = document.getElementById('modal-status-custom').value.trim().toLowerCase().replace(/ /g, '_');
+                if(!status) return alert("Digite o nome do status personalizado.");
+            }
+
             const checkedBoxes = document.querySelectorAll('.sector-checkbox:checked');
             const setores = Array.from(checkedBoxes).map(cb => cb.value);
 
             if (!login) return alert("O Login é obrigatório.");
             if (!accountId && !senha) return alert("A senha é obrigatória para contas novas.");
 
-            const payload = { login, titular, status, setores, data_validade };
+            const payload = { login, titular, status, setores, data_validade, status_updated_at };
             if (senha) payload.senha = senha;
 
             const url = accountId ? `/api/admin/accounts/${accountId}` : `/api/admin/accounts`;
@@ -402,6 +552,15 @@
             try {
                 const res = await fetch(`/api/admin/accounts/${accountId}`, { method: 'DELETE', headers: { 'X-Admin-Token': currentToken }});
                 if(res.ok) updateData();
+            } catch(e) {}
+        }
+        
+        async function clearCookies(accountId) {
+            if(!confirm("Deseja expurgar a sessão (cookies) desta conta no banco de dados? Isso fará o robô acordar do zero no próximo acesso.")) return;
+            try {
+                const res = await fetch(`/api/admin/accounts/${accountId}/clear`, { method: 'POST', headers: { 'X-Admin-Token': currentToken }});
+                if(res.ok) updateData();
+                else alert("Erro ao limpar cookies no banco.");
             } catch(e) {}
         }
     </script>

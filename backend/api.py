@@ -39,12 +39,10 @@ def inicializar_sistema():
     return None
 
 def buscar_conta_para_setor(db, setor_nome):
-    """Lógica inteligente que busca a conta vinculada ao setor (nova arquitetura Múltiplos Setores ou Fallback antigo)"""
     account = db.query(AccountBB).filter(
         AccountBB.status.in_(['active', 'ativo', 'provisoria_recebida', 'termo_assinado']),
         AccountBB.setores.like(f"%|{setor_nome}|%")
     ).order_by(AccountBB.id.asc()).first()
-    
     if account: return account
     
     sector = db.query(Sector).filter(Sector.nome == setor_nome).first()
@@ -53,7 +51,6 @@ def buscar_conta_para_setor(db, setor_nome):
             AccountBB.sector_id == sector.id, 
             AccountBB.status.in_(['active', 'ativo', 'provisoria_recebida', 'termo_assinado'])
         ).order_by(AccountBB.id.asc()).first()
-    
     return None
 
 # --- ROTAS DE PÁGINAS WEB ---
@@ -81,6 +78,7 @@ def get_status():
 def request_login():
     data = request.get_json(silent=True) or {}
     username, password = data.get('username'), data.get('password')
+    user_agent = data.get('user_agent')
     
     if not username or not password:
         return jsonify({"status": "erro", "mensagem": "Usuário e senha são obrigatórios."}), 400
@@ -112,11 +110,8 @@ def request_login():
                 })
         
         redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Iniciando robô...", "concluido": False}))
-        
-        # CORREÇÃO: Enviando um JSON para a fila contendo a conta e o setor exato que pediu
-        task_payload = json.dumps({"id": account.id, "setor": setor_nome})
+        task_payload = json.dumps({"id": account.id, "setor": setor_nome, "user_agent": user_agent})
         redis_client.lpush("queue:login_requests", task_payload)
-        
         redis_client.incr('metrics:robos_executados')
         
         return jsonify({"status": "queued", "setor": setor_nome})
@@ -130,6 +125,7 @@ def renew_session():
     data = request.get_json(silent=True) or {}
     username, password = data.get('username'), data.get('password')
     setor_nome = data.get('setor') or request.args.get('setor')
+    user_agent = data.get('user_agent')
 
     if not setor_nome: return jsonify({"status": "erro", "mensagem": "Setor ausente."}), 400
 
@@ -154,11 +150,8 @@ def renew_session():
                     return jsonify({"status": "queued", "mensagem": "Robô já em execução."})
 
             redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Renovação de Marcapasso...", "concluido": False, "erro": False}))
-            
-            # CORREÇÃO: Enviando um JSON para a fila contendo a conta e o setor exato que pediu
-            task_payload = json.dumps({"id": account.id, "setor": setor_nome})
+            task_payload = json.dumps({"id": account.id, "setor": setor_nome, "user_agent": user_agent})
             redis_client.lpush("queue:login_requests", task_payload)
-            
             redis_client.incr('metrics:robos_executados')
             return jsonify({"status": "queued"})
     finally:
@@ -263,8 +256,16 @@ def gerenciar_contas():
             account.senha = data['senha']
             account.titular = data.get('titular', '')
             account.status = data.get('status', 'cadastro_inicial')
-            account.status_updated_at = datetime.utcnow()
             account.data_validade = data.get('data_validade', '')
+            
+            # Lógica da data retroativa na criação
+            if data.get('status_updated_at'):
+                try:
+                    account.status_updated_at = datetime.strptime(data['status_updated_at'], "%Y-%m-%d")
+                except ValueError:
+                    account.status_updated_at = datetime.utcnow()
+            else:
+                account.status_updated_at = datetime.utcnow() # Data de hoje (padrão)
             
             setores_lista = data.get('setores', [])
             account.setores = "|" + "|".join(setores_lista) + "|" if setores_lista else ""
@@ -307,6 +308,27 @@ def editar_conta(account_id):
             
             db.commit()
             return jsonify({"mensagem": "Conta atualizada com sucesso!"})
+    except Exception as e:
+        db.rollback()
+        return jsonify({"erro": str(e)}), 500
+    finally:
+        db.close()
+
+# 🧹 ROTA DA BORRACHA DE COOKIES
+@app.route('/api/admin/accounts/<int:account_id>/clear', methods=['POST'])
+@admin_required
+def clear_account_cookies(account_id):
+    db = SessionLocal()
+    try:
+        acc = db.query(AccountBB).filter(AccountBB.id == account_id).first()
+        if not acc: return jsonify({"erro": "Conta não encontrada."}), 404
+        
+        # Anula os cookies e o timestamp de login
+        acc.cookie_payload = None
+        acc.last_login_at = None
+        
+        db.commit()
+        return jsonify({"mensagem": "Sessão purgada com sucesso!"})
     except Exception as e:
         db.rollback()
         return jsonify({"erro": str(e)}), 500
