@@ -32,13 +32,15 @@ def snapshot(sb, setor, nome_arquivo):
     logger.info(f"📸 Snapshot gerado: {img_url}")
     return img_url
 
-def processar_login(account_id):
+def processar_login(account_id, setor_solicitado):
     db = SessionLocal()
     try:
         account = db.query(AccountBB).filter(AccountBB.id == int(account_id)).first()
-        if not account or not account.sector: return
+        if not account: return
 
-        setor = account.sector.nome
+        # Agora o worker usa o setor exato que solicitou a execução, 
+        # permitindo que a mesma conta sirva múltiplos setores!
+        setor = setor_solicitado
         usuario, senha = account.login, account.senha
         
         update_status(setor, "Iniciando robô...")
@@ -52,11 +54,10 @@ def processar_login(account_id):
                     update_status(setor, f"Abrindo navegador (Tentativa {tentativa}/{max_tentativas_gerais})...")
                     sb.open('https://loginweb.bb.com.br/sso/XUI/?realm=/paj&goto=https://juridico.bb.com.br/wfj#login')
                     
-                    # A MÁGICA: Limpa a sujeira do Cloudflare antes de começar a agir
                     logger.info("Executando faxina de cookies e cache (Esterilização da sessão)...")
                     sb.delete_all_cookies()
                     sb.execute_script("window.localStorage.clear(); window.sessionStorage.clear();")
-                    sb.refresh() # Recarrega a página com a reputação zerada
+                    sb.refresh() 
                     sb.sleep(4)
                     
                     img = snapshot(sb, setor, f"01_inicio_T{tentativa}")
@@ -72,8 +73,6 @@ def processar_login(account_id):
                     
                     captcha_container = "div.cf-turnstile"
                     
-                    # Se o Captcha aparecer, clicamos APENAS UMA VEZ.
-                    # Se falhar, é melhor fechar o navegador todo do que clicar de novo e piorar o shadowban.
                     if sb.is_element_visible(captcha_container):
                         update_status(setor, "Cloudflare detectado. Clique único e decisivo...", imagem=img)
                         sb.sleep(2)
@@ -87,7 +86,6 @@ def processar_login(account_id):
                     
                     update_status(setor, "Aguardando campo de senha...", imagem=img)
                     
-                    # Dá 35 segundos. Se a senha não aparecer, o Try/Except estoura, fecha o Chrome e tenta do zero.
                     sb.wait_for_element("#idToken3", timeout=35)
                     logger.info(">>> SUCESSO! Campo de senha apareceu!")
                     
@@ -112,28 +110,24 @@ def processar_login(account_id):
                     if logged_in:
                         cookies = sb.driver.get_cookies()
                         
-                        # --- O SEU FILTRO ANTIGO (A RESTAURAÇÃO DO CONTINUE) ---
+                        # --- FILTRO ANTIGO RESTAURADO ---
                         cookies_limpos = []
                         for cookie in cookies:
                             nome_cookie = cookie['name']
-                            # AQUI ESTÃO OS VILÕES: TS01 e BIGipServer costumam matar a sessão
                             if nome_cookie.startswith('TS01') or 'BIGipServer' in nome_cookie or nome_cookie == 'PD-S-SESSION-ID':
                                 logger.info(f"Filtro Ativado: Descartando o cookie malicioso -> {nome_cookie}")
                                 continue
-                            
                             cookies_limpos.append(cookie)
                             
                         try: real_ua = sb.execute_script("return navigator.userAgent;")
                         except: real_ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
                         
-                        # Salva apenas a lista filtrada
                         account.cookie_payload = json.dumps(cookies_limpos)
-                        # SOLUÇÃO FUSO HORÁRIO: Sempre salva em UTC absoluto
                         account.last_login_at = datetime.utcnow()
                         account.user_agent_used = real_ua
                         db.commit()
                         update_status(setor, "Acesso concedido e salvo no Pool!", concluido=True, imagem=img)
-                        return # SUCESSO!
+                        return 
                     else:
                         raise Exception("Timeout ao aguardar o portal jurídico carregar após a senha.")
                         
@@ -159,9 +153,22 @@ if __name__ == "__main__":
     logger.info("Worker Enterprise iniciado. Aguardando missão...")
     while True:
         try:
-            _, account_id = redis_client.brpop("queue:login_requests")
-            logger.info(f"Nova tarefa recebida! Processando Conta ID: {account_id}")
-            processar_login(account_id)
+            # Lendo a tarefa da fila
+            _, task_data_str = redis_client.brpop("queue:login_requests")
+            
+            # Desempacotando o JSON que a API mandou
+            try:
+                task_data = json.loads(task_data_str)
+                account_id = task_data['id']
+                setor = task_data['setor']
+            except Exception:
+                # Fallback caso tenha sobrado algum ID solto antigo no Redis
+                account_id = task_data_str
+                setor = "GERAL"
+
+            logger.info(f"Nova tarefa recebida! Processando Conta ID: {account_id} para o Setor: {setor}")
+            processar_login(account_id, setor)
+            
         except Exception as e:
             logger.error(f"Erro no loop principal: {e}")
             time.sleep(5)

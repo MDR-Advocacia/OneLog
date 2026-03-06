@@ -38,10 +38,8 @@ def inicializar_sistema():
             time.sleep(5)
     return None
 
-# 👇 ESTA É A FUNÇÃO QUE TINHA SIDO ENGOLIDA! 👇
 def buscar_conta_para_setor(db, setor_nome):
     """Lógica inteligente que busca a conta vinculada ao setor (nova arquitetura Múltiplos Setores ou Fallback antigo)"""
-    # 1. Tenta buscar pela nova estrutura de múltiplos setores (Ex: "|BB_Acordos|BB_Civel|")
     account = db.query(AccountBB).filter(
         AccountBB.status.in_(['active', 'ativo', 'provisoria_recebida', 'termo_assinado']),
         AccountBB.setores.like(f"%|{setor_nome}|%")
@@ -49,7 +47,6 @@ def buscar_conta_para_setor(db, setor_nome):
     
     if account: return account
     
-    # 2. Fallback de transição (Se for uma conta cadastrada no modelo antigo)
     sector = db.query(Sector).filter(Sector.nome == setor_nome).first()
     if sector:
         return db.query(AccountBB).filter(
@@ -115,7 +112,11 @@ def request_login():
                 })
         
         redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Iniciando robô...", "concluido": False}))
-        redis_client.lpush("queue:login_requests", account.id)
+        
+        # CORREÇÃO: Enviando um JSON para a fila contendo a conta e o setor exato que pediu
+        task_payload = json.dumps({"id": account.id, "setor": setor_nome})
+        redis_client.lpush("queue:login_requests", task_payload)
+        
         redis_client.incr('metrics:robos_executados')
         
         return jsonify({"status": "queued", "setor": setor_nome})
@@ -153,7 +154,11 @@ def renew_session():
                     return jsonify({"status": "queued", "mensagem": "Robô já em execução."})
 
             redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Renovação de Marcapasso...", "concluido": False, "erro": False}))
-            redis_client.lpush("queue:login_requests", account.id)
+            
+            # CORREÇÃO: Enviando um JSON para a fila contendo a conta e o setor exato que pediu
+            task_payload = json.dumps({"id": account.id, "setor": setor_nome})
+            redis_client.lpush("queue:login_requests", task_payload)
+            
             redis_client.incr('metrics:robos_executados')
             return jsonify({"status": "queued"})
     finally:
