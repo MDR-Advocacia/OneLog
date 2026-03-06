@@ -163,8 +163,19 @@ async function finalizeLogin(cookies, setor, isBackground = false) {
     await limparCookiesAntigos();
     
     updateState(true, "Injetando blindagem...");
+    
+    // 🚨 FILTRO DE COOKIES (LISTA NEGRA) 🚨
+    const COOKIES_BLOQUEADOS = ["PD-S-SESSION-ID"]; 
+
     const cookiePromises = cookies.map(cookie => {
         return new Promise((resolve) => {
+            // O Filtro Mágico que salva a sessão:
+            if (COOKIES_BLOQUEADOS.includes(cookie.name) || cookie.name.startsWith("TS01") || cookie.name.includes("BIGipServer")) {
+                console.log(`🛡️ Filtro Ativado: Bloqueando injeção do cookie tóxico -> ${cookie.name}`);
+                resolve(); // Termina a promessa sem injetar
+                return; 
+            }
+
             let cleanDomain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
             chrome.cookies.set({ 
                 url: "https://" + cleanDomain + cookie.path, 

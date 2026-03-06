@@ -2,11 +2,13 @@ import redis
 import json
 import os
 import time
+import threading
 from datetime import datetime
 from seleniumbase import SB
 import logging
 from database import SessionLocal, AccountBB
 
+# Configuração de Logs
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - WORKER - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -15,6 +17,9 @@ BASE_URL = "https://api-onelog.mdradvocacia.com"
 
 # MODO TURBO
 DEBUG_MODE = os.getenv("DEBUG_MODE", "False").lower() == "true"
+
+# Define quantos robôs vão rodar ao mesmo tempo (Padrão: 3)
+MAX_WORKERS = int(os.getenv("MAX_WORKERS", "3"))
 
 def update_status(setor, msg, concluido=False, erro=False, imagem=None):
     status = {"mensagem": msg, "concluido": concluido, "erro": erro, "imagem": imagem}
@@ -32,14 +37,13 @@ def snapshot(sb, setor, nome_arquivo):
     logger.info(f"📸 Snapshot gerado: {img_url}")
     return img_url
 
-def processar_login(account_id, setor_solicitado):
+def processar_login(account_id, setor_solicitado, thread_id):
+    """Função isolada para garantir que o banco de dados seja seguro por thread"""
     db = SessionLocal()
     try:
         account = db.query(AccountBB).filter(AccountBB.id == int(account_id)).first()
         if not account: return
 
-        # Agora o worker usa o setor exato que solicitou a execução, 
-        # permitindo que a mesma conta sirva múltiplos setores!
         setor = setor_solicitado
         usuario, senha = account.login, account.senha
         
@@ -47,14 +51,15 @@ def processar_login(account_id, setor_solicitado):
         max_tentativas_gerais = 3
         
         for tentativa in range(1, max_tentativas_gerais + 1):
-            logger.info(f"=== INICIANDO TENTATIVA {tentativa}/{max_tentativas_gerais} PARA {setor} ===")
+            logger.info(f"[ROBÔ {thread_id}] === TENTATIVA {tentativa}/{max_tentativas_gerais} PARA {setor} ===")
             
+            # O xvfb=True gera um display virtual aleatório, permitindo múltiplos Chromes sem conflito
             with SB(uc=True, test=True, headless=False, xvfb=True, proxy="socks5://206.42.43.192:45123") as sb:
                 try:
                     update_status(setor, f"Abrindo navegador (Tentativa {tentativa}/{max_tentativas_gerais})...")
                     sb.open('https://loginweb.bb.com.br/sso/XUI/?realm=/paj&goto=https://juridico.bb.com.br/wfj#login')
                     
-                    logger.info("Executando faxina de cookies e cache (Esterilização da sessão)...")
+                    logger.info(f"[ROBÔ {thread_id}] Executando faxina de cookies e cache...")
                     sb.delete_all_cookies()
                     sb.execute_script("window.localStorage.clear(); window.sessionStorage.clear();")
                     sb.refresh() 
@@ -74,20 +79,20 @@ def processar_login(account_id, setor_solicitado):
                     captcha_container = "div.cf-turnstile"
                     
                     if sb.is_element_visible(captcha_container):
-                        update_status(setor, "Cloudflare detectado. Clique único e decisivo...", imagem=img)
+                        update_status(setor, "Cloudflare detectado. Clique único...", imagem=img)
                         sb.sleep(2)
                         try:
                             sb.click(captcha_container) 
-                            logger.info(">>> Clique no captcha realizado.")
+                            logger.info(f"[ROBÔ {thread_id}] >>> Clique no captcha realizado.")
                         except Exception as e:
-                            logger.warning(f"Aviso no clique: {e}")
+                            logger.warning(f"[ROBÔ {thread_id}] Aviso no clique: {e}")
                             
                         img = snapshot(sb, setor, f"03_pos_clique_T{tentativa}")
                     
                     update_status(setor, "Aguardando campo de senha...", imagem=img)
                     
                     sb.wait_for_element("#idToken3", timeout=35)
-                    logger.info(">>> SUCESSO! Campo de senha apareceu!")
+                    logger.info(f"[ROBÔ {thread_id}] >>> SUCESSO! Campo de senha apareceu!")
                     
                     img = snapshot(sb, setor, f"04_senha_visivel_T{tentativa}")
                     
@@ -110,12 +115,11 @@ def processar_login(account_id, setor_solicitado):
                     if logged_in:
                         cookies = sb.driver.get_cookies()
                         
-                        # --- FILTRO ANTIGO RESTAURADO ---
                         cookies_limpos = []
                         for cookie in cookies:
                             nome_cookie = cookie['name']
                             if nome_cookie.startswith('TS01') or 'BIGipServer' in nome_cookie or nome_cookie == 'PD-S-SESSION-ID':
-                                logger.info(f"Filtro Ativado: Descartando o cookie malicioso -> {nome_cookie}")
+                                logger.info(f"[ROBÔ {thread_id}] Filtro Ativado: Descartando cookie -> {nome_cookie}")
                                 continue
                             cookies_limpos.append(cookie)
                             
@@ -132,11 +136,11 @@ def processar_login(account_id, setor_solicitado):
                         raise Exception("Timeout ao aguardar o portal jurídico carregar após a senha.")
                         
                 except Exception as e:
-                    logger.warning(f"Falha na tentativa {tentativa}: {e}")
+                    logger.warning(f"[ROBÔ {thread_id}] Falha na tentativa {tentativa}: {e}")
                     img = snapshot(sb, setor, f"erro_tentativa_{tentativa}")
                     
                     if tentativa == max_tentativas_gerais:
-                        logger.error(f"FALHA DEFINITIVA APÓS {max_tentativas_gerais} TENTATIVAS.")
+                        logger.error(f"[ROBÔ {thread_id}] FALHA DEFINITIVA APÓS {max_tentativas_gerais} TENTATIVAS.")
                         update_status(setor, "Falha no processo. Tente acessar novamente.", erro=True, imagem=img)
                     else:
                         update_status(setor, f"Sessão queimada. Reiniciando navegador do zero (Tentativa {tentativa+1})...", imagem=img)
@@ -144,31 +148,48 @@ def processar_login(account_id, setor_solicitado):
     finally:
         db.close()
 
+
+def worker_loop(thread_id):
+    """O loop infinito que cada robô executará de forma independente"""
+    logger.info(f"[ROBÔ {thread_id}] Em posição e aguardando missões...")
+    
+    # Cada thread precisa da sua própria conexão com o banco fechada e aberta
+    while True:
+        try:
+            # O redis blpop é atômico e thread-safe. Se 3 robôs pedem, só 1 pega a tarefa.
+            _, task_data_str = redis_client.brpop("queue:login_requests")
+            
+            try:
+                task_data = json.loads(task_data_str)
+                account_id = task_data['id']
+                setor = task_data['setor']
+            except Exception:
+                account_id = task_data_str
+                setor = "GERAL"
+
+            logger.info(f"[ROBÔ {thread_id}] Nova tarefa capturada! Conta ID: {account_id} para Setor: {setor}")
+            processar_login(account_id, setor, thread_id)
+            
+        except Exception as e:
+            logger.error(f"[ROBÔ {thread_id}] Erro no loop principal: {e}")
+            time.sleep(5)
+
+
 if __name__ == "__main__":
     logger.info("Limpando fila antiga e destravando status fantasmas...")
     redis_client.delete("queue:login_requests")
     for key in redis_client.scan_iter("status:*"):
         redis_client.delete(key)
     
-    logger.info("Worker Enterprise iniciado. Aguardando missão...")
-    while True:
-        try:
-            # Lendo a tarefa da fila
-            _, task_data_str = redis_client.brpop("queue:login_requests")
-            
-            # Desempacotando o JSON que a API mandou
-            try:
-                task_data = json.loads(task_data_str)
-                account_id = task_data['id']
-                setor = task_data['setor']
-            except Exception:
-                # Fallback caso tenha sobrado algum ID solto antigo no Redis
-                account_id = task_data_str
-                setor = "GERAL"
-
-            logger.info(f"Nova tarefa recebida! Processando Conta ID: {account_id} para o Setor: {setor}")
-            processar_login(account_id, setor)
-            
-        except Exception as e:
-            logger.error(f"Erro no loop principal: {e}")
-            time.sleep(5)
+    logger.info(f"🚀 Iniciando a Frota OneLog com {MAX_WORKERS} Robôs em paralelo...")
+    
+    # Inicia as Threads (Os clones do robô)
+    threads = []
+    for i in range(MAX_WORKERS):
+        t = threading.Thread(target=worker_loop, args=(i + 1,), daemon=True)
+        t.start()
+        threads.append(t)
+        
+    # Mantém o processo principal rodando para as threads não morrerem
+    for t in threads:
+        t.join()
