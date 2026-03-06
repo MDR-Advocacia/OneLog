@@ -37,7 +37,7 @@ def snapshot(sb, setor, nome_arquivo):
     logger.info(f"📸 Snapshot gerado: {img_url}")
     return img_url
 
-def processar_login(account_id, setor_solicitado, thread_id):
+def processar_login(account_id, setor_solicitado, thread_id, client_ua=None):
     """Função isolada para garantir que o banco de dados seja seguro por thread"""
     db = SessionLocal()
     try:
@@ -47,14 +47,18 @@ def processar_login(account_id, setor_solicitado, thread_id):
         setor = setor_solicitado
         usuario, senha = account.login, account.senha
         
-        update_status(setor, "Iniciando robô...")
+        # 🦎 O CAMALEÃO: Adota o User-Agent exato do cliente (Mac, Win, etc) 
+        # Se por algum motivo falhar, tem o Windows de fallback
+        ua_to_use = client_ua if client_ua else "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        
+        update_status(setor, "Iniciando robô camaleão...")
         max_tentativas_gerais = 3
         
         for tentativa in range(1, max_tentativas_gerais + 1):
             logger.info(f"[ROBÔ {thread_id}] === TENTATIVA {tentativa}/{max_tentativas_gerais} PARA {setor} ===")
             
-            # O xvfb=True gera um display virtual aleatório, permitindo múltiplos Chromes sem conflito
-            with SB(uc=True, test=True, headless=False, xvfb=True, proxy="socks5://206.42.43.192:45123") as sb:
+            # Injeta o 'agent=ua_to_use' na inicialização do Chrome
+            with SB(uc=True, test=True, headless=False, xvfb=True, proxy="socks5://206.42.43.192:45123", agent=ua_to_use) as sb:
                 try:
                     update_status(setor, f"Abrindo navegador (Tentativa {tentativa}/{max_tentativas_gerais})...")
                     sb.open('https://loginweb.bb.com.br/sso/XUI/?realm=/paj&goto=https://juridico.bb.com.br/wfj#login')
@@ -115,20 +119,23 @@ def processar_login(account_id, setor_solicitado, thread_id):
                     if logged_in:
                         cookies = sb.driver.get_cookies()
                         
+                        # 🚨 A NOVA LISTA NEGRA TURBINADA 🚨
+                        COOKIES_BLOQUEADOS = ["PD-S-SESSION-ID", "JSESSIONID", "cf_clearance", "__cf_bm"]
+                        
                         cookies_limpos = []
                         for cookie in cookies:
                             nome_cookie = cookie['name']
-                            if nome_cookie.startswith('TS01') or 'BIGipServer' in nome_cookie or nome_cookie == 'PD-S-SESSION-ID':
-                                logger.info(f"[ROBÔ {thread_id}] Filtro Ativado: Descartando cookie -> {nome_cookie}")
+                            
+                            # Filtra os cookies atrelados a IP e Balanceadores
+                            if nome_cookie in COOKIES_BLOQUEADOS or nome_cookie.startswith('TS01') or 'BIGipServer' in nome_cookie:
+                                logger.info(f"[ROBÔ {thread_id}] Filtro Ativado: Descartando cookie tóxico/IP -> {nome_cookie}")
                                 continue
+                                
                             cookies_limpos.append(cookie)
                             
-                        try: real_ua = sb.execute_script("return navigator.userAgent;")
-                        except: real_ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-                        
                         account.cookie_payload = json.dumps(cookies_limpos)
                         account.last_login_at = datetime.utcnow()
-                        account.user_agent_used = real_ua
+                        account.user_agent_used = ua_to_use
                         db.commit()
                         update_status(setor, "Acesso concedido e salvo no Pool!", concluido=True, imagem=img)
                         return 
@@ -163,12 +170,14 @@ def worker_loop(thread_id):
                 task_data = json.loads(task_data_str)
                 account_id = task_data['id']
                 setor = task_data['setor']
+                client_ua = task_data.get('user_agent') # <--- Capturando o UA vindo da API!
             except Exception:
                 account_id = task_data_str
                 setor = "GERAL"
+                client_ua = None
 
             logger.info(f"[ROBÔ {thread_id}] Nova tarefa capturada! Conta ID: {account_id} para Setor: {setor}")
-            processar_login(account_id, setor, thread_id)
+            processar_login(account_id, setor, thread_id, client_ua)
             
         except Exception as e:
             logger.error(f"[ROBÔ {thread_id}] Erro no loop principal: {e}")

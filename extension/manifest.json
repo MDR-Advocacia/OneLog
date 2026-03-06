@@ -1,14 +1,12 @@
 {
   "manifest_version": 3,
   "name": "OneLog Pro - Enterprise",
-  "version": "1.1",
+  "version": "1.0.1",
   "description": "Acesso seguro e ininterrupto ao Portal Jurídico BB.",
   "permissions": [
     "cookies",
     "storage",
-    "alarms",
-    "declarativeNetRequest",
-    "declarativeNetRequestFeedback"
+    "alarms"
   ],
   "host_permissions": [
     "*://*.bb.com.br/*",
@@ -18,23 +16,15 @@
     "service_worker": "background.js"
   },
   "action": {
-    "default_popup": "loading.html",
+    "default_popup": "popup.html",
     "default_title": "Acessar Portal"
   },
   "content_scripts": [
     {
       "matches": ["*://*.bb.com.br/*"],
       "js": ["content.js"],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "world": "MAIN"
     }
-  ],
-  "declarative_net_request": {
-    "rule_resources": [
-      {
-        "id": "spoof_ua",
-        "enabled": true,
-        "path": "rules.json"
-      }
-    ]
-  }
+  ]
 }

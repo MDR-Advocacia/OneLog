@@ -1,4 +1,4 @@
-const API_URL = "https://api-onelog.mdradvocacia.com";
+const API_URL = "http://api-onelog.mdradvocacia.com";
 
 let currentState = { isWorking: false, step: "", error: "" };
 
@@ -20,6 +20,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             sendResponse({status: "logout"});
         });
         return true; 
+    } else if (request.action === "START_HEARTBEAT") {
+        console.log("Marcapasso iniciado! Renovação agendada para 20 minutos.");
+        chrome.alarms.create("renew_session", { delayInMinutes: 20, periodInMinutes: 20 });
     }
 });
 
@@ -29,7 +32,6 @@ function updateState(isWorking, step, error = "") {
 }
 
 async function performFullLogin(user, pass) {
-    // Escudo de Compatibilidade: Se o cache antigo não tem senha, força recadastro
     if (!user || !pass) {
         chrome.storage.local.remove(['onelog_user', 'onelog_active_setor']);
         return updateState(false, "", "Segurança atualizada. Por favor, refaça o login.");
@@ -40,7 +42,7 @@ async function performFullLogin(user, pass) {
         const res = await fetch(`${API_URL}/api/zerocore/login`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username: user, password: pass })
+            body: JSON.stringify({ username: user, password: pass, user_agent: navigator.userAgent })
         });
         
         if (res.status === 401 || res.status === 403) {
@@ -55,10 +57,9 @@ async function performFullLogin(user, pass) {
         const data = await res.json();
         const setor = data.setor;
         
-        // Salva a estrutura nova com a senha
         chrome.storage.local.set({ "onelog_user": { username: user, password: pass, setor: setor } });
         
-        if (data.status === "sucesso") await finalizeLogin(data.cookies, setor, false);
+        if (data.status === "sucesso") await finalizeLogin(data.cookies, false);
         else if (data.status === "queued") await pollStatusUntilDone(false);
         
     } catch (e) {
@@ -70,16 +71,16 @@ async function performRenewLogin(isBackground = false) {
     updateState(true, "Verificando credenciais e acordando robô...");
     try {
         chrome.storage.local.get(["onelog_user"], async (res) => {
-            // Verifica se o usuário existe E se tem a senha salva (proteção contra cache velho)
             if(!res.onelog_user || !res.onelog_user.password) {
                 chrome.storage.local.remove(['onelog_user']);
                 return updateState(false, "", "Sessão desatualizada. Faça login novamente.");
             }
             
+            const payload = { ...res.onelog_user, user_agent: navigator.userAgent };
             const req = await fetch(`${API_URL}/api/zerocore/renew`, { 
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(res.onelog_user)
+                body: JSON.stringify(payload)
             });
 
             if(req.status === 401) {
@@ -129,7 +130,7 @@ async function pollStatusUntilDone(isBackground = false) {
                     
                     const sessionData = await resSessao.json();
                     
-                    if (sessionData.status === "sucesso") await finalizeLogin(sessionData.cookies, setor, isBackground);
+                    if (sessionData.status === "sucesso") await finalizeLogin(sessionData.cookies, isBackground);
                     else updateState(false, "", "Erro ao recuperar cookies da sessão nova.");
                 }
             } catch(e) {}
@@ -140,16 +141,13 @@ async function pollStatusUntilDone(isBackground = false) {
 async function limparCookiesAntigos() {
     return new Promise((resolve) => {
         chrome.cookies.getAll({ domain: "bb.com.br" }, (cookies) => {
-            if (cookies.length === 0) {
-                resolve();
-                return;
-            }
+            if (cookies.length === 0) return resolve();
             const promessas = cookies.map(cookie => {
                 return new Promise((res) => {
                     let prefix = cookie.secure ? "https://" : "http://";
                     let cleanDomain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
                     let url = prefix + cleanDomain + cookie.path;
-                    chrome.cookies.remove({ url: url, name: cookie.name }, () => res());
+                    chrome.cookies.remove({ url: url, name: cookie.name }, res);
                 });
             });
             Promise.all(promessas).then(resolve);
@@ -157,34 +155,21 @@ async function limparCookiesAntigos() {
     });
 }
 
-async function finalizeLogin(cookies, setor, isBackground = false) {
+async function finalizeLogin(cookies, isBackground = false) {
     updateState(true, "Limpando resíduos antigos...");
-    
     await limparCookiesAntigos();
     
     updateState(true, "Injetando blindagem...");
     
-    // 🚨 FILTRO DE COOKIES (LISTA NEGRA) 🚨
-    const COOKIES_BLOQUEADOS = ["PD-S-SESSION-ID"]; 
-
+    // A extensão agora é "burra": injeta tudo que a API mandar. 
+    // A inteligência de limpar os cookies tóxicos fica 100% no worker.py do servidor.
     const cookiePromises = cookies.map(cookie => {
         return new Promise((resolve) => {
-            // O Filtro Mágico que salva a sessão:
-            if (COOKIES_BLOQUEADOS.includes(cookie.name) || cookie.name.startsWith("TS01") || cookie.name.includes("BIGipServer")) {
-                console.log(`🛡️ Filtro Ativado: Bloqueando injeção do cookie tóxico -> ${cookie.name}`);
-                resolve(); // Termina a promessa sem injetar
-                return; 
-            }
-
             let cleanDomain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
             chrome.cookies.set({ 
                 url: "https://" + cleanDomain + cookie.path, 
-                name: cookie.name, 
-                value: cookie.value, 
-                domain: cookie.domain, 
-                path: cookie.path, 
-                secure: true, 
-                sameSite: "no_restriction" 
+                name: cookie.name, value: cookie.value, domain: cookie.domain, 
+                path: cookie.path, secure: true, sameSite: "no_restriction" 
             }, resolve);
         });
     });
@@ -200,15 +185,14 @@ async function finalizeLogin(cookies, setor, isBackground = false) {
             updateState(false, "", ""); 
         }, 1000);
     } else {
-        console.log("🔄 Sessão renovada silenciosamente em background (Sem abrir abas).");
+        console.log("🔄 Sessão renovada silenciosamente em background.");
         updateState(false, "", "");
     }
 }
 
-// O Marcapasso Silencioso e Seguro
 chrome.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === "renew_session") {
-        console.log("⏰ Marcapasso disparado! Renovando sessão e injetando...");
+        console.log("⏰ Marcapasso disparado! Renovando sessão...");
         performRenewLogin(true);
     }
 });
