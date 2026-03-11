@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "OneLog Pro - Enterprise",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Acesso seguro e ininterrupto ao Portal Jurídico BB.",
   "permissions": [
     "cookies",
@@ -10,7 +10,7 @@
   ],
   "host_permissions": [
     "*://*.bb.com.br/*",
-    "http://api-onelog.mdradvocacia.com/*"
+    "https://api-onelog.mdradvocacia.com/*"
   ],
   "background": {
     "service_worker": "background.js"

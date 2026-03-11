@@ -2,7 +2,7 @@ import redis
 import json
 import os
 import time
-import threading
+import multiprocessing
 from datetime import datetime
 from seleniumbase import SB
 import logging
@@ -12,7 +12,6 @@ from database import SessionLocal, AccountBB
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - WORKER - %(message)s')
 logger = logging.getLogger(__name__)
 
-redis_client = redis.Redis.from_url(os.getenv('REDIS_URL', 'redis://localhost:6379/0'), decode_responses=True)
 BASE_URL = "https://api-onelog.mdradvocacia.com"
 
 # MODO TURBO
@@ -21,9 +20,18 @@ DEBUG_MODE = os.getenv("DEBUG_MODE", "False").lower() == "true"
 # Define quantos robôs vão rodar ao mesmo tempo (Padrão: 3)
 MAX_WORKERS = int(os.getenv("MAX_WORKERS", "3"))
 
+# Variável global vazia. Cada "Processo Clone" criará a sua própria conexão segura com o Redis.
+redis_client = None
+
+def get_redis():
+    global redis_client
+    if redis_client is None:
+        redis_client = redis.Redis.from_url(os.getenv('REDIS_URL', 'redis://localhost:6379/0'), decode_responses=True)
+    return redis_client
+
 def update_status(setor, msg, concluido=False, erro=False, imagem=None):
     status = {"mensagem": msg, "concluido": concluido, "erro": erro, "imagem": imagem}
-    redis_client.set(f"status:{setor}", json.dumps(status))
+    get_redis().set(f"status:{setor}", json.dumps(status))
     logger.info(f"[{setor}] {msg}")
 
 def snapshot(sb, setor, nome_arquivo):
@@ -38,7 +46,7 @@ def snapshot(sb, setor, nome_arquivo):
     return img_url
 
 def processar_login(account_id, setor_solicitado, thread_id):
-    """Função isolada para garantir que o banco de dados seja seguro por thread"""
+    """Função isolada para garantir que o banco de dados seja seguro por thread/processo"""
     db = SessionLocal()
     try:
         account = db.query(AccountBB).filter(AccountBB.id == int(account_id)).first()
@@ -157,12 +165,12 @@ def processar_login(account_id, setor_solicitado, thread_id):
 
 
 def worker_loop(thread_id):
-    """O loop infinito que cada robô executará de forma independente"""
+    """O loop infinito executado via MULTIPROCESSING (Isolado e Seguro)"""
     logger.info(f"[ROBÔ {thread_id}] Em posição e aguardando missões...")
     
     while True:
         try:
-            _, task_data_str = redis_client.brpop("queue:login_requests")
+            _, task_data_str = get_redis().brpop("queue:login_requests")
             
             try:
                 task_data = json.loads(task_data_str)
@@ -183,17 +191,18 @@ def worker_loop(thread_id):
 
 if __name__ == "__main__":
     logger.info("Limpando fila antiga e destravando status fantasmas...")
-    redis_client.delete("queue:login_requests")
-    for key in redis_client.scan_iter("status:*"):
-        redis_client.delete(key)
+    r = get_redis()
+    r.delete("queue:login_requests")
+    for key in r.scan_iter("status:*"):
+        r.delete(key)
     
-    logger.info(f"🚀 Iniciando a Frota OneLog com {MAX_WORKERS} Robôs em paralelo...")
+    logger.info(f"🚀 Iniciando a Frota OneLog com {MAX_WORKERS} Robôs em paralelo (Multiprocessing)...")
     
-    threads = []
+    processes = []
     for i in range(MAX_WORKERS):
-        t = threading.Thread(target=worker_loop, args=(i + 1,), daemon=True)
-        t.start()
-        threads.append(t)
+        p = multiprocessing.Process(target=worker_loop, args=(i + 1,), daemon=True)
+        p.start()
+        processes.append(p)
         
-    for t in threads:
-        t.join()
+    for p in processes:
+        p.join()
