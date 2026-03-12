@@ -1,4 +1,4 @@
-const API_URL = "http://api-onelog.mdradvocacia.com";
+const API_URL = "https://api-onelog.mdradvocacia.com";
 
 let currentState = { isWorking: false, step: "", error: "" };
 

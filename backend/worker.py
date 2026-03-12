@@ -3,6 +3,8 @@ import json
 import os
 import time
 import multiprocessing
+import signal
+import psutil
 from datetime import datetime
 from seleniumbase import SB
 import logging
@@ -45,8 +47,30 @@ def snapshot(sb, setor, nome_arquivo):
     logger.info(f"📸 Snapshot gerado: {img_url}")
     return img_url
 
+def mata_fantasmas_do_chrome(pid_pai):
+    """
+    Caça-Fantasmas: Varre os processos filhos a partir do PID do Python atual
+    e garante que qualquer instância desgarrada de chrome ou chromedriver morra.
+    """
+    try:
+        pai = psutil.Process(pid_pai)
+        filhos = pai.children(recursive=True)
+        for filho in filhos:
+            try:
+                nome = filho.name().lower()
+                if "chrome" in nome or "chromedriver" in nome or "xvfb" in nome:
+                    # Tenta matar educadamente e depois à força
+                    filho.terminate()
+                    filho.kill()
+            except psutil.NoSuchProcess:
+                pass
+    except Exception:
+        pass
+
+
 def processar_login(account_id, setor_solicitado, thread_id):
     """Função isolada para garantir que o banco de dados seja seguro por thread/processo"""
+    meu_pid = os.getpid() # Pega a ID do processo Python desta thread
     db = SessionLocal()
     try:
         account = db.query(AccountBB).filter(AccountBB.id == int(account_id)).first()
@@ -61,9 +85,14 @@ def processar_login(account_id, setor_solicitado, thread_id):
         for tentativa in range(1, max_tentativas_gerais + 1):
             logger.info(f"[ROBÔ {thread_id}] === TENTATIVA {tentativa}/{max_tentativas_gerais} PARA {setor} ===")
             
-            # REMOVEMOS O AGENT: O UC (Undetected Chromedriver) precisa rodar puro para enganar o Cloudflare!
-            with SB(uc=True, test=True, headless=False, xvfb=True, proxy="socks5://206.42.43.192:45123") as sb:
-                try:
+            sb_instance = None # Controle local para o "Caça-Fantasmas"
+            
+            try:
+                # REMOVEMOS O AGENT: O UC (Undetected Chromedriver) precisa rodar puro para enganar o Cloudflare!
+                # O page_load_strategy="eager" ajuda a parar de depender de carregamentos pesados para injetar comandos
+                with SB(uc=True, test=True, headless=False, xvfb=True, proxy="socks5://206.42.43.192:45123", page_load_strategy="eager") as sb:
+                    sb_instance = sb 
+                    
                     update_status(setor, f"Abrindo navegador (Tentativa {tentativa}/{max_tentativas_gerais})...")
                     sb.open('https://loginweb.bb.com.br/sso/XUI/?realm=/paj&goto=https://juridico.bb.com.br/wfj#login')
                     
@@ -146,20 +175,33 @@ def processar_login(account_id, setor_solicitado, thread_id):
                         account.user_agent_used = real_ua
                         db.commit()
                         update_status(setor, "Acesso concedido e salvo no Pool!", concluido=True, imagem=img)
+                        
+                        try: sb.driver.quit() 
+                        except: pass
+                        mata_fantasmas_do_chrome(meu_pid)
                         return 
+                        
                     else:
                         raise Exception("Timeout ao aguardar o portal jurídico carregar após a senha.")
                         
-                except Exception as e:
-                    logger.warning(f"[ROBÔ {thread_id}] Falha na tentativa {tentativa}: {e}")
-                    img = snapshot(sb, setor, f"erro_tentativa_{tentativa}")
-                    
-                    if tentativa == max_tentativas_gerais:
-                        logger.error(f"[ROBÔ {thread_id}] FALHA DEFINITIVA APÓS {max_tentativas_gerais} TENTATIVAS.")
-                        update_status(setor, "Falha no processo. Tente acessar novamente.", erro=True, imagem=img)
-                    else:
-                        update_status(setor, f"Sessão queimada. Reiniciando navegador do zero (Tentativa {tentativa+1})...", imagem=img)
-                        time.sleep(3)
+            except Exception as e:
+                logger.warning(f"[ROBÔ {thread_id}] Falha na tentativa {tentativa}: {e}")
+                
+                if sb_instance:
+                     img = snapshot(sb_instance, setor, f"erro_tentativa_{tentativa}")
+                     try: sb_instance.driver.quit() 
+                     except: pass
+                else: img = None
+                
+                # Limpeza forçada da memória mesmo dando erro
+                mata_fantasmas_do_chrome(meu_pid)
+
+                if tentativa == max_tentativas_gerais:
+                    logger.error(f"[ROBÔ {thread_id}] FALHA DEFINITIVA APÓS {max_tentativas_gerais} TENTATIVAS.")
+                    update_status(setor, "Falha no processo. Tente acessar novamente.", erro=True, imagem=img)
+                else:
+                    update_status(setor, f"Sessão queimada. Reiniciando navegador do zero (Tentativa {tentativa+1})...", imagem=img)
+                    time.sleep(3)
     finally:
         db.close()
 
@@ -176,7 +218,6 @@ def worker_loop(thread_id):
                 task_data = json.loads(task_data_str)
                 account_id = task_data['id']
                 setor = task_data['setor']
-                # O client_ua que a API enviou é ignorado aqui!
             except Exception:
                 account_id = task_data_str
                 setor = "GERAL"
@@ -191,10 +232,13 @@ def worker_loop(thread_id):
 
 if __name__ == "__main__":
     logger.info("Limpando fila antiga e destravando status fantasmas...")
-    r = get_redis()
-    r.delete("queue:login_requests")
-    for key in r.scan_iter("status:*"):
-        r.delete(key)
+    try:
+        r = get_redis()
+        r.delete("queue:login_requests")
+        for key in r.scan_iter("status:*"):
+            r.delete(key)
+    except:
+        pass
     
     logger.info(f"🚀 Iniciando a Frota OneLog com {MAX_WORKERS} Robôs em paralelo (Multiprocessing)...")
     
