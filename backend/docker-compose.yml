@@ -45,7 +45,7 @@ services:
       - redis
       - db
     volumes:
-      - shared_static:/app/static
+      - ./static:/app/static
     restart: unless-stopped
     deploy:
       resources:
@@ -64,7 +64,7 @@ services:
       - DB_URL=postgresql://${DB_USER:-onelog}:${DB_PASS:-onelog_password}@db:5432/${DB_NAME:-onelog_db}
       - PYTHONUNBUFFERED=1
     volumes:
-      - shared_static:/app/static
+      - ./static:/app/static
     depends_on:
       - redis
       - db
@@ -80,4 +80,3 @@ services:
 volumes:
   postgres_data:
   redis_data:
-  shared_static:
