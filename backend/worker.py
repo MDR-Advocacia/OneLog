@@ -39,7 +39,7 @@ def update_status(setor, msg, concluido=False, erro=False, imagem=None):
 def snapshot(sb, setor, nome_arquivo):
     if not DEBUG_MODE: return None
     
-    if not os.path.exists('static'): os.makedirs('static')
+    if not os.path.exists('shared'): os.makedirs('shared')
     ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     filename = f"{setor}_{nome_arquivo}_{ts}.png"
     sb.save_screenshot(os.path.join("static", filename))

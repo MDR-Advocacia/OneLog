@@ -45,7 +45,8 @@ services:
       - redis
       - db
     volumes:
-      - ./static:/app/static
+      # Novo volume compartilhado apenas para os prints da tela
+      - shared_data:/app/shared
     restart: unless-stopped
     deploy:
       resources:
@@ -64,7 +65,8 @@ services:
       - DB_URL=postgresql://${DB_USER:-onelog}:${DB_PASS:-onelog_password}@db:5432/${DB_NAME:-onelog_db}
       - PYTHONUNBUFFERED=1
     volumes:
-      - ./static:/app/static
+      # O worker salva os prints aqui e a API consegue ler
+      - shared_data:/app/shared
     depends_on:
       - redis
       - db
@@ -80,3 +82,4 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  shared_data:

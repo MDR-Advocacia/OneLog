@@ -66,11 +66,14 @@ def serve_privacy():
     base_dir = os.path.dirname(os.path.abspath(__file__))
     return send_from_directory(base_dir, 'privacy.html')
 
-@app.route('/static/<path:filename>')
-def serve_static(filename):
+# --- NOVA ROTA DE PRINTS DE TELA COMPARTILHADOS ---
+@app.route('/shared/<path:filename>')
+def serve_shared(filename):
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    static_dir = os.path.join(base_dir, 'static')
-    return send_from_directory(static_dir, filename)
+    shared_dir = os.path.join(base_dir, 'shared')
+    return send_from_directory(shared_dir, filename)
+
+# O Flask já serve a pasta /static automaticamente, não precisamos de rota manual pra ela!
 
 # --- ROTAS DE OPERAÇÃO (EXTENSÃO) ---
 @app.route('/api/zerocore/status', methods=['GET'])
