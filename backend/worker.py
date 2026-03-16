@@ -46,7 +46,6 @@ def snapshot(sb, setor, nome_arquivo):
     ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     filename = f"{setor}_{nome_arquivo}_{ts}.png"
     
-    # CORREÇÃO CRÍTICA: Estava salvando em 'static', agora salva estritamente em 'shared'
     sb.save_screenshot(os.path.join("shared", filename))
     img_url = f"{BASE_URL}/shared/{filename}"
     
@@ -105,17 +104,14 @@ def processar_login(account_id, setor_solicitado, thread_id):
             sb_instance = None 
             
             try:
-                # CORREÇÃO: Sem window_size no construtor
                 with SB(uc=True, test=True, headless=False, xvfb=True, proxy="socks5://206.42.43.192:45123", user_data_dir=pasta_perfil) as sb:
                     sb_instance = sb 
                     
-                    # Definimos o tamanho da tela logo após abrir
                     try: sb.set_window_size(1366, 768)
                     except: pass
                     
                     update_status(setor, f"Abrindo navegador (Tentativa {tentativa}/{max_tentativas_gerais})...")
                     
-                    # O perfil isolado já garante que o Cloudflare nos veja como humanos novos.
                     sb.open('https://loginweb.bb.com.br/sso/XUI/?realm=/paj&goto=https://juridico.bb.com.br/wfj#login')
                     sb.sleep(3)
                     
@@ -134,18 +130,25 @@ def processar_login(account_id, setor_solicitado, thread_id):
                     captcha_container = "div.cf-turnstile"
                     
                     if sb.is_element_visible(captcha_container):
-                        update_status(setor, "Cloudflare detectado. Clique fantasma no centro alvo...", imagem=img)
+                        update_status(setor, "Cloudflare detectado. Inciando aproximação humana...", imagem=img)
                         sb.sleep(2)
                         try:
                             elem = sb.driver.find_element("css selector", captcha_container)
                             action = ActionChains(sb.driver)
                             
-                            offset_x = 152 + random.randint(-3, 3)
-                            offset_y = 15 + random.randint(-3, 3)
+                            # ========================================================
+                            # AS COORDENADAS CIRÚRGICAS (X mais pra direita, Y no meio)
+                            # ========================================================
+                            offset_x = 160 + random.randint(-4, 4)
+                            offset_y = 35 + random.randint(-3, 3) 
                             
-                            action.move_to_element_with_offset(elem, offset_x, offset_y).click().perform()
+                            # MÁGICA 3: O Comportamento Humano (Pausa antes de atirar)
+                            action.move_to_element_with_offset(elem, offset_x, offset_y)
+                            action.pause(random.uniform(0.4, 0.9)) # Respira por meio segundo com o mouse em cima
+                            action.click()
+                            action.perform()
                             
-                            # --- MODO SNIPER: Desenha um alvo vermelho na tela onde ele clicou ---
+                            # Modo Sniper: Pinta de vermelho o local exato do clique
                             try:
                                 sb.execute_script(f"""
                                     var dot = document.createElement('div');
@@ -163,14 +166,12 @@ def processar_login(account_id, setor_solicitado, thread_id):
                                 """)
                             except Exception as viz_e:
                                 logger.warning(f"[ROBÔ {thread_id}] Falha ao desenhar modo sniper: {viz_e}")
-                            # ----------------------------------------------------------------------
                             
-                            logger.info(f"[ROBÔ {thread_id}] >>> Clique físico no captcha (X:{offset_x}, Y:{offset_y}) realizado com sucesso.")
+                            logger.info(f"[ROBÔ {thread_id}] >>> Clique humano no captcha (X:{offset_x}, Y:{offset_y}) realizado com sucesso.")
                         except Exception as e:
-                            logger.warning(f"[ROBÔ {thread_id}] Aviso no clique físico: {e}")
+                            logger.warning(f"[ROBÔ {thread_id}] Aviso no clique humano: {e}")
                             sb.click(captcha_container) # Fallback padrão
                             
-                        # Esse print agora vai salvar O PONTO VERMELHO pra gente avaliar!
                         img = snapshot(sb, setor, f"03_pos_clique_T{tentativa}")
                     
                     update_status(setor, "Aguardando campo de senha...", imagem=img)
@@ -199,7 +200,6 @@ def processar_login(account_id, setor_solicitado, thread_id):
                     if logged_in:
                         cookies = sb.driver.get_cookies()
                         
-                        # 🚨 A LISTA NEGRA CONTINUA AQUI FIRME E FORTE 🚨
                         COOKIES_BLOQUEADOS = ["PD-S-SESSION-ID", "JSESSIONID", "cf_clearance", "__cf_bm"]
                         
                         cookies_limpos = []
@@ -221,7 +221,6 @@ def processar_login(account_id, setor_solicitado, thread_id):
                         db.commit()
                         update_status(setor, "Acesso concedido e salvo no Pool!", concluido=True, imagem=img)
                         
-                        # --- SUCESSO! Zera o contador de falhas da frota ---
                         get_redis().set("metrics:captcha_consecutive_failures", 0)
                         
                         try: sb.driver.quit() 
@@ -235,7 +234,6 @@ def processar_login(account_id, setor_solicitado, thread_id):
             except Exception as e:
                 logger.warning(f"[ROBÔ {thread_id}] Falha na tentativa {tentativa}: {e}")
                 
-                # --- SISTEMA DE RESILIÊNCIA (FÔLEGO) ---
                 fail_count = get_redis().incr("metrics:captcha_consecutive_failures")
                 logger.info(f"[ROBÔ {thread_id}] Medidor de bloqueios Cloudflare: {fail_count}/6")
                 
@@ -244,7 +242,6 @@ def processar_login(account_id, setor_solicitado, thread_id):
                     logger.error(f"[ROBÔ {thread_id}] Acionando protocolo de Fôlego de 3 minutos para toda a frota.")
                     get_redis().setex("lock:cooldown", 180, "true") 
                     get_redis().set("metrics:captcha_consecutive_failures", 0) 
-                # ----------------------------------------
                 
                 if sb_instance:
                      img = snapshot(sb_instance, setor, f"erro_tentativa_{tentativa}")
@@ -265,25 +262,21 @@ def processar_login(account_id, setor_solicitado, thread_id):
 
 
 def worker_loop(thread_id):
-    """O loop infinito executado via MULTIPROCESSING (Isolado e Seguro)"""
     logger.info(f"[ROBÔ {thread_id}] Em posição e aguardando missões...")
     
     while True:
         try:
-            # 1. Verifica se o Fôlego está ativado ANTES de buscar missões
             if get_redis().exists("lock:cooldown"):
                 logger.info(f"[ROBÔ {thread_id}] 🛑 Modo fôlego ativo. Aguardando a poeira baixar...")
                 time.sleep(20)
                 continue
 
-            # 2. Busca com timeout de 10s (para não travar eternamente se a fila estiver vazia e não checar o fôlego)
             task = get_redis().brpop("queue:login_requests", timeout=10)
             if not task:
                 continue
                 
             _, task_data_str = task
             
-            # 3. Verifica NOVAMENTE logo após pegar a missão (evita que ele pegue missão durante o Fôlego de outro robô)
             if get_redis().exists("lock:cooldown"):
                 logger.warning(f"[ROBÔ {thread_id}] Fôlego ativado no meio do caminho! Devolvendo tarefa para a fila...")
                 get_redis().rpush("queue:login_requests", task_data_str)
