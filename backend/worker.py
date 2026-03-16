@@ -5,8 +5,11 @@ import time
 import multiprocessing
 import signal
 import psutil
+import shutil
+import random
 from datetime import datetime
 from seleniumbase import SB
+from selenium.webdriver.common.action_chains import ActionChains
 import logging
 from database import SessionLocal, AccountBB
 
@@ -59,7 +62,6 @@ def mata_fantasmas_do_chrome(pid_pai):
             try:
                 nome = filho.name().lower()
                 if "chrome" in nome or "chromedriver" in nome or "xvfb" in nome:
-                    # Tenta matar educadamente e depois à força
                     filho.terminate()
                     filho.kill()
             except psutil.NoSuchProcess:
@@ -70,8 +72,20 @@ def mata_fantasmas_do_chrome(pid_pai):
 
 def processar_login(account_id, setor_solicitado, thread_id):
     """Função isolada para garantir que o banco de dados seja seguro por thread/processo"""
-    meu_pid = os.getpid() # Pega a ID do processo Python desta thread
+    meu_pid = os.getpid()
     db = SessionLocal()
+    
+    # MÁGICA 1: Jitter - Atraso aleatório para os 3 robôs não agredirem o BB no mesmo milissegundo
+    atraso = random.uniform(2.0, 7.0)
+    logger.info(f"[ROBÔ {thread_id}] Aplicando Jitter de {atraso:.1f}s para despistar balanceadores do BB...")
+    time.sleep(atraso)
+
+    # MÁGICA 2: Isolamento genético! Cada robô nasce com uma pasta virgem.
+    pasta_perfil = f"/tmp/onelog_profile_robo_{thread_id}"
+    if os.path.exists(pasta_perfil):
+        try: shutil.rmtree(pasta_perfil)
+        except: pass
+
     try:
         account = db.query(AccountBB).filter(AccountBB.id == int(account_id)).first()
         if not account: return
@@ -85,28 +99,28 @@ def processar_login(account_id, setor_solicitado, thread_id):
         for tentativa in range(1, max_tentativas_gerais + 1):
             logger.info(f"[ROBÔ {thread_id}] === TENTATIVA {tentativa}/{max_tentativas_gerais} PARA {setor} ===")
             
-            sb_instance = None # Controle local para o "Caça-Fantasmas"
+            sb_instance = None 
             
             try:
-                # REMOVEMOS O AGENT: O UC (Undetected Chromedriver) precisa rodar puro para enganar o Cloudflare!
-                # O page_load_strategy="eager" ajuda a parar de depender de carregamentos pesados para injetar comandos
-                with SB(uc=True, test=True, headless=False, xvfb=True, proxy="socks5://206.42.43.192:45123", page_load_strategy="eager") as sb:
+                # REMOVIDO o page_load_strategy="eager" (O Cloudflare precisa da página inteira para nos validar!)
+                # ADICIONADO user_data_dir e window_size realista
+                with SB(uc=True, test=True, headless=False, xvfb=True, proxy="socks5://206.42.43.192:45123", user_data_dir=pasta_perfil, window_size="1366,768") as sb:
                     sb_instance = sb 
                     
-                    update_status(setor, f"Abrindo navegador (Tentativa {tentativa}/{max_tentativas_gerais})...")
-                    sb.open('https://loginweb.bb.com.br/sso/XUI/?realm=/paj&goto=https://juridico.bb.com.br/wfj#login')
+                    update_status(setor, f"Abrindo navegador e desligando sensores (Tentativa {tentativa}/{max_tentativas_gerais})...")
                     
-                    logger.info(f"[ROBÔ {thread_id}] Executando faxina de cookies e cache...")
-                    sb.delete_all_cookies()
-                    sb.execute_script("window.localStorage.clear(); window.sessionStorage.clear();")
-                    sb.refresh() 
-                    sb.sleep(4)
+                    # MÁGICA 3: O Reconnect! Ele abre a página e se desliga do Chrome por 5s para o Cloudflare não nos ver.
+                    sb.uc_open_with_reconnect('https://loginweb.bb.com.br/sso/XUI/?realm=/paj&goto=https://juridico.bb.com.br/wfj#login', reconnect_time=5)
+                    
+                    # REMOVIDA A FAXINA E O REFRESH (O perfil já é virgem! Se dermos refresh, matamos o token de confiança do Cloudflare!)
+                    sb.sleep(2)
                     
                     img = snapshot(sb, setor, f"01_inicio_T{tentativa}")
                     
                     update_status(setor, "Digitando usuário...", imagem=img)
+                    sb.wait_for_element_visible("#idToken1", timeout=20)
                     sb.type("#idToken1", usuario)
-                    sb.sleep(1)
+                    sb.sleep(1.5)
                     sb.click("#loginButton_0")
                     
                     update_status(setor, "Analisando Captcha...", imagem=img)
@@ -116,13 +130,23 @@ def processar_login(account_id, setor_solicitado, thread_id):
                     captcha_container = "div.cf-turnstile"
                     
                     if sb.is_element_visible(captcha_container):
-                        update_status(setor, "Cloudflare detectado. Clique único...", imagem=img)
+                        update_status(setor, "Cloudflare detectado. Clique fantasma no centro alvo...", imagem=img)
                         sb.sleep(2)
                         try:
-                            sb.click(captcha_container) 
-                            logger.info(f"[ROBÔ {thread_id}] >>> Clique no captcha realizado.")
+                            # MÁGICA 4: ActionChains com Offset Correto e Micro-Jitter
+                            elem = sb.driver.find_element("css selector", captcha_container)
+                            action = ActionChains(sb.driver)
+                            
+                            # O centro do checkbox do Turnstile costuma ficar perto do X: 152
+                            # Adicionamos uma micro variação (-3 a +3) para parecer um humano com tremedeira leve
+                            offset_x = 155 + random.randint(-3, 3)
+                            offset_y = 15 + random.randint(-3, 3)
+                            
+                            action.move_to_element_with_offset(elem, offset_x, offset_y).click().perform()
+                            logger.info(f"[ROBÔ {thread_id}] >>> Clique físico no captcha (X:{offset_x}, Y:{offset_y}) realizado com sucesso.")
                         except Exception as e:
-                            logger.warning(f"[ROBÔ {thread_id}] Aviso no clique: {e}")
+                            logger.warning(f"[ROBÔ {thread_id}] Aviso no clique físico: {e}")
+                            sb.click(captcha_container) # Fallback padrão
                             
                         img = snapshot(sb, setor, f"03_pos_clique_T{tentativa}")
                     
@@ -159,16 +183,14 @@ def processar_login(account_id, setor_solicitado, thread_id):
                         for cookie in cookies:
                             nome_cookie = cookie['name']
                             
-                            # Filtra os cookies atrelados a IP e Balanceadores
                             if nome_cookie in COOKIES_BLOQUEADOS or nome_cookie.startswith('TS01') or 'BIGipServer' in nome_cookie:
                                 logger.info(f"[ROBÔ {thread_id}] Filtro Ativado: Destruindo cookie tóxico/IP -> {nome_cookie}")
                                 continue
                                 
                             cookies_limpos.append(cookie)
                             
-                        # Pegamos o UA real do servidor já que rodamos sem disfarces
                         try: real_ua = sb.execute_script("return navigator.userAgent;")
-                        except: real_ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                        except: real_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
                             
                         account.cookie_payload = json.dumps(cookies_limpos)
                         account.last_login_at = datetime.utcnow()
@@ -194,11 +216,11 @@ def processar_login(account_id, setor_solicitado, thread_id):
                 fail_count = get_redis().incr("metrics:captcha_consecutive_failures")
                 logger.info(f"[ROBÔ {thread_id}] Medidor de bloqueios Cloudflare: {fail_count}/6")
                 
-                if fail_count >= 6: # Se a frota acumular 6 falhas consecutivas
+                if fail_count >= 6: 
                     logger.error(f"[ROBÔ {thread_id}] 🚨 NÍVEL DE AMEAÇA MÁXIMO ATINGIDO NO CLOUDFLARE!")
                     logger.error(f"[ROBÔ {thread_id}] Acionando protocolo de Fôlego de 3 minutos para toda a frota.")
-                    get_redis().setex("lock:cooldown", 180, "true") # Cria uma trava temporária de 3 minutos
-                    get_redis().set("metrics:captcha_consecutive_failures", 0) # Reseta para não travar de novo instantaneamente
+                    get_redis().setex("lock:cooldown", 180, "true") 
+                    get_redis().set("metrics:captcha_consecutive_failures", 0) 
                 # ----------------------------------------
                 
                 if sb_instance:
@@ -207,7 +229,6 @@ def processar_login(account_id, setor_solicitado, thread_id):
                      except: pass
                 else: img = None
                 
-                # Limpeza forçada da memória mesmo dando erro
                 mata_fantasmas_do_chrome(meu_pid)
 
                 if tentativa == max_tentativas_gerais:
@@ -267,8 +288,8 @@ if __name__ == "__main__":
     try:
         r = get_redis()
         r.delete("queue:login_requests")
-        r.delete("lock:cooldown") # Destrava o fôlego caso o container seja reiniciado
-        r.set("metrics:captcha_consecutive_failures", 0) # Zera as métricas
+        r.delete("lock:cooldown") 
+        r.set("metrics:captcha_consecutive_failures", 0) 
         for key in r.scan_iter("status:*"):
             r.delete(key)
     except:
