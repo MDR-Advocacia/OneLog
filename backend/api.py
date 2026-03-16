@@ -124,8 +124,8 @@ def request_login():
                 })
         
         redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Iniciando robô...", "concluido": False}))
-        task_payload = json.dumps({"id": account.id, "setor": setor_nome, "user_agent": user_agent})
-        redis_client.lpush("queue:login_requests", task_payload)
+        task_payload = json.dumps({"id": account.id, "setor": setor_nome, "user_agent": user_agent, "priority": True})
+        redis_client.lpush("queue:priority_logins", task_payload)
         
         redis_client.incr(f'metrics:robos_executados:{hoje}')
         redis_client.hincrby(f'metrics:account_logins:{hoje}', str(account.login), 1)

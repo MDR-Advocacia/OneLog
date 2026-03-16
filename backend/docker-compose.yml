@@ -65,7 +65,6 @@ services:
       - DB_URL=postgresql://${DB_USER:-onelog}:${DB_PASS:-onelog_password}@db:5432/${DB_NAME:-onelog_db}
       - PYTHONUNBUFFERED=1
     volumes:
-      # O worker salva os prints aqui e a API consegue ler
       - shared_data:/app/shared
     depends_on:
       - redis
@@ -74,11 +73,10 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.80'        # Usa no máximo 80% de 1 vCPU
-          memory: 800M        # Se o Chrome "vazar" memória e passar de 800MB, o Docker reinicia o container
+          cpus: '1.0'
+          memory: 1536M    # Limite aumentado para segurar 3 Chromes
         reservations:
-          memory: 300M        # Reserva o mínimo para o boot do Chrome
-
+          memory: 512M     # Deixe apenas UMA linha de memory aqui
 volumes:
   postgres_data:
   redis_data:
