@@ -9,6 +9,7 @@ import shutil
 import random
 from datetime import datetime
 from seleniumbase import SB
+from selenium.webdriver.common.action_chains import ActionChains
 import logging
 from database import SessionLocal, AccountBB
 
@@ -69,12 +70,6 @@ def processar_login(account_id, setor_solicitado, thread_id):
     logger.info(f"[ROBÔ {thread_id}] Aplicando Jitter de {atraso:.1f}s para despistar balanceadores do BB...")
     time.sleep(atraso)
 
-    # MÁGICA 2: Isolamento genético! Cada robô nasce com uma pasta virgem.
-    pasta_perfil = f"/tmp/onelog_profile_robo_{thread_id}"
-    if os.path.exists(pasta_perfil):
-        try: shutil.rmtree(pasta_perfil)
-        except: pass
-
     try:
         account = db.query(AccountBB).filter(AccountBB.id == int(account_id)).first()
         if not account: return
@@ -82,11 +77,19 @@ def processar_login(account_id, setor_solicitado, thread_id):
         setor = setor_solicitado
         usuario, senha = account.login, account.senha
         
-        update_status(setor, "Iniciando robô stealth...")
+        update_status(setor, "A iniciar robô stealth...")
         max_tentativas_gerais = 3
         
         for tentativa in range(1, max_tentativas_gerais + 1):
             logger.info(f"[ROBÔ {thread_id}] === TENTATIVA {tentativa}/{max_tentativas_gerais} PARA {setor} ===")
+            
+            # MÁGICA 2: Isolamento genético! Movemos a exclusão para DENTRO do loop 
+            # para garantir que cada tentativa comece 100% virgem e sem cookies antigos do Cloudflare!
+            pasta_perfil = f"/tmp/onelog_profile_robo_{thread_id}"
+            if os.path.exists(pasta_perfil):
+                try: shutil.rmtree(pasta_perfil)
+                except: pass
+                
             sb_instance = None 
             
             try:
@@ -95,26 +98,35 @@ def processar_login(account_id, setor_solicitado, thread_id):
                     try: sb.set_window_size(1366, 768)
                     except: pass
                     
-                    update_status(setor, f"Abrindo navegador (Tentativa {tentativa}/{max_tentativas_gerais})...")
+                    update_status(setor, f"A abrir navegador (Tentativa {tentativa}/{max_tentativas_gerais})...")
                     sb.open('https://loginweb.bb.com.br/sso/XUI/?realm=/paj&goto=https://juridico.bb.com.br/wfj#login')
+                    sb.sleep(2)
+                    
+                    # --- A FAXINA RETORNOU! ---
+                    logger.info(f"[ROBÔ {thread_id}] Executando faxina de cookies e cache...")
+                    sb.delete_all_cookies()
+                    sb.execute_script("window.localStorage.clear(); window.sessionStorage.clear();")
+                    sb.refresh()
                     sb.sleep(3)
+                    # --------------------------
                     
                     img = snapshot(sb, setor, f"01_inicio_T{tentativa}")
-                    update_status(setor, "Digitando usuário...", imagem=img)
+                    update_status(setor, "A introduzir utilizador...", imagem=img)
                     sb.wait_for_element_visible("#idToken1", timeout=20)
                     sb.type("#idToken1", usuario)
                     sb.sleep(1.5)
                     sb.click("#loginButton_0")
                     
-                    update_status(setor, "Analisando Captcha...", imagem=img)
+                    update_status(setor, "A analisar Captcha...", imagem=img)
                     sb.sleep(6)
                     img = snapshot(sb, setor, f"02_antes_captcha_T{tentativa}")
                     
                     captcha_container = "div.cf-turnstile"
                     if sb.is_element_visible(captcha_container):
-                        update_status(setor, "Cloudflare detectado. Aplicando força bruta padrão...", imagem=img)
+                        update_status(setor, "Cloudflare detetado. Aplicando força bruta padrão...", imagem=img)
                         sb.sleep(2)
                         try:
+                            # RETORNO AO CLIQUE BRUTO QUE VOCÊ IDENTIFICOU COMO O MELHOR!
                             sb.click(captcha_container)
                             logger.info(f"[ROBÔ {thread_id}] >>> Clique Padrão executado.")
                         except Exception as e:
@@ -122,16 +134,16 @@ def processar_login(account_id, setor_solicitado, thread_id):
                             
                         img = snapshot(sb, setor, f"03_pos_clique_T{tentativa}")
                     
-                    update_status(setor, "Aguardando campo de senha...", imagem=img)
+                    update_status(setor, "A aguardar campo de palavra-passe...", imagem=img)
                     sb.wait_for_element("#idToken3", timeout=45)
-                    logger.info(f"[ROBÔ {thread_id}] >>> SUCESSO! Campo de senha apareceu!")
+                    logger.info(f"[ROBÔ {thread_id}] >>> SUCESSO! Campo de palavra-passe apareceu!")
                     
                     img = snapshot(sb, setor, f"04_senha_visivel_T{tentativa}")
-                    update_status(setor, "Digitando senha...", imagem=img)
+                    update_status(setor, "A introduzir palavra-passe...", imagem=img)
                     sb.type("#idToken3", senha)
                     sb.sleep(1)
                     sb.click("input#loginButton_0[name='callback_4']")
-                    update_status(setor, "Validando acesso...", imagem=img)
+                    update_status(setor, "A validar acesso...", imagem=img)
                     
                     max_retries_url = 15
                     logged_in = False
@@ -160,7 +172,7 @@ def processar_login(account_id, setor_solicitado, thread_id):
                         account.last_login_at = datetime.utcnow()
                         account.user_agent_used = real_ua
                         db.commit()
-                        update_status(setor, "Acesso concedido e salvo no Pool!", concluido=True, imagem=img)
+                        update_status(setor, "Acesso concedido e guardado na Pool!", concluido=True, imagem=img)
                         
                         get_redis().set("metrics:captcha_consecutive_failures", 0)
                         get_redis().delete(f"lock:queue:{account_id}")
@@ -171,7 +183,7 @@ def processar_login(account_id, setor_solicitado, thread_id):
                         return 
                         
                     else:
-                        raise Exception("Timeout ao aguardar o portal jurídico carregar após a senha.")
+                        raise Exception("Timeout ao aguardar carregamento do portal jurídico.")
                         
             except Exception as e:
                 logger.warning(f"[ROBÔ {thread_id}] Falha na tentativa {tentativa}: {e}")
@@ -180,7 +192,7 @@ def processar_login(account_id, setor_solicitado, thread_id):
                 logger.info(f"[ROBÔ {thread_id}] Medidor de bloqueios Cloudflare: {fail_count}/6")
                 
                 if fail_count >= 6: 
-                    logger.error(f"[ROBÔ {thread_id}] 🚨 NÍVEL DE AMEAÇA MÁXIMO! Acionando Fôlego de 3 minutos.")
+                    logger.error(f"[ROBÔ {thread_id}] 🚨 NÍVEL DE AMEAÇA MÁXIMO! A acionar Fôlego de 3 minutos.")
                     get_redis().setex("lock:cooldown", 180, "true") 
                     get_redis().set("metrics:captcha_consecutive_failures", 0) 
                 
@@ -196,30 +208,28 @@ def processar_login(account_id, setor_solicitado, thread_id):
                     update_status(setor, "Falha no processo. O Auto-Dispatcher tentará novamente mais tarde.", erro=True, imagem=img)
                     get_redis().delete(f"lock:queue:{account_id}")
                 else:
-                    update_status(setor, f"Sessão queimada. Reiniciando navegador (Tentativa {tentativa+1})...", imagem=img)
+                    update_status(setor, f"Sessão queimada. A reiniciar navegador (Tentativa {tentativa+1})...", imagem=img)
                     time.sleep(3)
     finally:
         db.close()
 
 
 def worker_loop(thread_id):
-    logger.info(f"[ROBÔ {thread_id}] Em posição e aguardando missões...")
+    logger.info(f"[ROBÔ {thread_id}] Em posição a aguardar missões...")
     while True:
         try:
             if get_redis().exists("lock:cooldown"):
-                logger.info(f"[ROBÔ {thread_id}] 🛑 Modo fôlego ativo. Aguardando a poeira baixar...")
+                logger.info(f"[ROBÔ {thread_id}] 🛑 Modo fôlego ativo. A aguardar que a poeira assente...")
                 time.sleep(20)
                 continue
 
-            # MÁGICA 3: O ROBÔ ESCUTA A PISTA VIP E A PISTA LENTA AO MESMO TEMPO
-            # Se tiver algo na "priority_logins", ele pega primeiro.
             task = get_redis().brpop(["queue:priority_logins", "queue:login_requests"], timeout=10)
             if not task: continue
                 
             queue_name, task_data_str = task
             
             if get_redis().exists("lock:cooldown"):
-                logger.warning(f"[ROBÔ {thread_id}] Fôlego ativado no meio do caminho! Devolvendo tarefa para {queue_name}...")
+                logger.warning(f"[ROBÔ {thread_id}] Fôlego ativado a meio do processo! A devolver tarefa para {queue_name}...")
                 get_redis().rpush(queue_name, task_data_str)
                 time.sleep(20)
                 continue
@@ -248,10 +258,10 @@ def worker_loop(thread_id):
 
 def auto_dispatcher():
     """
-    O Gerente do Pool: Roda a cada 60 segundos em background.
-    Ele varre o banco de dados e joga na PISTA LENTA (login_requests).
+    O Gestor da Pool: Corre a cada 60 segundos em background.
+    Garante que não há bloqueios com o utilizador e injeta tarefas na PISTA LENTA.
     """
-    logger.info("🤖 Auto-Dispatcher: Ativado! As contas serão mantidas quentes 24/7.")
+    logger.info("🤖 Auto-Dispatcher: Ativado! As contas serão mantidas aquecidas 24/7.")
     time.sleep(10) 
     
     while True:
@@ -287,7 +297,6 @@ def auto_dispatcher():
                                 setores_list = [s for s in acc.setores.split('|') if s]
                                 if setores_list: setor = setores_list[0]
                                     
-                            # Envia para a pista lenta (queue:login_requests)
                             payload = json.dumps({"id": acc.id, "setor": setor, "auto": True})
                             get_redis().lpush("queue:login_requests", payload)
                             logger.info(f"🔄 Auto-Dispatcher: Conta {acc.login} enfileirada para pré-aquecimento.")
@@ -301,7 +310,7 @@ def auto_dispatcher():
 
 
 if __name__ == "__main__":
-    logger.info("Limpando filas antigas e destravando status fantasmas...")
+    logger.info("A limpar filas antigas e a destravar estados fantasma...")
     try:
         r = get_redis()
         r.delete("queue:login_requests")
@@ -312,7 +321,7 @@ if __name__ == "__main__":
         for key in r.scan_iter("status:*"): r.delete(key)
     except: pass
     
-    logger.info(f"🚀 Iniciando a Frota OneLog com {MAX_WORKERS} Robôs em paralelo...")
+    logger.info(f"🚀 A iniciar a Frota OneLog com {MAX_WORKERS} Robôs em paralelo...")
     
     processes = []
     
