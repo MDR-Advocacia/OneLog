@@ -102,21 +102,20 @@ def processar_login(account_id, setor_solicitado, thread_id):
             sb_instance = None 
             
             try:
-                # CORREÇÃO: Removido o window_size daqui de dentro para não crachar o SeleniumBase antigo!
+                # CORREÇÃO: Sem window_size no construtor
                 with SB(uc=True, test=True, headless=False, xvfb=True, proxy="socks5://206.42.43.192:45123", user_data_dir=pasta_perfil) as sb:
                     sb_instance = sb 
                     
-                    # Definimos o tamanho da tela logo após abrir, de forma segura
+                    # Definimos o tamanho da tela logo após abrir
                     try: sb.set_window_size(1366, 768)
                     except: pass
                     
-                    update_status(setor, f"Abrindo navegador e desligando sensores (Tentativa {tentativa}/{max_tentativas_gerais})...")
+                    update_status(setor, f"Abrindo navegador (Tentativa {tentativa}/{max_tentativas_gerais})...")
                     
-                    # MÁGICA 3: O Reconnect! Ele abre a página e se desliga do Chrome por 5s para o Cloudflare não nos ver.
-                    sb.uc_open_with_reconnect('https://loginweb.bb.com.br/sso/XUI/?realm=/paj&goto=https://juridico.bb.com.br/wfj#login', reconnect_time=5)
-                    
-                    # REMOVIDA A FAXINA E O REFRESH (O perfil já é virgem! Se dermos refresh, matamos o token de confiança do Cloudflare!)
-                    sb.sleep(2)
+                    # CORREÇÃO DEFINITIVA: Retornamos ao sb.open nativo!
+                    # O perfil isolado já garante que o Cloudflare nos veja como humanos novos.
+                    sb.open('https://loginweb.bb.com.br/sso/XUI/?realm=/paj&goto=https://juridico.bb.com.br/wfj#login')
+                    sb.sleep(3)
                     
                     img = snapshot(sb, setor, f"01_inicio_T{tentativa}")
                     
@@ -136,13 +135,11 @@ def processar_login(account_id, setor_solicitado, thread_id):
                         update_status(setor, "Cloudflare detectado. Clique fantasma no centro alvo...", imagem=img)
                         sb.sleep(2)
                         try:
-                            # MÁGICA 4: ActionChains com Offset Correto e Micro-Jitter
+                            # MÁGICA 3: ActionChains com o seu Offset Correto de 152px e Micro-Jitter
                             elem = sb.driver.find_element("css selector", captcha_container)
                             action = ActionChains(sb.driver)
                             
-                            # O centro do checkbox do Turnstile costuma ficar perto do X: 152
-                            # Adicionamos uma micro variação (-3 a +3) para parecer um humano com tremedeira leve
-                            offset_x = 155 + random.randint(-3, 3)
+                            offset_x = 152 + random.randint(-3, 3)
                             offset_y = 15 + random.randint(-3, 3)
                             
                             action.move_to_element_with_offset(elem, offset_x, offset_y).click().perform()
