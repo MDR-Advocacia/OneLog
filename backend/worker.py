@@ -9,10 +9,20 @@ import random
 from datetime import datetime
 from seleniumbase import SB
 import logging
+import sys
 from database import SessionLocal, AccountBB
 
-# Configuração de Logs
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - WORKER - %(message)s')
+if not os.path.exists('shared'): os.makedirs('shared')
+
+# Configuração de Logs (Salva no terminal e no arquivo público)
+logging.basicConfig(
+    level=logging.INFO, 
+    format='%(asctime)s - WORKER - %(message)s',
+    handlers=[
+        logging.FileHandler("shared/worker_debug.log", encoding='utf-8'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api-onelog.mdradvocacia.com"
