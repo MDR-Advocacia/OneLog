@@ -102,10 +102,13 @@ def processar_login(account_id, setor_solicitado, thread_id):
             sb_instance = None 
             
             try:
-                # REMOVIDO o page_load_strategy="eager" (O Cloudflare precisa da página inteira para nos validar!)
-                # ADICIONADO user_data_dir e window_size realista
-                with SB(uc=True, test=True, headless=False, xvfb=True, proxy="socks5://206.42.43.192:45123", user_data_dir=pasta_perfil, window_size="1366,768") as sb:
+                # CORREÇÃO: Removido o window_size daqui de dentro para não crachar o SeleniumBase antigo!
+                with SB(uc=True, test=True, headless=False, xvfb=True, proxy="socks5://206.42.43.192:45123", user_data_dir=pasta_perfil) as sb:
                     sb_instance = sb 
+                    
+                    # Definimos o tamanho da tela logo após abrir, de forma segura
+                    try: sb.set_window_size(1366, 768)
+                    except: pass
                     
                     update_status(setor, f"Abrindo navegador e desligando sensores (Tentativa {tentativa}/{max_tentativas_gerais})...")
                     
