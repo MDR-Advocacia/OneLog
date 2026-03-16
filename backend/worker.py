@@ -101,43 +101,61 @@ def processar_login(account_id, setor_solicitado, thread_id):
                 with SB(uc=True, test=True, headless=False, xvfb=True, proxy="socks5://206.42.43.192:45123", page_load_strategy="eager") as sb:
                     sb_instance = sb 
                     
-                    update_status(setor, f"Abrindo navegador (Tentativa {tentativa}/{max_tentativas_gerais})...", thread_id=thread_id)
-                    sb.open('https://loginweb.bb.com.br/sso/XUI/?realm=/paj&goto=https://juridico.bb.com.br/wfj#login')
+                    # ========================================================
+                    # A CATRACA DO CLOUDFLARE (FILA INDIANA)
+                    # ========================================================
+                    logger.info(f"[ROBÔ {thread_id} | {setor}] Aguardando a Catraca do Banco liberar...")
                     
-                    logger.info(f"[ROBÔ {thread_id} | {setor}] Executando faxina de cookies e cache...")
-                    sb.delete_all_cookies()
-                    sb.execute_script("window.localStorage.clear(); window.sessionStorage.clear();")
-                    sb.refresh() 
-                    sb.sleep(4)
+                    # O robô tenta pegar a chave da porta. Se outro robô estiver passando, ele espera aqui.
+                    # Expira em 60s por segurança, caso algum robô morra lá dentro.
+                    while not get_redis().set("lock:bb_door", "1", ex=60, nx=True):
+                        time.sleep(3)
                     
-                    img = snapshot(sb, setor, f"01_inicio_T{tentativa}", thread_id=thread_id)
-                    
-                    update_status(setor, "Digitando usuário...", imagem=img, thread_id=thread_id)
-                    sb.type("#idToken1", usuario)
-                    sb.sleep(1)
-                    sb.click("#loginButton_0")
-                    
-                    update_status(setor, "Analisando Captcha...", imagem=img, thread_id=thread_id)
-                    sb.sleep(6)
-                    img = snapshot(sb, setor, f"02_antes_captcha_T{tentativa}", thread_id=thread_id)
-                    
-                    captcha_container = "div.cf-turnstile"
-                    
-                    if sb.is_element_visible(captcha_container):
-                        update_status(setor, "Cloudflare detectado. Clique único...", imagem=img, thread_id=thread_id)
-                        sb.sleep(2)
-                        try:
-                            sb.click(captcha_container) 
-                            logger.info(f"[ROBÔ {thread_id} | {setor}] >>> Clique no captcha realizado.")
-                        except Exception as e:
-                            logger.warning(f"[ROBÔ {thread_id} | {setor}] Aviso no clique: {e}")
-                            
-                        img = snapshot(sb, setor, f"03_pos_clique_T{tentativa}", thread_id=thread_id)
-                    
-                    update_status(setor, "Aguardando campo de senha...", imagem=img, thread_id=thread_id)
-                    
-                    sb.wait_for_element("#idToken3", timeout=35)
-                    logger.info(f"[ROBÔ {thread_id} | {setor}] >>> SUCESSO! Campo de senha apareceu!")
+                    try:
+                        update_status(setor, f"Catraca liberada! Abrindo navegador (Tentativa {tentativa}/{max_tentativas_gerais})...", thread_id=thread_id)
+                        sb.open('https://loginweb.bb.com.br/sso/XUI/?realm=/paj&goto=https://juridico.bb.com.br/wfj#login')
+                        
+                        logger.info(f"[ROBÔ {thread_id} | {setor}] Executando faxina de cookies e cache...")
+                        sb.delete_all_cookies()
+                        sb.execute_script("window.localStorage.clear(); window.sessionStorage.clear();")
+                        sb.refresh() 
+                        sb.sleep(4)
+                        
+                        img = snapshot(sb, setor, f"01_inicio_T{tentativa}", thread_id=thread_id)
+                        
+                        update_status(setor, "Digitando usuário...", imagem=img, thread_id=thread_id)
+                        sb.type("#idToken1", usuario)
+                        sb.sleep(1)
+                        sb.click("#loginButton_0")
+                        
+                        update_status(setor, "Analisando Captcha...", imagem=img, thread_id=thread_id)
+                        sb.sleep(6)
+                        img = snapshot(sb, setor, f"02_antes_captcha_T{tentativa}", thread_id=thread_id)
+                        
+                        captcha_container = "div.cf-turnstile"
+                        
+                        if sb.is_element_visible(captcha_container):
+                            update_status(setor, "Cloudflare detectado. Clique único...", imagem=img, thread_id=thread_id)
+                            sb.sleep(2)
+                            try:
+                                sb.click(captcha_container) 
+                                logger.info(f"[ROBÔ {thread_id} | {setor}] >>> Clique no captcha realizado.")
+                            except Exception as e:
+                                logger.warning(f"[ROBÔ {thread_id} | {setor}] Aviso no clique: {e}")
+                                
+                            img = snapshot(sb, setor, f"03_pos_clique_T{tentativa}", thread_id=thread_id)
+                        
+                        update_status(setor, "Aguardando campo de senha...", imagem=img, thread_id=thread_id)
+                        
+                        sb.wait_for_element("#idToken3", timeout=35)
+                        logger.info(f"[ROBÔ {thread_id} | {setor}] >>> SUCESSO! Campo de senha apareceu!")
+                        
+                    finally:
+                        # O robô passou da verificação do Cloudflare. Ele devolve a chave da porta
+                        # para o próximo robô entrar, enquanto ele digita a senha sossegado.
+                        get_redis().delete("lock:bb_door")
+                        logger.info(f"[ROBÔ {thread_id} | {setor}] Catraca liberada para o próximo robô da fila.")
+                    # ========================================================
                     
                     img = snapshot(sb, setor, f"04_senha_visivel_T{tentativa}", thread_id=thread_id)
                     
@@ -192,6 +210,9 @@ def processar_login(account_id, setor_solicitado, thread_id):
                         
             except Exception as e:
                 logger.warning(f"[ROBÔ {thread_id} | {setor}] Falha na tentativa {tentativa}: {e}")
+                
+                # Garante que a catraca destrave se o robô morrer ou der erro no meio
+                get_redis().delete("lock:bb_door")
                 
                 fail_count = get_redis().incr("metrics:captcha_consecutive_failures")
                 logger.info(f"[ROBÔ {thread_id} | {setor}] Medidor de bloqueios Cloudflare: {fail_count}/6")
@@ -324,6 +345,7 @@ if __name__ == "__main__":
         r.delete("queue:login_requests")
         r.delete("queue:priority_logins") 
         r.delete("lock:cooldown") 
+        r.delete("lock:bb_door") # Garante que a catraca inicie liberada!
         r.set("metrics:captcha_consecutive_failures", 0) 
         for key in r.scan_iter("lock:queue:*"): r.delete(key)
         for key in r.scan_iter("status:*"): r.delete(key)
