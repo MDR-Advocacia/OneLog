@@ -19,8 +19,8 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api-onelog.mdradvocacia.com"
 
-# MODO TURBO
-DEBUG_MODE = os.getenv("DEBUG_MODE", "False").lower() == "true"
+# MODO TURBO CONTROLADO POR VARIÁVEL DE AMBIENTE (Padrão: True)
+DEBUG_MODE = os.getenv("DEBUG_MODE", "True").lower() == "true"
 
 # Define quantos robôs vão rodar ao mesmo tempo (Padrão: 3)
 MAX_WORKERS = int(os.getenv("MAX_WORKERS", "3"))
@@ -45,8 +45,11 @@ def snapshot(sb, setor, nome_arquivo):
     if not os.path.exists('shared'): os.makedirs('shared')
     ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     filename = f"{setor}_{nome_arquivo}_{ts}.png"
-    sb.save_screenshot(os.path.join("static", filename))
-    img_url = f"{BASE_URL}/static/{filename}"
+    
+    # CORREÇÃO CRÍTICA: Estava salvando em 'static', agora salva estritamente em 'shared'
+    sb.save_screenshot(os.path.join("shared", filename))
+    img_url = f"{BASE_URL}/shared/{filename}"
+    
     logger.info(f"📸 Snapshot gerado: {img_url}")
     return img_url
 
@@ -112,7 +115,6 @@ def processar_login(account_id, setor_solicitado, thread_id):
                     
                     update_status(setor, f"Abrindo navegador (Tentativa {tentativa}/{max_tentativas_gerais})...")
                     
-                    # CORREÇÃO DEFINITIVA: Retornamos ao sb.open nativo!
                     # O perfil isolado já garante que o Cloudflare nos veja como humanos novos.
                     sb.open('https://loginweb.bb.com.br/sso/XUI/?realm=/paj&goto=https://juridico.bb.com.br/wfj#login')
                     sb.sleep(3)
@@ -135,7 +137,6 @@ def processar_login(account_id, setor_solicitado, thread_id):
                         update_status(setor, "Cloudflare detectado. Clique fantasma no centro alvo...", imagem=img)
                         sb.sleep(2)
                         try:
-                            # MÁGICA 3: ActionChains com o seu Offset Correto de 152px e Micro-Jitter
                             elem = sb.driver.find_element("css selector", captcha_container)
                             action = ActionChains(sb.driver)
                             
@@ -143,11 +144,33 @@ def processar_login(account_id, setor_solicitado, thread_id):
                             offset_y = 15 + random.randint(-3, 3)
                             
                             action.move_to_element_with_offset(elem, offset_x, offset_y).click().perform()
+                            
+                            # --- MODO SNIPER: Desenha um alvo vermelho na tela onde ele clicou ---
+                            try:
+                                sb.execute_script(f"""
+                                    var dot = document.createElement('div');
+                                    dot.style.position = 'absolute';
+                                    dot.style.width = '8px';
+                                    dot.style.height = '8px';
+                                    dot.style.background = 'red';
+                                    dot.style.borderRadius = '50%';
+                                    dot.style.zIndex = '999999';
+                                    dot.style.boxShadow = '0 0 5px black';
+                                    var rect = document.querySelector('{captcha_container}').getBoundingClientRect();
+                                    dot.style.left = (rect.left + window.scrollX + {offset_x} - 4) + 'px';
+                                    dot.style.top = (rect.top + window.scrollY + {offset_y} - 4) + 'px';
+                                    document.body.appendChild(dot);
+                                """)
+                            except Exception as viz_e:
+                                logger.warning(f"[ROBÔ {thread_id}] Falha ao desenhar modo sniper: {viz_e}")
+                            # ----------------------------------------------------------------------
+                            
                             logger.info(f"[ROBÔ {thread_id}] >>> Clique físico no captcha (X:{offset_x}, Y:{offset_y}) realizado com sucesso.")
                         except Exception as e:
                             logger.warning(f"[ROBÔ {thread_id}] Aviso no clique físico: {e}")
                             sb.click(captcha_container) # Fallback padrão
                             
+                        # Esse print agora vai salvar O PONTO VERMELHO pra gente avaliar!
                         img = snapshot(sb, setor, f"03_pos_clique_T{tentativa}")
                     
                     update_status(setor, "Aguardando campo de senha...", imagem=img)

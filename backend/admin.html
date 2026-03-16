@@ -200,9 +200,12 @@
                     </div>
                 </div>
 
-                <div class="mb-4">
+                <div class="mb-4 relative">
                     <label class="text-xs font-bold text-gray-500 uppercase">Senha Banco do Brasil</label>
-                    <input type="password" id="modal-senha" class="w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500 font-mono" placeholder="Digite a senha (ou deixe em branco)">
+                    <input type="password" id="modal-senha" class="w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500 font-mono pr-10" placeholder="Digite a senha (ou deixe em branco)">
+                    <button type="button" onclick="togglePassword()" class="absolute right-3 top-[34px] text-gray-500 hover:text-blue-600 focus:outline-none">
+                        <i class="fas fa-eye" id="eye-icon"></i>
+                    </button>
                 </div>
 
                 <div class="grid grid-cols-2 gap-4 mb-4">
@@ -510,6 +513,21 @@
             } else customInput.classList.add('hidden');
         }
 
+        // Nova função para revelar/esconder a senha no modal
+        function togglePassword() {
+            const input = document.getElementById('modal-senha');
+            const icon = document.getElementById('eye-icon');
+            if (input.type === 'password') {
+                input.type = 'text';
+                icon.classList.remove('fa-eye');
+                icon.classList.add('fa-eye-slash');
+            } else {
+                input.type = 'password';
+                icon.classList.remove('fa-eye-slash');
+                icon.classList.add('fa-eye');
+            }
+        }
+
         function openModal(accountId = null) {
             document.getElementById('account-modal').classList.remove('hidden');
             document.getElementById('account-modal').classList.add('flex');
@@ -522,7 +540,12 @@
                 document.getElementById('modal-login').value = acc.login;
                 document.getElementById('modal-login').disabled = true;
                 document.getElementById('modal-titular').value = acc.titular === "Não informado" ? "" : acc.titular;
-                document.getElementById('modal-senha').value = "";
+                
+                // Preenche a senha vinda do banco e reseta o olhinho
+                document.getElementById('modal-senha').value = acc.senha || "";
+                document.getElementById('modal-senha').type = "password";
+                document.getElementById('eye-icon').className = "fas fa-eye";
+                
                 populateModalStatus(acc.status);
                 document.getElementById('modal-validade').value = acc.data_validade || "";
                 
@@ -536,7 +559,12 @@
                 document.getElementById('modal-login').value = "";
                 document.getElementById('modal-login').disabled = false;
                 document.getElementById('modal-titular').value = "";
+                
+                // Reseta a senha e o olhinho
                 document.getElementById('modal-senha').value = "";
+                document.getElementById('modal-senha').type = "password";
+                document.getElementById('eye-icon').className = "fas fa-eye";
+                
                 document.getElementById('modal-validade').value = "";
                 document.getElementById('modal-status-updated-at').value = "";
                 
