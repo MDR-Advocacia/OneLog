@@ -176,6 +176,9 @@ def processar_login(account_id, setor_solicitado, thread_id):
                         db.commit()
                         update_status(setor, "Acesso concedido e salvo no Pool!", concluido=True, imagem=img)
                         
+                        # --- SUCESSO! Zera o contador de falhas da frota ---
+                        get_redis().set("metrics:captcha_consecutive_failures", 0)
+                        
                         try: sb.driver.quit() 
                         except: pass
                         mata_fantasmas_do_chrome(meu_pid)
@@ -186,6 +189,17 @@ def processar_login(account_id, setor_solicitado, thread_id):
                         
             except Exception as e:
                 logger.warning(f"[ROBÔ {thread_id}] Falha na tentativa {tentativa}: {e}")
+                
+                # --- SISTEMA DE RESILIÊNCIA (FÔLEGO) ---
+                fail_count = get_redis().incr("metrics:captcha_consecutive_failures")
+                logger.info(f"[ROBÔ {thread_id}] Medidor de bloqueios Cloudflare: {fail_count}/6")
+                
+                if fail_count >= 6: # Se a frota acumular 6 falhas consecutivas
+                    logger.error(f"[ROBÔ {thread_id}] 🚨 NÍVEL DE AMEAÇA MÁXIMO ATINGIDO NO CLOUDFLARE!")
+                    logger.error(f"[ROBÔ {thread_id}] Acionando protocolo de Fôlego de 3 minutos para toda a frota.")
+                    get_redis().setex("lock:cooldown", 180, "true") # Cria uma trava temporária de 3 minutos
+                    get_redis().set("metrics:captcha_consecutive_failures", 0) # Reseta para não travar de novo instantaneamente
+                # ----------------------------------------
                 
                 if sb_instance:
                      img = snapshot(sb_instance, setor, f"erro_tentativa_{tentativa}")
@@ -212,8 +226,26 @@ def worker_loop(thread_id):
     
     while True:
         try:
-            _, task_data_str = get_redis().brpop("queue:login_requests")
+            # 1. Verifica se o Fôlego está ativado ANTES de buscar missões
+            if get_redis().exists("lock:cooldown"):
+                logger.info(f"[ROBÔ {thread_id}] 🛑 Modo fôlego ativo. Aguardando a poeira baixar...")
+                time.sleep(20)
+                continue
+
+            # 2. Busca com timeout de 10s (para não travar eternamente se a fila estiver vazia e não checar o fôlego)
+            task = get_redis().brpop("queue:login_requests", timeout=10)
+            if not task:
+                continue
+                
+            _, task_data_str = task
             
+            # 3. Verifica NOVAMENTE logo após pegar a missão (evita que ele pegue missão durante o Fôlego de outro robô)
+            if get_redis().exists("lock:cooldown"):
+                logger.warning(f"[ROBÔ {thread_id}] Fôlego ativado no meio do caminho! Devolvendo tarefa para a fila...")
+                get_redis().rpush("queue:login_requests", task_data_str)
+                time.sleep(20)
+                continue
+
             try:
                 task_data = json.loads(task_data_str)
                 account_id = task_data['id']
@@ -235,6 +267,8 @@ if __name__ == "__main__":
     try:
         r = get_redis()
         r.delete("queue:login_requests")
+        r.delete("lock:cooldown") # Destrava o fôlego caso o container seja reiniciado
+        r.set("metrics:captcha_consecutive_failures", 0) # Zera as métricas
         for key in r.scan_iter("status:*"):
             r.delete(key)
     except:
