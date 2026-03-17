@@ -35,8 +35,6 @@ MAX_WORKERS = int(os.getenv("MAX_WORKERS", "3"))
 
 # ====================================================================
 # SISTEMA DE ROTAÇÃO DE PROXIES (PREPARAÇÃO PARA O MIKROTIK)
-# Exemplo no .env: PROXY_LIST=socks5://ip1:porta,socks5://ip2:porta
-# Se não houver lista, usa o padrão antigo.
 # ====================================================================
 PROXY_ENV = os.getenv("PROXY_LIST", "socks5://206.42.43.192:45123")
 PROXY_LIST = [p.strip() for p in PROXY_ENV.split(',') if p.strip()]
@@ -58,7 +56,6 @@ def update_status(setor, msg, concluido=False, erro=False, imagem=None, thread_i
     status = {"mensagem": msg, "concluido": concluido, "erro": erro, "imagem": imagem}
     get_redis().set(f"status:{setor}", json.dumps(status))
     
-    # Adiciona o crachá de identificação no log se soubermos quem é o robô
     prefix = f"[ROBÔ {thread_id} | {setor}]" if thread_id else f"[{setor}]"
     logger.info(f"{prefix} {msg}")
 
@@ -113,13 +110,9 @@ def processar_login(account_id, setor_solicitado, thread_id):
             try:
                 logger.info(f"[ROBÔ {thread_id} | {setor}] IP/Proxy alocado para esta missão: {proxy_escolhido}")
                 
-                # O SEU CÓDIGO FUNCIONAL INTACTO (AGORA COM PROXY DINÂMICO)
                 with SB(uc=True, test=True, headless=False, xvfb=True, proxy=proxy_escolhido, page_load_strategy="eager") as sb:
                     sb_instance = sb 
                     
-                    # ========================================================
-                    # A CATRACA DO CLOUDFLARE (FILA INDIANA)
-                    # ========================================================
                     logger.info(f"[ROBÔ {thread_id} | {setor}] Aguardando a Catraca do Banco liberar...")
                     
                     while not get_redis().set("lock:bb_door", "1", ex=60, nx=True):
@@ -127,14 +120,12 @@ def processar_login(account_id, setor_solicitado, thread_id):
                     
                     try:
                         update_status(setor, f"Catraca liberada! Abrindo navegador (Tentativa {tentativa}/{max_tentativas_gerais})...", thread_id=thread_id)
-                        sb.open('https://loginweb.bb.com.br/sso/XUI/?realm=/paj&goto=https://juridico.bb.com.br/wfj#login')
                         
-                        # ========================================================
-                        # FAXINA NUCLEAR (CDP + LOCALSTORAGE + INDEXEDDB)
-                        # ========================================================
+                        sb.open('https://loginweb.bb.com.br/favicon.ico')
+                        sb.sleep(1)
+                        
                         logger.info(f"[ROBÔ {thread_id} | {setor}] Executando Faxina Nuclear de Cookies e Cache...")
                         try:
-                            # Força a limpeza profunda a nível de protocolo do motor do Chrome
                             sb.driver.execute_cdp_cmd('Network.clearBrowserCache', {})
                             sb.driver.execute_cdp_cmd('Network.clearBrowserCookies', {})
                         except Exception as cdp_e:
@@ -143,13 +134,11 @@ def processar_login(account_id, setor_solicitado, thread_id):
                         sb.delete_all_cookies()
                         sb.execute_script("window.localStorage.clear(); window.sessionStorage.clear();")
                         try:
-                            # Destrói bases de dados locais invisíveis que o Cloudflare usa para fingerprint
                             sb.execute_script("window.indexedDB.databases().then(dbs => dbs.forEach(db => window.indexedDB.deleteDatabase(db.name)))")
                         except: pass
                         
-                        sb.refresh() 
+                        sb.open('https://loginweb.bb.com.br/sso/XUI/?realm=/paj&goto=https://juridico.bb.com.br/wfj#login')
                         sb.sleep(4)
-                        # ========================================================
                         
                         img = snapshot(sb, setor, f"01_inicio_T{tentativa}", thread_id=thread_id)
                         
@@ -165,18 +154,16 @@ def processar_login(account_id, setor_solicitado, thread_id):
                         captcha_container = "div.cf-turnstile"
                         
                         if sb.is_element_visible(captcha_container):
-                            # AJUSTE DE TIMING AQUI: Deixamos o Cloudflare avaliar o nosso navegador antes de reagirmos
                             update_status(setor, "Cloudflare detectado. Aguardando estabilização...", imagem=img, thread_id=thread_id)
                             sb.sleep(4) 
                             
                             try:
-                                # O SEU CLIQUE BRUTO QUE SEMPRE FUNCIONOU E NÃO DÁ CRASH
+                                # O SEU CLIQUE BRUTO QUE NÃO QUEBRA!
                                 sb.click(captcha_container) 
                                 logger.info(f"[ROBÔ {thread_id} | {setor}] >>> Clique bruto no captcha realizado.")
                             except Exception as e:
                                 logger.warning(f"[ROBÔ {thread_id} | {setor}] Aviso no clique bruto: {e}")
                             
-                            # AJUSTE DE TIMING AQUI: Damos o tempo da bolinha verde do Cloudflare girar e aprovar!
                             update_status(setor, "Aguardando validação do clique...", thread_id=thread_id)
                             sb.sleep(5) 
                                 
@@ -256,7 +243,11 @@ def processar_login(account_id, setor_solicitado, thread_id):
                     get_redis().set("metrics:captcha_consecutive_failures", 0) 
                 
                 if sb_instance:
-                     img = snapshot(sb_instance, setor, f"erro_tentativa_{tentativa}", thread_id=thread_id)
+                     try:
+                         img = snapshot(sb_instance, setor, f"erro_tentativa_{tentativa}", thread_id=thread_id)
+                     except Exception:
+                         img = None
+                         
                      try: sb_instance.driver.quit() 
                      except: pass
                 else: img = None
@@ -338,14 +329,15 @@ def auto_dispatcher():
                     if not acc.cookie_payload:
                         precisa_renovar = True
                     elif acc.last_login_at:
+                        # O PULO DO GATO AQUI: 18 Minutos cravados!
                         minutos_passados = (agora - acc.last_login_at).total_seconds() / 60
-                        if minutos_passados >= 13:
+                        if minutos_passados >= 18:
                             precisa_renovar = True
                     
                     if precisa_renovar:
                         lock_key = f"lock:queue:{acc.id}"
                         if not get_redis().exists(lock_key):
-                            get_redis().setex(lock_key, 300, "1")
+                            get_redis().setex(lock_key, 600, "1")
                             
                             setor = "GERAL"
                             if acc.setores:
@@ -354,7 +346,7 @@ def auto_dispatcher():
                                     
                             payload = json.dumps({"id": acc.id, "setor": setor, "auto": True})
                             get_redis().lpush("queue:login_requests", payload)
-                            logger.info(f"🔄 [DISPATCHER] Conta {acc.login} ({setor}) enfileirada para pré-aquecimento.")
+                            logger.info(f"🔄 [DISPATCHER] Conta {acc.login} ({setor}) enfileirada para pré-aquecimento (Ciclo 18m).")
             finally:
                 db.close()
                 
