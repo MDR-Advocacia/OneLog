@@ -12,9 +12,11 @@ import logging
 import sys
 from database import SessionLocal, AccountBB
 
-if not os.path.exists('shared'): os.makedirs('shared')
+# Garante que a pasta de compartilhamento existe para os logs e prints
+if not os.path.exists('shared'): 
+    os.makedirs('shared')
 
-# Configuração de Logs (Salva no terminal e no arquivo público)
+# Configuração de Logs (Salva no terminal e no arquivo público para acesso via URL)
 logging.basicConfig(
     level=logging.INFO, 
     format='%(asctime)s - WORKER - %(message)s',
@@ -62,6 +64,10 @@ def snapshot(sb, setor, nome_arquivo, thread_id=None):
     return img_url
 
 def mata_fantasmas_do_chrome(pid_pai):
+    """
+    Caça-Fantasmas: Varre os processos filhos a partir do PID do Python atual
+    e garante que qualquer instância desgarrada de chrome ou chromedriver morra.
+    """
     try:
         pai = psutil.Process(pid_pai)
         filhos = pai.children(recursive=True)
@@ -69,12 +75,16 @@ def mata_fantasmas_do_chrome(pid_pai):
             try:
                 nome = filho.name().lower()
                 if "chrome" in nome or "chromedriver" in nome or "xvfb" in nome:
+                    # Tenta matar educadamente e depois à força
                     filho.terminate()
                     filho.kill()
-            except psutil.NoSuchProcess: pass
-    except Exception: pass
+            except psutil.NoSuchProcess:
+                pass
+    except Exception:
+        pass
 
 def processar_login(account_id, setor_solicitado, thread_id):
+    """Função isolada para garantir que o banco de dados seja seguro por thread/processo"""
     meu_pid = os.getpid()
     db = SessionLocal()
     
@@ -98,6 +108,7 @@ def processar_login(account_id, setor_solicitado, thread_id):
             
             try:
                 # O SEU CÓDIGO FUNCIONAL INTACTO!
+                # page_load_strategy="eager" ajuda a parar de depender de carregamentos pesados para injetar comandos
                 with SB(uc=True, test=True, headless=False, xvfb=True, proxy="socks5://206.42.43.192:45123", page_load_strategy="eager") as sb:
                     sb_instance = sb 
                     
@@ -153,6 +164,7 @@ def processar_login(account_id, setor_solicitado, thread_id):
                     finally:
                         # O robô passou da verificação do Cloudflare. Ele devolve a chave da porta
                         # para o próximo robô entrar, enquanto ele digita a senha sossegado.
+                        # O TRY/FINALLY aqui garante que a porta NUNCA fique trancada se o robô morrer.
                         get_redis().delete("lock:bb_door")
                         logger.info(f"[ROBÔ {thread_id} | {setor}] Catraca liberada para o próximo robô da fila.")
                     # ========================================================
@@ -183,6 +195,7 @@ def processar_login(account_id, setor_solicitado, thread_id):
                         cookies_limpos = []
                         for cookie in cookies:
                             nome_cookie = cookie['name']
+                            # Filtra os cookies atrelados a IP e Balanceadores conforme sua análise técnica
                             if nome_cookie in COOKIES_BLOQUEADOS or nome_cookie.startswith('TS01') or 'BIGipServer' in nome_cookie:
                                 logger.info(f"[ROBÔ {thread_id} | {setor}] Filtro Ativado: Destruindo cookie tóxico/IP -> {nome_cookie}")
                                 continue
@@ -198,6 +211,7 @@ def processar_login(account_id, setor_solicitado, thread_id):
                         update_status(setor, "Acesso concedido e salvo no Pool!", concluido=True, imagem=img, thread_id=thread_id)
                         
                         get_redis().set("metrics:captcha_consecutive_failures", 0)
+                        # Libera a trava da conta para que o Dispatcher possa enfileirar de novo no futuro
                         get_redis().delete(f"lock:queue:{account_id}")
                         
                         try: sb.driver.quit() 
@@ -211,7 +225,7 @@ def processar_login(account_id, setor_solicitado, thread_id):
             except Exception as e:
                 logger.warning(f"[ROBÔ {thread_id} | {setor}] Falha na tentativa {tentativa}: {e}")
                 
-                # Garante que a catraca destrave se o robô morrer ou der erro no meio
+                # Garante que a catraca destrave se o robô morrer ou der erro no meio do processo
                 get_redis().delete("lock:bb_door")
                 
                 fail_count = get_redis().incr("metrics:captcha_consecutive_failures")
@@ -252,6 +266,7 @@ def worker_loop(thread_id):
                 time.sleep(20)
                 continue
 
+            # O Robô escuta tanto a Pista VIP quanto a Pista de Manutenção
             task = get_redis().brpop(["queue:priority_logins", "queue:login_requests"], timeout=10)
             if not task: continue
                 
@@ -312,6 +327,7 @@ def auto_dispatcher():
                     if not acc.cookie_payload:
                         precisa_renovar = True
                     elif acc.last_login_at:
+                        # Renova a cada 13 minutos conforme nossa regra de ouro
                         minutos_passados = (agora - acc.last_login_at).total_seconds() / 60
                         if minutos_passados >= 13:
                             precisa_renovar = True
@@ -319,7 +335,8 @@ def auto_dispatcher():
                     if precisa_renovar:
                         lock_key = f"lock:queue:{acc.id}"
                         if not get_redis().exists(lock_key):
-                            get_redis().setex(lock_key, 300, "1")
+                            # Aumentamos para 600s (10 min) para dar tempo do robô trabalhar sem duplicidade
+                            get_redis().setex(lock_key, 600, "1")
                             
                             setor = "GERAL"
                             if acc.setores:
@@ -339,30 +356,33 @@ def auto_dispatcher():
 
 
 if __name__ == "__main__":
-    logger.info("Limpando filas antigas e destravando status fantasmas...")
+    # LIMPEZA CRÍTICA NO BOOT: Destrava qualquer catraca ou fila que ficou "fantasma" no banco
     try:
         r = get_redis()
-        r.delete("queue:login_requests")
-        r.delete("queue:priority_logins") 
+        r.delete("lock:bb_door") 
         r.delete("lock:cooldown") 
-        r.delete("lock:bb_door") # Garante que a catraca inicie liberada!
         r.set("metrics:captcha_consecutive_failures", 0) 
         for key in r.scan_iter("lock:queue:*"): r.delete(key)
         for key in r.scan_iter("status:*"): r.delete(key)
-    except: pass
+        logger.info("🧹 Faxina de boot concluída. Travas do Redis liberadas.")
+    except Exception as e:
+        logger.warning(f"Falha na faxina inicial: {e}")
     
-    logger.info(f"🚀 Iniciando a Frota OneLog com {MAX_WORKERS} Robôs em paralelo...")
+    logger.info(f"🚀 Iniciando a Frota OneLog com {MAX_WORKERS} Robôs em paralelo (Multiprocessing)...")
     
     processes = []
     
+    # Inicia os Robôs Trabalhadores
     for i in range(MAX_WORKERS):
         p = multiprocessing.Process(target=worker_loop, args=(i + 1,), daemon=True)
         p.start()
         processes.append(p)
         
+    # Inicia o Cérebro Autônomo (Auto-Dispatcher)
     dispatcher = multiprocessing.Process(target=auto_dispatcher, daemon=True)
     dispatcher.start()
     processes.append(dispatcher)
         
+    # Mantém o processo pai vivo
     for p in processes:
         p.join()
