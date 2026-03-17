@@ -33,6 +33,17 @@ DEBUG_MODE = os.getenv("DEBUG_MODE", "True").lower() == "true"
 # Define quantos robôs vão rodar ao mesmo tempo (Padrão: 3)
 MAX_WORKERS = int(os.getenv("MAX_WORKERS", "3"))
 
+# ====================================================================
+# SISTEMA DE ROTAÇÃO DE PROXIES (PREPARAÇÃO PARA O MIKROTIK)
+# ====================================================================
+PROXY_ENV = os.getenv("PROXY_LIST", "socks5://206.42.43.192:45123")
+PROXY_LIST = [p.strip() for p in PROXY_ENV.split(',') if p.strip()]
+
+def get_random_proxy():
+    if not PROXY_LIST:
+        return None
+    return random.choice(PROXY_LIST)
+
 redis_client = None
 
 def get_redis():
@@ -45,7 +56,6 @@ def update_status(setor, msg, concluido=False, erro=False, imagem=None, thread_i
     status = {"mensagem": msg, "concluido": concluido, "erro": erro, "imagem": imagem}
     get_redis().set(f"status:{setor}", json.dumps(status))
     
-    # Adiciona o crachá de identificação no log se soubermos quem é o robô
     prefix = f"[ROBÔ {thread_id} | {setor}]" if thread_id else f"[{setor}]"
     logger.info(f"{prefix} {msg}")
 
@@ -88,62 +98,80 @@ def processar_login(account_id, setor_solicitado, thread_id):
         setor = setor_solicitado
         usuario, senha = account.login, account.senha
         
-        update_status(setor, "Iniciando robô stealth...", thread_id=thread_id)
+        # TEXTO UX ATUALIZADO
+        update_status(setor, "Iniciando ambiente seguro na nuvem...", thread_id=thread_id)
         max_tentativas_gerais = 3
         
         for tentativa in range(1, max_tentativas_gerais + 1):
             logger.info(f"[ROBÔ {thread_id} | {setor}] === TENTATIVA {tentativa}/{max_tentativas_gerais} ===")
             
             sb_instance = None 
+            proxy_escolhido = get_random_proxy()
             
             try:
-                # O SEU CÓDIGO FUNCIONAL INTACTO!
-                with SB(uc=True, test=True, headless=False, xvfb=True, proxy="socks5://206.42.43.192:45123", page_load_strategy="eager") as sb:
+                logger.info(f"[ROBÔ {thread_id} | {setor}] IP/Proxy alocado para esta missão: {proxy_escolhido}")
+                
+                with SB(uc=True, test=True, headless=False, xvfb=True, proxy=proxy_escolhido, page_load_strategy="eager") as sb:
                     sb_instance = sb 
                     
-                    # ========================================================
-                    # A CATRACA DO CLOUDFLARE (FILA INDIANA)
-                    # ========================================================
                     logger.info(f"[ROBÔ {thread_id} | {setor}] Aguardando a Catraca do Banco liberar...")
                     
                     while not get_redis().set("lock:bb_door", "1", ex=60, nx=True):
                         time.sleep(3)
                     
                     try:
-                        update_status(setor, f"Catraca liberada! Abrindo navegador (Tentativa {tentativa}/{max_tentativas_gerais})...", thread_id=thread_id)
+                        # TEXTO UX ATUALIZADO
+                        update_status(setor, f"Estabelecendo rota segura (Tentativa {tentativa}/{max_tentativas_gerais})...", thread_id=thread_id)
                         sb.open('https://loginweb.bb.com.br/sso/XUI/?realm=/paj&goto=https://juridico.bb.com.br/wfj#login')
                         
-                        logger.info(f"[ROBÔ {thread_id} | {setor}] Executando faxina de cookies e cache...")
+                        logger.info(f"[ROBÔ {thread_id} | {setor}] Executando Faxina Nuclear de Cookies e Cache...")
+                        try:
+                            sb.driver.execute_cdp_cmd('Network.clearBrowserCache', {})
+                            sb.driver.execute_cdp_cmd('Network.clearBrowserCookies', {})
+                        except Exception as cdp_e:
+                            logger.warning(f"[ROBÔ {thread_id} | {setor}] Aviso na faxina CDP: {cdp_e}")
+                            
                         sb.delete_all_cookies()
                         sb.execute_script("window.localStorage.clear(); window.sessionStorage.clear();")
+                        try:
+                            sb.execute_script("window.indexedDB.databases().then(dbs => dbs.forEach(db => window.indexedDB.deleteDatabase(db.name)))")
+                        except: pass
+                        
                         sb.refresh() 
                         sb.sleep(4)
                         
+                        # TEXTO UX ATUALIZADO
+                        update_status(setor, "Aplicando blindagem de rede...", imagem=img if 'img' in locals() else None, thread_id=thread_id)
+                        
                         img = snapshot(sb, setor, f"01_inicio_T{tentativa}", thread_id=thread_id)
                         
-                        update_status(setor, "Digitando usuário...", imagem=img, thread_id=thread_id)
+                        # TEXTO UX ATUALIZADO
+                        update_status(setor, "Inserindo identificação no portal...", imagem=img, thread_id=thread_id)
                         sb.type("#idToken1", usuario)
                         sb.sleep(1)
                         sb.click("#loginButton_0")
                         
-                        update_status(setor, "Analisando Captcha...", imagem=img, thread_id=thread_id)
+                        # TEXTO UX ATUALIZADO
+                        update_status(setor, "Analisando requisitos de segurança...", imagem=img, thread_id=thread_id)
                         sb.sleep(6)
                         img = snapshot(sb, setor, f"02_antes_captcha_T{tentativa}", thread_id=thread_id)
                         
                         captcha_container = "div.cf-turnstile"
                         
                         if sb.is_element_visible(captcha_container):
-                            update_status(setor, "Cloudflare detectado. Clique único...", imagem=img, thread_id=thread_id)
+                            # TEXTO UX ATUALIZADO
+                            update_status(setor, "Validando integridade da conexão...", imagem=img, thread_id=thread_id)
                             sb.sleep(2)
                             try:
                                 sb.click(captcha_container) 
-                                logger.info(f"[ROBÔ {thread_id} | {setor}] >>> Clique no captcha realizado.")
+                                logger.info(f"[ROBÔ {thread_id} | {setor}] >>> Clique bruto no captcha realizado.")
                             except Exception as e:
-                                logger.warning(f"[ROBÔ {thread_id} | {setor}] Aviso no clique: {e}")
+                                logger.warning(f"[ROBÔ {thread_id} | {setor}] Aviso no clique bruto: {e}")
                                 
                             img = snapshot(sb, setor, f"03_pos_clique_T{tentativa}", thread_id=thread_id)
                         
-                        update_status(setor, "Aguardando campo de senha...", imagem=img, thread_id=thread_id)
+                        # TEXTO UX ATUALIZADO
+                        update_status(setor, "Aguardando criptografia do portal...", imagem=img, thread_id=thread_id)
                         
                         sb.wait_for_element("#idToken3", timeout=35)
                         logger.info(f"[ROBÔ {thread_id} | {setor}] >>> SUCESSO! Campo de senha apareceu!")
@@ -151,15 +179,17 @@ def processar_login(account_id, setor_solicitado, thread_id):
                     finally:
                         get_redis().delete("lock:bb_door")
                         logger.info(f"[ROBÔ {thread_id} | {setor}] Catraca liberada para o próximo robô da fila.")
-                    # ========================================================
                     
                     img = snapshot(sb, setor, f"04_senha_visivel_T{tentativa}", thread_id=thread_id)
                     
-                    update_status(setor, "Digitando senha...", imagem=img, thread_id=thread_id)
+                    # TEXTO UX ATUALIZADO
+                    update_status(setor, "Autenticando credenciais de acesso...", imagem=img, thread_id=thread_id)
                     sb.type("#idToken3", senha)
                     sb.sleep(1)
                     sb.click("input#loginButton_0[name='callback_4']")
-                    update_status(setor, "Validando acesso...", imagem=img, thread_id=thread_id)
+                    
+                    # TEXTO UX ATUALIZADO
+                    update_status(setor, "Validando liberação do sistema...", imagem=img, thread_id=thread_id)
                     
                     max_retries_url = 15
                     logged_in = False
@@ -179,7 +209,7 @@ def processar_login(account_id, setor_solicitado, thread_id):
                         for cookie in cookies:
                             nome_cookie = cookie['name']
                             if nome_cookie in COOKIES_BLOQUEADOS or nome_cookie.startswith('TS01') or 'BIGipServer' in nome_cookie:
-                                logger.info(f"[ROBÔ {thread_id} | {setor}] Filtro Ativado: Destruindo cookie tóxico/IP -> {nome_cookie}")
+                                logger.info(f"[ROBÔ {thread_id} | {setor}] Filtro Ativado: Destruindo cookie tóxico -> {nome_cookie}")
                                 continue
                             cookies_limpos.append(cookie)
                             
@@ -190,7 +220,9 @@ def processar_login(account_id, setor_solicitado, thread_id):
                         account.last_login_at = datetime.utcnow()
                         account.user_agent_used = real_ua
                         db.commit()
-                        update_status(setor, "Acesso concedido e salvo no Pool!", concluido=True, imagem=img, thread_id=thread_id)
+                        
+                        # TEXTO UX ATUALIZADO
+                        update_status(setor, "Conexão segura estabelecida com sucesso!", concluido=True, imagem=img, thread_id=thread_id)
                         
                         get_redis().set("metrics:captcha_consecutive_failures", 0)
                         get_redis().delete(f"lock:queue:{account_id}")
@@ -227,17 +259,18 @@ def processar_login(account_id, setor_solicitado, thread_id):
 
                 if tentativa == max_tentativas_gerais:
                     logger.error(f"[ROBÔ {thread_id} | {setor}] FALHA DEFINITIVA APÓS {max_tentativas_gerais} TENTATIVAS.")
-                    update_status(setor, "Falha no processo. O Auto-Dispatcher tentará novamente mais tarde.", erro=True, imagem=img, thread_id=thread_id)
+                    # TEXTO UX ATUALIZADO
+                    update_status(setor, "Falha na sincronização. O sistema tentará novamente em breve.", erro=True, imagem=img, thread_id=thread_id)
                     get_redis().delete(f"lock:queue:{account_id}")
                 else:
-                    update_status(setor, f"Sessão queimada. Reiniciando navegador do zero (Tentativa {tentativa+1})...", imagem=img, thread_id=thread_id)
+                    # TEXTO UX ATUALIZADO
+                    update_status(setor, f"Instabilidade na rede detectada. Reiniciando conexão segura (Tentativa {tentativa+1})...", imagem=img, thread_id=thread_id)
                     time.sleep(3)
     finally:
         db.close()
 
-
 def worker_loop(thread_id):
-    logger.info(f"[ROBÔ {thread_id}] Em posição e aguardando missões...")
+    logger.info(f"[ROBÔ {thread_id}] Em posição e aguardando missões da extensão...")
     
     while True:
         try:
@@ -270,7 +303,7 @@ def worker_loop(thread_id):
             if is_priority:
                 logger.info(f"[ROBÔ {thread_id} | {setor}] 🚨 EMERGÊNCIA VIP 🚨 Conta ID: {account_id} (Fura-fila acionado)")
             else:
-                logger.info(f"[ROBÔ {thread_id} | {setor}] Nova tarefa capturada! Conta ID: {account_id}")
+                logger.info(f"[ROBÔ {thread_id} | {setor}] Nova tarefa capturada (Sob Demanda)! Conta ID: {account_id}")
                 
             processar_login(account_id, setor, thread_id)
             
@@ -278,59 +311,25 @@ def worker_loop(thread_id):
             logger.error(f"[ROBÔ {thread_id}] Erro no loop principal: {e}")
             time.sleep(5)
 
-
 def auto_dispatcher():
     """
-    O Gerente do Pool: Roda a cada 60 segundos em background.
-    Ele varre o banco de dados e joga na PISTA LENTA (login_requests).
+    MODO FAXINEIRO: O Pré-aquecimento 24/7 foi desativado para proteger o servidor do Cloudflare.
+    Agora ele apenas varre o banco a cada 10 minutos para ver se há lixo de memória para limpar.
     """
-    logger.info("🤖 [DISPATCHER] Ativado! As contas serão mantidas quentes 24/7.")
-    time.sleep(10) 
+    logger.info("🤖 [DISPATCHER] Modo 'Pre-Heating' DESATIVADO. Atuando apenas como faxineiro de sistema (On-Demand Mode).")
     
     while True:
         try:
-            if get_redis().exists("lock:cooldown"):
-                time.sleep(30)
-                continue
-
-            db = SessionLocal()
-            try:
-                contas = db.query(AccountBB).filter(
-                    AccountBB.status.in_(['active', 'ativo', 'provisoria_recebida', 'termo_assinado'])
-                ).all()
-
-                agora = datetime.utcnow()
-                for acc in contas:
-                    precisa_renovar = False
-                    
-                    if not acc.cookie_payload:
-                        precisa_renovar = True
-                    elif acc.last_login_at:
-                        minutos_passados = (agora - acc.last_login_at).total_seconds() / 60
-                        if minutos_passados >= 13:
-                            precisa_renovar = True
-                    
-                    if precisa_renovar:
-                        lock_key = f"lock:queue:{acc.id}"
-                        if not get_redis().exists(lock_key):
-                            get_redis().setex(lock_key, 300, "1")
-                            
-                            setor = "GERAL"
-                            if acc.setores:
-                                setores_list = [s for s in acc.setores.split('|') if s]
-                                if setores_list: setor = setores_list[0]
-                                    
-                            payload = json.dumps({"id": acc.id, "setor": setor, "auto": True})
-                            get_redis().lpush("queue:login_requests", payload)
-                            logger.info(f"🔄 [DISPATCHER] Conta {acc.login} ({setor}) enfileirada para pré-aquecimento.")
-            finally:
-                db.close()
-                
-            time.sleep(60)
+            time.sleep(600) # Roda a cada 10 minutos apenas para manutenção levíssima do sistema
+            logger.info("🧹 [DISPATCHER] Verificando integridade das filas (Sistema ocioso)...")
+            
+            # Removemos a lógica que forçava os robôs a logar a cada 13 minutos.
+            # O sistema agora depende EXCLUSIVAMENTE do 'Acessar Portal' da extensão 
+            # e do Marcapasso (Heartbeat) de 20 minutos que roda no computador do usuário!
+            
         except Exception as e:
-            logger.error(f"Erro no Auto-Dispatcher: {e}")
+            logger.error(f"Erro no Faxineiro: {e}")
             time.sleep(60)
-
 
 if __name__ == "__main__":
     logger.info("Limpando filas antigas e destravando status fantasmas...")
@@ -345,11 +344,10 @@ if __name__ == "__main__":
         for key in r.scan_iter("status:*"): r.delete(key)
     except: pass
     
-    logger.info(f"🚀 Iniciando a Frota OneLog com {MAX_WORKERS} Robôs em paralelo...")
+    logger.info(f"🚀 Iniciando a Frota OneLog com {MAX_WORKERS} Robôs em paralelo (Modo Sob Demanda)...")
     
     workers = []
     
-    # Cria os processos iniciais
     for i in range(MAX_WORKERS):
         p = multiprocessing.Process(target=worker_loop, args=(i + 1,), daemon=True)
         p.start()
@@ -360,20 +358,16 @@ if __name__ == "__main__":
         
     # =========================================================================
     # 🐕 O CÃO DE GUARDA (Watchdog de OOM)
-    # Fica observando o pulso dos robôs. Se o Docker matar um por falta de memória, 
-    # ele ressuscita imediatamente!
     # =========================================================================
     while True:
         try:
-            time.sleep(30) # Checa a cada 30 segundos
+            time.sleep(30) 
             
-            # Checa se o cérebro morreu
             if not dispatcher.is_alive():
                 logger.error("🚨 ALERTA: Dispatcher morreu! Ressuscitando...")
                 dispatcher = multiprocessing.Process(target=auto_dispatcher, daemon=True)
                 dispatcher.start()
                 
-            # Checa os peões
             for idx, w in enumerate(workers):
                 if not w["process"].is_alive():
                     r_id = w["id"]

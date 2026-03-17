@@ -66,22 +66,38 @@ def serve_privacy():
     base_dir = os.path.dirname(os.path.abspath(__file__))
     return send_from_directory(base_dir, 'privacy.html')
 
-# --- NOVA ROTA DE PRINTS DE TELA COMPARTILHADOS ---
 @app.route('/shared/<path:filename>')
 def serve_shared(filename):
     base_dir = os.path.dirname(os.path.abspath(__file__))
     shared_dir = os.path.join(base_dir, 'shared')
     return send_from_directory(shared_dir, filename)
 
-# O Flask já serve a pasta /static automaticamente, não precisamos de rota manual pra ela!
 
 # --- ROTAS DE OPERAÇÃO (EXTENSÃO) ---
 @app.route('/api/zerocore/status', methods=['GET'])
 def get_status():
     setor_nome = request.args.get('setor')
     if not setor_nome: return jsonify({"mensagem": "Setor ausente."}), 400
+
+    # =========================================================================
+    # MÁGICA 2: AVISO UNIVERSAL
+    # Antes de olhar o status individual do setor, a API olha o Banco de Dados.
+    # Se QUALQUER robô terminou o cookie, ela avisa 'Concluído' na hora para 
+    # todos os "caroneiros" que estão esperando!
+    # =========================================================================
+    db = SessionLocal()
+    try:
+        account = buscar_conta_para_setor(db, setor_nome)
+        if account and account.cookie_payload and account.last_login_at:
+            if (datetime.utcnow() - account.last_login_at).total_seconds() / 60 < 20:
+                # TEXTO ATUALIZADO: Foco no usuário
+                return jsonify({"concluido": True, "mensagem": "Conexão segura estabelecida!"})
+    finally:
+        db.close()
+
+    # Se o cookie ainda não está pronto, devolve o status normal (Aguardando...)
     status_str = redis_client.get(f"status:{setor_nome}")
-    return jsonify(json.loads(status_str)) if status_str else jsonify({"mensagem": "Aguardando..."})
+    return jsonify(json.loads(status_str)) if status_str else jsonify({"mensagem": "Aguardando sincronização..."})
 
 @app.route('/api/zerocore/login', methods=['POST'])
 def request_login():
@@ -97,7 +113,6 @@ def request_login():
 
     setor_nome = ad_result['setor']
     
-    # 📊 Registo de métricas com data (Histórico Diário)
     hoje = datetime.utcnow().strftime('%Y-%m-%d')
     redis_client.incr(f'metrics:logins_solicitados:{hoje}')
     redis_client.hincrby(f'metrics:sector_logins:{hoje}', setor_nome, 1)
@@ -113,6 +128,7 @@ def request_login():
         if not account:
             return jsonify({"status": "erro", "mensagem": f"Setor {setor_nome} sem conta válida/ativa vinculada."}), 403
 
+        # Cenário 1: Já tem um cookie quentinho pronto. Entrega direto.
         if account.cookie_payload and account.last_login_at:
             if (datetime.utcnow() - account.last_login_at).total_seconds() / 60 < 20:
                 redis_client.incr(f'metrics:cookies_injetados:{hoje}')
@@ -123,9 +139,24 @@ def request_login():
                     "url": "https://juridico.bb.com.br/wfj"
                 })
         
-        redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Iniciando robô...", "concluido": False}))
-        task_payload = json.dumps({"id": account.id, "setor": setor_nome, "user_agent": user_agent, "priority": True})
-        redis_client.lpush("queue:priority_logins", task_payload)
+        # =========================================================================
+        # MÁGICA 1: O SISTEMA DE CARONA (PIGGYBACKING)
+        # =========================================================================
+        lock_key = f"lock:queue:{account.id}"
+        
+        # Cenário 2: Já tem um robô trabalhando NESSA conta agora mesmo?
+        if redis_client.exists(lock_key):
+            # TEXTO ATUALIZADO: Foco no usuário
+            redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Sincronizando com conexão em andamento...", "concluido": False}))
+            return jsonify({"status": "queued", "setor": setor_nome}) # Retorna queued SEM criar novo robô
+            
+        # Cenário 3: Conta fria e nenhum robô trabalhando. Acorda um novo robô!
+        redis_client.setex(lock_key, 600, "1") # Coloca o cadeado na conta por 10 min
+        
+        # TEXTO ATUALIZADO: Foco no usuário
+        redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Iniciando ambiente seguro na nuvem...", "concluido": False}))
+        task_payload = json.dumps({"id": account.id, "setor": setor_nome, "user_agent": user_agent})
+        redis_client.lpush("queue:login_requests", task_payload)
         
         redis_client.incr(f'metrics:robos_executados:{hoje}')
         redis_client.hincrby(f'metrics:account_logins:{hoje}', str(account.login), 1)
@@ -159,17 +190,21 @@ def renew_session():
             
             if account.cookie_payload and account.last_login_at:
                 if (datetime.utcnow() - account.last_login_at).total_seconds() / 60 < 15:
-                    redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Sessão quente retornada do Pool.", "concluido": True, "erro": False}))
+                    # TEXTO ATUALIZADO: Foco no usuário
+                    redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Sessão ativa recuperada com sucesso.", "concluido": True, "erro": False}))
                     redis_client.hincrby(f'metrics:account_logins:{hoje}', str(account.login), 1)
                     return jsonify({"status": "queued"})
             
-            status_str = redis_client.get(f"status:{setor_nome}")
-            if status_str:
-                current_status = json.loads(status_str)
-                if not current_status.get("concluido") and not current_status.get("erro"):
-                    return jsonify({"status": "queued", "mensagem": "Robô já em execução."})
+            # Mesmo sistema de Carona para a renovação de Marcapasso
+            lock_key = f"lock:queue:{account.id}"
+            if redis_client.exists(lock_key):
+                # TEXTO ATUALIZADO: Foco no usuário
+                redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Aguardando renovação de segurança...", "concluido": False, "erro": False}))
+                return jsonify({"status": "queued"})
 
-            redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Renovação de Marcapasso...", "concluido": False, "erro": False}))
+            redis_client.setex(lock_key, 600, "1")
+            # TEXTO ATUALIZADO: Foco no usuário
+            redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Renovando credenciais de acesso...", "concluido": False, "erro": False}))
             task_payload = json.dumps({"id": account.id, "setor": setor_nome, "user_agent": user_agent})
             redis_client.lpush("queue:login_requests", task_payload)
             
@@ -202,7 +237,7 @@ def get_session():
         db.close()
     return jsonify({"status": "erro"}), 404
 
-# --- ROTAS ADMINISTRATIVAS E DASHBOARD ---
+# --- ROTAS ADMINISTRATIVAS E DASHBOARD (SEM ALTERAÇÕES) ---
 @app.route('/api/admin/ad_sectors', methods=['GET'])
 @admin_required
 def admin_list_ad_sectors():
@@ -225,7 +260,6 @@ def admin_dashboard_stats():
         active_accounts = db.query(AccountBB).filter(AccountBB.status.in_(['active', 'ativo', 'provisoria_recebida', 'termo_assinado'])).count()
         queue_size = redis_client.llen("queue:login_requests")
         
-        # Puxa as métricas exclusivamente do dia de hoje
         logins_solicitados = int(redis_client.get(f'metrics:logins_solicitados:{hoje}') or 0)
         cookies_injetados = int(redis_client.get(f'metrics:cookies_injetados:{hoje}') or 0)
         robos_executados = int(redis_client.get(f'metrics:robos_executados:{hoje}') or 0)
@@ -243,7 +277,6 @@ def admin_dashboard_stats():
     finally:
         db.close()
 
-# 📈 ROTA DE ANALYTICS (NOVA TELA)
 @app.route('/api/admin/analytics', methods=['GET'])
 @admin_required
 def admin_analytics():
@@ -265,26 +298,21 @@ def admin_analytics():
     while current_date <= end_date:
         day_str = current_date.strftime('%Y-%m-%d')
         
-        # Totais gerais
         total_logins += int(redis_client.get(f'metrics:logins_solicitados:{day_str}') or 0)
         total_cookies += int(redis_client.get(f'metrics:cookies_injetados:{day_str}') or 0)
         
-        # Consolida setores
         sectors = redis_client.hgetall(f'metrics:sector_logins:{day_str}')
         for sec, count in sectors.items():
             sector_stats[sec] = sector_stats.get(sec, 0) + int(count)
             
-        # Consolida contas
         accounts = redis_client.hgetall(f'metrics:account_logins:{day_str}')
         for acc, count in accounts.items():
             account_stats[acc] = account_stats.get(acc, 0) + int(count)
             
         current_date += timedelta(days=1)
 
-    # Ordena para o Top
     sorted_sectors = [{"name": k, "count": v} for k, v in sorted(sector_stats.items(), key=lambda x: x[1], reverse=True)]
     sorted_accounts = [{"name": k, "count": v} for k, v in sorted(account_stats.items(), key=lambda x: x[1], reverse=True)]
-
     economia_pct = round((total_cookies / total_logins) * 100, 1) if total_logins > 0 else 0
 
     return jsonify({
@@ -312,6 +340,7 @@ def gerenciar_contas():
                 result.append({
                     "id": acc.id,
                     "login": acc.login,
+                    "senha": acc.senha,
                     "titular": acc.titular or "Não informado",
                     "setores": lista_setores,
                     "status": acc.status,
@@ -336,14 +365,10 @@ def gerenciar_contas():
             account.status = data.get('status', 'cadastro_inicial')
             account.data_validade = data.get('data_validade', '')
             
-            # Lógica da data retroativa na criação
             if data.get('status_updated_at'):
-                try:
-                    account.status_updated_at = datetime.strptime(data['status_updated_at'], "%Y-%m-%d")
-                except ValueError:
-                    account.status_updated_at = datetime.utcnow()
-            else:
-                account.status_updated_at = datetime.utcnow() # Data de hoje (padrão)
+                try: account.status_updated_at = datetime.strptime(data['status_updated_at'], "%Y-%m-%d")
+                except ValueError: account.status_updated_at = datetime.utcnow()
+            else: account.status_updated_at = datetime.utcnow() 
             
             setores_lista = data.get('setores', [])
             account.setores = "|" + "|".join(setores_lista) + "|" if setores_lista else ""
@@ -376,29 +401,20 @@ def editar_conta(account_id):
             if 'titular' in data: acc.titular = data['titular']
             if 'data_validade' in data: acc.data_validade = data['data_validade']
             
-            # Identifica se o utilizador mudou de status
             mudou_status = 'status' in data and acc.status != data['status']
-            if 'status' in data:
-                acc.status = data['status']
+            if 'status' in data: acc.status = data['status']
             
-            # LÓGICA DO MODIFICADO EM (Híbrido)
             if mudou_status:
-                # 1. Se mudou o status: Usa a data retroativa enviada ou, se vazio, a data de HOJE
                 if data.get('status_updated_at'):
-                    try:
-                        acc.status_updated_at = datetime.strptime(data['status_updated_at'], "%Y-%m-%d")
-                    except ValueError:
-                        acc.status_updated_at = datetime.utcnow()
-                else:
-                    acc.status_updated_at = datetime.utcnow()
+                    try: acc.status_updated_at = datetime.strptime(data['status_updated_at'], "%Y-%m-%d")
+                    except ValueError: acc.status_updated_at = datetime.utcnow()
+                else: acc.status_updated_at = datetime.utcnow()
             else:
-                # 2. Se NÃO mudou o status: Só altera a data se o utilizador enviou uma específica (correção manual de histórico)
                 if data.get('status_updated_at'):
                     try:
                         nova_data = datetime.strptime(data['status_updated_at'], "%Y-%m-%d")
                         acc.status_updated_at = nova_data
-                    except ValueError:
-                        pass
+                    except ValueError: pass
                 
             if 'setores' in data:
                 setores_lista = data['setores']
@@ -412,7 +428,6 @@ def editar_conta(account_id):
     finally:
         db.close()
 
-# 🧹 ROTA DA BORRACHA DE COOKIES
 @app.route('/api/admin/accounts/<int:account_id>/clear', methods=['POST'])
 @admin_required
 def clear_account_cookies(account_id):
@@ -421,7 +436,6 @@ def clear_account_cookies(account_id):
         acc = db.query(AccountBB).filter(AccountBB.id == account_id).first()
         if not acc: return jsonify({"erro": "Conta não encontrada."}), 404
         
-        # Anula os cookies e o timestamp de login
         acc.cookie_payload = None
         acc.last_login_at = None
         
