@@ -15,7 +15,7 @@
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     
-    <!-- Babel (Compila o JSX no navegador) -->
+    <!-- Babel -->
     <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
 
     <style>
@@ -25,10 +25,8 @@
 </head>
 <body class="bg-gray-50 min-h-screen font-sans text-gray-800">
     
-    <!-- Ponto de Montagem do React -->
     <div id="root"></div>
 
-    <!-- Aplicação React (Módulos Separados por Componentes) -->
     <script type="text/babel">
         const { useState, useEffect, useMemo, useCallback } = React;
 
@@ -95,7 +93,7 @@
         };
 
         // ============================================================================
-        // MÓDULO 3: MODAL DE CONTA (CRIAR/EDITAR) - AGORA COM SENHA VISÍVEL
+        // MÓDULO 3: MODAL DE CONTA (CRIAR/EDITAR)
         // ============================================================================
         const AccountModal = ({ isOpen, onClose, onSave, accountData, adSectors }) => {
             if (!isOpen) return null;
@@ -113,7 +111,7 @@
                         id: accountData.id,
                         login: accountData.login,
                         titular: accountData.titular === "Não informado" ? "" : accountData.titular,
-                        senha: accountData.senha || "", // Exibe a senha do banco!
+                        senha: accountData.senha || "",
                         status: accountData.status || 'ativo',
                         status_custom: '',
                         data_validade: accountData.data_validade || '',
@@ -171,7 +169,7 @@
 
                             <div className="mb-4 relative">
                                 <label className="text-xs font-bold text-gray-500 uppercase">Senha Banco do Brasil</label>
-                                <input type={showPassword ? "text" : "password"} value={formData.senha} onChange={e => setFormData({...formData, senha: e.target.value})} className="w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500 font-mono pr-10" placeholder="Digite a senha (ou deixe em branco para não alterar)" />
+                                <input type={showPassword ? "text" : "password"} value={formData.senha} onChange={e => setFormData({...formData, senha: e.target.value})} className="w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500 font-mono pr-10" placeholder="Digite a senha (ou deixe em branco)" />
                                 <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-[34px] text-gray-500 hover:text-blue-600 focus:outline-none">
                                     <i className={`fas ${showPassword ? 'fa-eye-slash' : 'fa-eye'}`}></i>
                                 </button>
@@ -232,9 +230,13 @@
         const DashboardView = ({ token, adSectors }) => {
             const [stats, setStats] = useState({ logins_solicitados: 0, cookies_injetados: 0, robos_executados: 0, queue_size: 0, economia_pct: 0 });
             const [accounts, setAccounts] = useState([]);
+            
+            // Filtros e Ordenação
             const [search, setSearch] = useState("");
             const [statusFilter, setStatusFilter] = useState("");
             const [sectorFilter, setSectorFilter] = useState("");
+            const [sortCol, setSortCol] = useState('default');
+            const [sortAsc, setSortAsc] = useState(true);
             
             const [isModalOpen, setIsModalOpen] = useState(false);
             const [editingAccount, setEditingAccount] = useState(null);
@@ -279,8 +281,21 @@
                 } catch (e) { console.error(e); }
             };
 
-            const filteredAccounts = useMemo(() => {
-                return accounts.filter(acc => {
+            const handleSort = (col) => {
+                if (sortCol === col) setSortAsc(!sortAsc);
+                else { setSortCol(col); setSortAsc(true); }
+            };
+
+            const getStatusWeight = (status) => {
+                const s = (status || '').toLowerCase();
+                if (['ativo', 'provisoria_recebida', 'termo_assinado'].includes(s)) return 1;
+                if (s === 'cadastro_inicial') return 2;
+                if (s === 'bloqueada') return 3;
+                return 4; // Outros/Desconhecido
+            };
+
+            const sortedAndFilteredAccounts = useMemo(() => {
+                let filtered = accounts.filter(acc => {
                     const safeStatus = (acc.status || 'desconhecido').toLowerCase();
                     if (statusFilter && safeStatus !== statusFilter) return false;
                     if (sectorFilter && (!acc.setores || !acc.setores.includes(sectorFilter))) return false;
@@ -289,10 +304,43 @@
                         return acc.login.toLowerCase().includes(q) || (acc.titular && acc.titular.toLowerCase().includes(q));
                     }
                     return true;
-                }).sort((a, b) => a.login.localeCompare(b.login));
-            }, [accounts, search, statusFilter, sectorFilter]);
+                });
+
+                return filtered.sort((a, b) => {
+                    // Ordenação Padrão: Ativos no topo, depois ordenado por Login
+                    if (sortCol === 'default') {
+                        const wA = getStatusWeight(a.status);
+                        const wB = getStatusWeight(b.status);
+                        if (wA !== wB) return wA - wB;
+                        return a.login.localeCompare(b.login);
+                    }
+                    
+                    // Ordenação Personalizada pelo usuário (Cliques na Tabela)
+                    let valA = a[sortCol] || '';
+                    let valB = b[sortCol] || '';
+                    
+                    if (sortCol === 'status') {
+                        const wA = getStatusWeight(a.status);
+                        const wB = getStatusWeight(b.status);
+                        if (wA !== wB) return sortAsc ? wA - wB : wB - wA;
+                    }
+                    
+                    if (typeof valA === 'string') valA = valA.toLowerCase();
+                    if (typeof valB === 'string') valB = valB.toLowerCase();
+                    
+                    if (valA < valB) return sortAsc ? -1 : 1;
+                    if (valA > valB) return sortAsc ? 1 : -1;
+                    return 0;
+                });
+            }, [accounts, search, statusFilter, sectorFilter, sortCol, sortAsc]);
 
             const uniqueStatuses = useMemo(() => [...new Set(accounts.map(a => (a.status || '').toLowerCase()))].filter(Boolean).sort(), [accounts]);
+
+            const renderSortIcon = (col) => {
+                if (sortCol !== col && sortCol !== 'default') return <i className="fas fa-sort ml-1 opacity-30"></i>;
+                if (sortCol === 'default') return <i className="fas fa-sort ml-1 opacity-30"></i>;
+                return <i className={`fas fa-sort-${sortAsc ? 'up' : 'down'} ml-1 text-blue-500`}></i>;
+            };
 
             return (
                 <div>
@@ -331,15 +379,21 @@
                             <table className="w-full text-left border-collapse min-w-[900px]">
                                 <thead className="bg-gray-100 text-gray-600 text-xs uppercase tracking-wider border-b border-gray-200">
                                     <tr>
-                                        <th className="p-4 font-semibold">Conta (Login)</th>
-                                        <th className="p-4 font-semibold">Titular</th>
+                                        <th className="p-4 font-semibold cursor-pointer hover:bg-gray-200 transition" onClick={() => handleSort('login')}>
+                                            Conta (Login) {renderSortIcon('login')}
+                                        </th>
+                                        <th className="p-4 font-semibold cursor-pointer hover:bg-gray-200 transition" onClick={() => handleSort('titular')}>
+                                            Titular {renderSortIcon('titular')}
+                                        </th>
                                         <th className="p-4 font-semibold">Setores Vinculados</th>
-                                        <th className="p-4 font-semibold text-center">Status / Validade</th>
+                                        <th className="p-4 font-semibold text-center cursor-pointer hover:bg-gray-200 transition" onClick={() => handleSort('status')}>
+                                            Status / Validade {renderSortIcon('status')}
+                                        </th>
                                         <th className="p-4 font-semibold text-center">Ações</th>
                                     </tr>
                                 </thead>
                                 <tbody className="text-sm divide-y divide-gray-100">
-                                    {filteredAccounts.map(acc => (
+                                    {sortedAndFilteredAccounts.map(acc => (
                                         <tr key={acc.id} className="hover:bg-gray-50 transition border-b border-gray-100">
                                             <td className="p-4 font-mono font-bold text-gray-800"><i className="fas fa-fingerprint text-gray-400 mr-2"></i>{acc.login}</td>
                                             <td className="p-4 font-semibold text-gray-700">{acc.titular || '-'}</td>
@@ -359,7 +413,7 @@
                                             </td>
                                         </tr>
                                     ))}
-                                    {filteredAccounts.length === 0 && <tr><td colSpan="5" className="p-8 text-center text-gray-500">Nenhum resultado encontrado.</td></tr>}
+                                    {sortedAndFilteredAccounts.length === 0 && <tr><td colSpan="5" className="p-8 text-center text-gray-500">Nenhum resultado encontrado.</td></tr>}
                                 </tbody>
                             </table>
                         </div>
@@ -371,7 +425,7 @@
         };
 
         // ============================================================================
-        // MÓDULO 5: TAB VIEW - ANALYTICS (TELEMETRIA AVANÇADA)
+        // MÓDULO 5: TAB VIEW - ANALYTICS (COM FOTOS DOS ERROS)
         // ============================================================================
         const AnalyticsView = ({ token }) => {
             const [dates, setDates] = useState({
@@ -379,6 +433,7 @@
                 end: new Date().toISOString().split('T')[0]
             });
             const [data, setData] = useState(null);
+            const [errorImages, setErrorImages] = useState([]);
 
             const fetchAnalytics = async () => {
                 try {
@@ -387,7 +442,17 @@
                 } catch (e) { alert("Erro ao buscar histórico."); }
             };
 
-            useEffect(() => { fetchAnalytics(); }, []);
+            const fetchErrorImages = async () => {
+                try {
+                    const res = await fetch('/api/admin/error_images', { headers: { 'X-Admin-Token': token } });
+                    if (res.ok) setErrorImages(await res.json());
+                } catch (e) { console.error("Erro ao buscar galeria", e); }
+            };
+
+            useEffect(() => { 
+                fetchAnalytics(); 
+                fetchErrorImages();
+            }, []);
 
             if (!data) return <div className="text-center p-10"><i className="fas fa-spinner fa-spin text-3xl text-blue-500"></i></div>;
 
@@ -422,11 +487,11 @@
                         </div>
                     </div>
 
-                    {/* NOVOS PAINÉIS DE TELEMETRIA DOS ROBÔS */}
+                    {/* PAINÉIS DE TELEMETRIA DOS ROBÔS */}
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
                         <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                             <div className="bg-gray-50 border-b border-gray-200 p-4"><h3 className="font-bold text-gray-700"><i className="fas fa-robot mr-2 text-indigo-500"></i>Saúde da Frota (Robôs)</h3></div>
-                            <ul className="divide-y divide-gray-100 max-h-[300px] overflow-y-auto">
+                            <ul className="divide-y divide-gray-100 max-h-[300px] overflow-y-auto custom-scroll">
                                 {data.robots_performance.length === 0 && <li className="p-8 text-center text-gray-400">Sem dados operacionais.</li>}
                                 {data.robots_performance.map(r => (
                                     <li key={r.name} className="p-4 flex items-center justify-between hover:bg-gray-50">
@@ -443,7 +508,7 @@
 
                         <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                             <div className="bg-gray-50 border-b border-gray-200 p-4"><h3 className="font-bold text-gray-700"><i className="fas fa-bug mr-2 text-red-500"></i>Diagnóstico de Falhas</h3></div>
-                            <ul className="divide-y divide-gray-100 max-h-[300px] overflow-y-auto">
+                            <ul className="divide-y divide-gray-100 max-h-[300px] overflow-y-auto custom-scroll">
                                 {data.error_diagnostics.length === 0 && <li className="p-8 text-center text-gray-400">Nenhum erro registrado.</li>}
                                 {data.error_diagnostics.map(e => (
                                     <li key={e.reason} className="p-4 flex items-center justify-between hover:bg-gray-50">
@@ -455,19 +520,48 @@
                         </div>
                     </div>
 
-                    {/* RANKING ORIGINAL DE SETORES E CONTAS */}
+                    {/* GALERIA DE PRINTS DOS ERROS (NOVIDADE) */}
+                    <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden mb-6">
+                        <div className="bg-gray-50 border-b border-gray-200 p-4 flex justify-between items-center">
+                            <h3 className="font-bold text-gray-700"><i className="fas fa-camera mr-2 text-red-500"></i>Galeria de Erros Recentes (Debug)</h3>
+                            <button onClick={fetchErrorImages} className="text-sm bg-gray-200 hover:bg-gray-300 px-3 py-1 rounded transition"><i className="fas fa-sync-alt"></i> Atualizar</button>
+                        </div>
+                        <div className="p-6">
+                            {errorImages.length === 0 ? (
+                                <p className="text-gray-400 text-center py-4">Nenhuma imagem de erro encontrada no diretório compartilhado.</p>
+                            ) : (
+                                <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4">
+                                    {errorImages.map(img => (
+                                        <a key={img.name} href={img.url} target="_blank" rel="noreferrer" className="block border rounded-lg overflow-hidden shadow-sm hover:shadow-md transition group relative">
+                                            <img src={img.url} alt={img.name} className="w-full h-24 object-cover border-b" />
+                                            <div className="p-2 bg-gray-800 w-full text-center">
+                                                <p className="text-[10px] text-white truncate font-bold" title={img.name}>{img.name.split('_T')[0]}</p>
+                                                <p className="text-[9px] text-gray-300 mt-1"><i className="fas fa-clock mr-1"></i>{img.date_str}</p>
+                                            </div>
+                                            <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 transition flex items-center justify-center">
+                                                <i className="fas fa-search-plus text-white opacity-0 group-hover:opacity-100 text-2xl transition"></i>
+                                            </div>
+                                        </a>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* RANKING ORIGINAL DE SETORES E CONTAS (CORRIGIDO MATEMÁTICA DA BARRA VERDE) */}
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                         <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                             <div className="bg-gray-50 border-b border-gray-200 p-4"><h3 className="font-bold text-gray-700"><i className="fas fa-chart-bar mr-2 text-blue-500"></i>Ranking de Uso por Setor</h3></div>
-                            <ul className="divide-y divide-gray-100 max-h-[400px] overflow-y-auto">
+                            <ul className="divide-y divide-gray-100 max-h-[400px] overflow-y-auto custom-scroll">
                                 {data.sectors.length === 0 && <li className="p-8 text-center text-gray-400">Sem dados.</li>}
                                 {data.sectors.map(s => {
-                                    let w = data.efficiency.total_logins_requested > 0 ? (s.count / data.efficiency.total_logins_requested) * 100 : 0;
+                                    let maxVal = data.efficiency.total_logins_requested > 0 ? data.efficiency.total_logins_requested : 1;
+                                    let w = Math.min((s.count / maxVal) * 100, 100);
                                     return (
                                         <li key={s.name} className="p-4 hover:bg-gray-50 flex items-center justify-between">
                                             <span className="font-bold text-gray-700 w-1/3 truncate">{s.name}</span>
                                             <div className="flex-1 mx-4 bg-gray-200 rounded-full h-2.5"><div className="bg-blue-500 h-2.5 rounded-full" style={{width: `${w}%`}}></div></div>
-                                            <span className="text-sm font-bold text-blue-600">{s.count} acessos</span>
+                                            <span className="text-sm font-bold text-blue-600 w-24 text-right">{s.count} acessos</span>
                                         </li>
                                     );
                                 })}
@@ -475,16 +569,17 @@
                         </div>
 
                         <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                            <div className="bg-gray-50 border-b border-gray-200 p-4"><h3 className="font-bold text-gray-700"><i className="fas fa-id-card mr-2 text-green-500"></i>Ranking de Uso por Conta</h3></div>
-                            <ul className="divide-y divide-gray-100 max-h-[400px] overflow-y-auto">
+                            <div className="bg-gray-50 border-b border-gray-200 p-4"><h3 className="font-bold text-gray-700"><i className="fas fa-id-card mr-2 text-green-500"></i>Ranking de Acessos por Conta</h3></div>
+                            <ul className="divide-y divide-gray-100 max-h-[400px] overflow-y-auto custom-scroll">
                                 {data.accounts.length === 0 && <li className="p-8 text-center text-gray-400">Sem dados.</li>}
                                 {data.accounts.map(a => {
-                                    let w = data.efficiency.total_cookies_injected > 0 ? (a.count / data.efficiency.total_cookies_injected) * 100 : 0;
+                                    let maxVal = data.efficiency.total_logins_requested > 0 ? data.efficiency.total_logins_requested : 1;
+                                    let w = Math.min((a.count / maxVal) * 100, 100);
                                     return (
                                         <li key={a.name} className="p-4 hover:bg-gray-50 flex items-center justify-between">
-                                            <span className="font-mono font-bold text-gray-600 w-1/4">{a.name}</span>
+                                            <span className="font-mono font-bold text-gray-600 w-1/4 truncate">{a.name}</span>
                                             <div className="flex-1 mx-4 bg-gray-200 rounded-full h-2.5"><div className="bg-green-500 h-2.5 rounded-full" style={{width: `${w}%`}}></div></div>
-                                            <span className="text-sm font-bold text-green-600">{a.count} sessões ativas</span>
+                                            <span className="text-sm font-bold text-green-600 w-24 text-right">{a.count} acessos</span>
                                         </li>
                                     );
                                 })}
@@ -547,7 +642,6 @@
             );
         };
 
-        // Inicia a aplicação React
         const root = ReactDOM.createRoot(document.getElementById('root'));
         root.render(<App />);
     </script>

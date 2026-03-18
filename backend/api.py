@@ -66,29 +66,24 @@ def serve_privacy():
     base_dir = os.path.dirname(os.path.abspath(__file__))
     return send_from_directory(base_dir, 'privacy.html')
 
+# --- ROTA DE PRINTS DE TELA COMPARTILHADOS ---
 @app.route('/shared/<path:filename>')
 def serve_shared(filename):
     base_dir = os.path.dirname(os.path.abspath(__file__))
     shared_dir = os.path.join(base_dir, 'shared')
+    if not os.path.exists(shared_dir):
+        os.makedirs(shared_dir)
     return send_from_directory(shared_dir, filename)
+
+# O Flask já serve a pasta /static automaticamente, não precisamos de rota manual pra ela!
 
 # --- ROTAS DE OPERAÇÃO (EXTENSÃO) ---
 @app.route('/api/zerocore/status', methods=['GET'])
 def get_status():
     setor_nome = request.args.get('setor')
     if not setor_nome: return jsonify({"mensagem": "Setor ausente."}), 400
-
-    db = SessionLocal()
-    try:
-        account = buscar_conta_para_setor(db, setor_nome)
-        if account and account.cookie_payload and account.last_login_at:
-            if (datetime.utcnow() - account.last_login_at).total_seconds() / 60 < 19:
-                return jsonify({"concluido": True, "mensagem": "Conexão segura estabelecida!"})
-    finally:
-        db.close()
-
     status_str = redis_client.get(f"status:{setor_nome}")
-    return jsonify(json.loads(status_str)) if status_str else jsonify({"mensagem": "Aguardando sincronização..."})
+    return jsonify(json.loads(status_str)) if status_str else jsonify({"mensagem": "Aguardando..."})
 
 @app.route('/api/zerocore/login', methods=['POST'])
 def request_login():
@@ -104,6 +99,7 @@ def request_login():
 
     setor_nome = ad_result['setor']
     
+    # 📊 Registo de métricas com data (Histórico Diário)
     hoje = datetime.utcnow().strftime('%Y-%m-%d')
     redis_client.incr(f'metrics:logins_solicitados:{hoje}')
     redis_client.hincrby(f'metrics:sector_logins:{hoje}', setor_nome, 1)
@@ -120,7 +116,7 @@ def request_login():
             return jsonify({"status": "erro", "mensagem": f"Setor {setor_nome} sem conta válida/ativa vinculada."}), 403
 
         if account.cookie_payload and account.last_login_at:
-            if (datetime.utcnow() - account.last_login_at).total_seconds() / 60 < 19:
+            if (datetime.utcnow() - account.last_login_at).total_seconds() / 60 < 20:
                 redis_client.incr(f'metrics:cookies_injetados:{hoje}')
                 redis_client.hincrby(f'metrics:account_logins:{hoje}', str(account.login), 1)
                 return jsonify({
@@ -129,15 +125,7 @@ def request_login():
                     "url": "https://juridico.bb.com.br/wfj"
                 })
         
-        lock_key = f"lock:queue:{account.id}"
-        
-        if redis_client.exists(lock_key):
-            redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Sincronizando com conexão em andamento...", "concluido": False}))
-            return jsonify({"status": "queued", "setor": setor_nome}) 
-            
-        redis_client.setex(lock_key, 600, "1") 
-        
-        redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Iniciando ambiente seguro na nuvem...", "concluido": False}))
+        redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Iniciando robô...", "concluido": False}))
         task_payload = json.dumps({"id": account.id, "setor": setor_nome, "user_agent": user_agent})
         redis_client.lpush("queue:login_requests", task_payload)
         
@@ -172,18 +160,18 @@ def renew_session():
             redis_client.hincrby(f'metrics:sector_logins:{hoje}', setor_nome, 1)
             
             if account.cookie_payload and account.last_login_at:
-                if (datetime.utcnow() - account.last_login_at).total_seconds() / 60 < 19:
-                    redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Sessão ativa recuperada com sucesso.", "concluido": True, "erro": False}))
+                if (datetime.utcnow() - account.last_login_at).total_seconds() / 60 < 15:
+                    redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Sessão quente retornada do Pool.", "concluido": True, "erro": False}))
                     redis_client.hincrby(f'metrics:account_logins:{hoje}', str(account.login), 1)
                     return jsonify({"status": "queued"})
             
-            lock_key = f"lock:queue:{account.id}"
-            if redis_client.exists(lock_key):
-                redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Aguardando renovação de segurança...", "concluido": False, "erro": False}))
-                return jsonify({"status": "queued"})
+            status_str = redis_client.get(f"status:{setor_nome}")
+            if status_str:
+                current_status = json.loads(status_str)
+                if not current_status.get("concluido") and not current_status.get("erro"):
+                    return jsonify({"status": "queued", "mensagem": "Robô já em execução."})
 
-            redis_client.setex(lock_key, 600, "1")
-            redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Renovando credenciais de acesso...", "concluido": False, "erro": False}))
+            redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Renovação de Marcapasso...", "concluido": False, "erro": False}))
             task_payload = json.dumps({"id": account.id, "setor": setor_nome, "user_agent": user_agent})
             redis_client.lpush("queue:login_requests", task_payload)
             
@@ -239,6 +227,7 @@ def admin_dashboard_stats():
         active_accounts = db.query(AccountBB).filter(AccountBB.status.in_(['active', 'ativo', 'provisoria_recebida', 'termo_assinado'])).count()
         queue_size = redis_client.llen("queue:login_requests")
         
+        # Puxa as métricas exclusivamente do dia de hoje
         logins_solicitados = int(redis_client.get(f'metrics:logins_solicitados:{hoje}') or 0)
         cookies_injetados = int(redis_client.get(f'metrics:cookies_injetados:{hoje}') or 0)
         robos_executados = int(redis_client.get(f'metrics:robos_executados:{hoje}') or 0)
@@ -256,10 +245,10 @@ def admin_dashboard_stats():
     finally:
         db.close()
 
+# 📈 ROTA DE ANALYTICS (NOVA TELA)
 @app.route('/api/admin/analytics', methods=['GET'])
 @admin_required
 def admin_analytics():
-    # Agora a rota capta também a saúde dos robôs e os motivos das falhas de infraestrutura.
     start_str = request.args.get('start', datetime.utcnow().strftime('%Y-%m-%d'))
     end_str = request.args.get('end', datetime.utcnow().strftime('%Y-%m-%d'))
     
@@ -271,68 +260,70 @@ def admin_analytics():
 
     total_logins = 0
     total_cookies = 0
-    
     sector_stats = {}
     account_stats = {}
-    robot_success_stats = {}
-    robot_error_stats = {}
-    error_reasons_stats = {}
     
     current_date = start_date
     while current_date <= end_date:
         day_str = current_date.strftime('%Y-%m-%d')
         
+        # Totais gerais
         total_logins += int(redis_client.get(f'metrics:logins_solicitados:{day_str}') or 0)
         total_cookies += int(redis_client.get(f'metrics:cookies_injetados:{day_str}') or 0)
         
-        for sec, count in redis_client.hgetall(f'metrics:sector_logins:{day_str}').items():
+        # Consolida setores
+        sectors = redis_client.hgetall(f'metrics:sector_logins:{day_str}')
+        for sec, count in sectors.items():
             sector_stats[sec] = sector_stats.get(sec, 0) + int(count)
             
-        for acc, count in redis_client.hgetall(f'metrics:account_logins:{day_str}').items():
+        # Consolida contas
+        accounts = redis_client.hgetall(f'metrics:account_logins:{day_str}')
+        for acc, count in accounts.items():
             account_stats[acc] = account_stats.get(acc, 0) + int(count)
-            
-        # Telemetria dos Robôs
-        for robo, count in redis_client.hgetall(f'metrics:robot_success:{day_str}').items():
-            robot_success_stats[robo] = robot_success_stats.get(robo, 0) + int(count)
-            
-        for robo, count in redis_client.hgetall(f'metrics:robot_error:{day_str}').items():
-            robot_error_stats[robo] = robot_error_stats.get(robo, 0) + int(count)
-            
-        for reason, count in redis_client.hgetall(f'metrics:error_reasons:{day_str}').items():
-            error_reasons_stats[reason] = error_reasons_stats.get(reason, 0) + int(count)
             
         current_date += timedelta(days=1)
 
+    # Ordena para o Top
     sorted_sectors = [{"name": k, "count": v} for k, v in sorted(sector_stats.items(), key=lambda x: x[1], reverse=True)]
     sorted_accounts = [{"name": k, "count": v} for k, v in sorted(account_stats.items(), key=lambda x: x[1], reverse=True)]
-    
-    # Prepara o Array de Robôs mesclando os sucessos e erros
-    all_robots = set(list(robot_success_stats.keys()) + list(robot_error_stats.keys()))
-    robots_data = []
-    for robo in all_robots:
-        s = robot_success_stats.get(robo, 0)
-        e = robot_error_stats.get(robo, 0)
-        robots_data.append({
-            "name": robo, "success": s, "error": e, 
-            "success_rate": round((s / (s + e)) * 100, 1) if (s + e) > 0 else 0
-        })
-    robots_data.sort(key=lambda x: x['name'])
-    
-    sorted_reasons = [{"reason": k, "count": v} for k, v in sorted(error_reasons_stats.items(), key=lambda x: x[1], reverse=True)]
+
     economia_pct = round((total_cookies / total_logins) * 100, 1) if total_logins > 0 else 0
 
     return jsonify({
         "period": f"{start_str} a {end_str}",
-        "efficiency": {
-            "total_logins_requested": total_logins,
-            "total_cookies_injected": total_cookies,
-            "economia_pct": economia_pct
-        },
+        "total_logins": total_logins,
+        "total_cookies": total_cookies,
+        "economia_pct": economia_pct,
         "sectors": sorted_sectors,
-        "accounts": sorted_accounts,
-        "robots_performance": robots_data,
-        "error_diagnostics": sorted_reasons
+        "accounts": sorted_accounts
     })
+
+# 📸 NOVA ROTA: BUSCADOR DE PRINTS DE ERRO
+@app.route('/api/admin/error_images', methods=['GET'])
+@admin_required
+def admin_error_images():
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    shared_dir = os.path.join(base_dir, 'shared')
+    if not os.path.exists(shared_dir):
+        return jsonify([])
+    
+    images = []
+    try:
+        for filename in os.listdir(shared_dir):
+            if filename.endswith('.png') and 'erro' in filename.lower():
+                path = os.path.join(shared_dir, filename)
+                time_mod = os.path.getmtime(path)
+                images.append({
+                    "name": filename,
+                    "url": f"/shared/{filename}",
+                    "time": time_mod,
+                    "date_str": datetime.fromtimestamp(time_mod).strftime('%d/%m/%Y %H:%M:%S')
+                })
+        # Ordena da mais recente para a mais antiga (Mostra as 20 últimas falhas)
+        images.sort(key=lambda x: x['time'], reverse=True)
+        return jsonify(images[:20])
+    except Exception as e:
+        return jsonify({"erro": str(e)}), 500
 
 @app.route('/api/admin/accounts', methods=['GET', 'POST'])
 @admin_required
@@ -350,7 +341,7 @@ def gerenciar_contas():
                 result.append({
                     "id": acc.id,
                     "login": acc.login,
-                    "senha": acc.senha,
+                    "senha": acc.senha, # AQUI ESTÁ A MÁGICA: A senha agora vai para o Admin.
                     "titular": acc.titular or "Não informado",
                     "setores": lista_setores,
                     "status": acc.status,
@@ -376,9 +367,12 @@ def gerenciar_contas():
             account.data_validade = data.get('data_validade', '')
             
             if data.get('status_updated_at'):
-                try: account.status_updated_at = datetime.strptime(data['status_updated_at'], "%Y-%m-%d")
-                except ValueError: account.status_updated_at = datetime.utcnow()
-            else: account.status_updated_at = datetime.utcnow() 
+                try:
+                    account.status_updated_at = datetime.strptime(data['status_updated_at'], "%Y-%m-%d")
+                except ValueError:
+                    account.status_updated_at = datetime.utcnow()
+            else:
+                account.status_updated_at = datetime.utcnow()
             
             setores_lista = data.get('setores', [])
             account.setores = "|" + "|".join(setores_lista) + "|" if setores_lista else ""
@@ -412,19 +406,24 @@ def editar_conta(account_id):
             if 'data_validade' in data: acc.data_validade = data['data_validade']
             
             mudou_status = 'status' in data and acc.status != data['status']
-            if 'status' in data: acc.status = data['status']
+            if 'status' in data:
+                acc.status = data['status']
             
             if mudou_status:
                 if data.get('status_updated_at'):
-                    try: acc.status_updated_at = datetime.strptime(data['status_updated_at'], "%Y-%m-%d")
-                    except ValueError: acc.status_updated_at = datetime.utcnow()
-                else: acc.status_updated_at = datetime.utcnow()
+                    try:
+                        acc.status_updated_at = datetime.strptime(data['status_updated_at'], "%Y-%m-%d")
+                    except ValueError:
+                        acc.status_updated_at = datetime.utcnow()
+                else:
+                    acc.status_updated_at = datetime.utcnow()
             else:
                 if data.get('status_updated_at'):
                     try:
                         nova_data = datetime.strptime(data['status_updated_at'], "%Y-%m-%d")
                         acc.status_updated_at = nova_data
-                    except ValueError: pass
+                    except ValueError:
+                        pass
                 
             if 'setores' in data:
                 setores_lista = data['setores']
@@ -464,5 +463,6 @@ def api_reset():
 
 if __name__ == '__main__':
     if not os.path.exists('static'): os.makedirs('static')
+    if not os.path.exists('shared'): os.makedirs('shared')
     if inicializar_sistema():
         app.run(host='0.0.0.0', port=5000)

@@ -171,8 +171,17 @@ def processar_login(account_id, setor_solicitado, thread_id):
                         
                         update_status(setor, "Aguardando campo de senha...", imagem=img, thread_id=thread_id)
                         
-                        sb.wait_for_element("#idToken3", timeout=35)
-                        logger.info(f"[ROBÔ {thread_id} | {setor}] >>> SUCESSO! Campo de senha apareceu!")
+                        # =======================================================================
+                        # O DETECTOR DE ARMADILHAS DO CLOUDFLARE (POPUP)
+                        # =======================================================================
+                        try:
+                            sb.wait_for_element("#idToken3", timeout=35)
+                            logger.info(f"[ROBÔ {thread_id} | {setor}] >>> SUCESSO! Campo de senha apareceu!")
+                        except Exception as wait_e:
+                            logger.error(f"[ROBÔ {thread_id} | {setor}] 🚨 ARMADILHA DETECTADA! O campo de senha não carregou. O Cloudflare abriu um popup inútil ou bloqueou o fluxo.")
+                            # Dispara um erro com nome específico para a nossa telemetria pegar
+                            raise Exception(f"Armadilha Cloudflare: Popup inútil ou loop infinito bloqueou o campo de senha. Erro original: {wait_e}")
+                        # =======================================================================
                         
                         # TELEMETRIA: Sucesso de Autenticação (Fura-bloqueio)
                         get_redis().hincrby(f"metrics:robot_success:{hoje}", f"ROBÔ {thread_id}", 1)
@@ -245,10 +254,13 @@ def processar_login(account_id, setor_solicitado, thread_id):
                 if "errno 11" in err_msg or "resource temporarily unavailable" in err_msg or "-5" in err_msg or "thread" in err_msg or "not reachable" in err_msg:
                     motivo_falha = "Esgotamento de Recursos (OS/Docker)"
                     is_infra_error = True
+                # NOVO: Classifica especificamente a armadilha do popup inútil!
+                elif "armadilha cloudflare" in err_msg:
+                    motivo_falha = "Bloqueio Cloudflare (Armadilha/Popup)"
                 elif "timeout" in err_msg or "nosuchelement" in err_msg:
                     motivo_falha = "Timeout na Navegação / Elemento não encontrado"
                 else:
-                    motivo_falha = "Bloqueio Cloudflare ou Erro Desconhecido"
+                    motivo_falha = "Erro Desconhecido"
                 
                 get_redis().hincrby(f"metrics:error_reasons:{hoje}", motivo_falha, 1)
                 
