@@ -4,686 +4,552 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>OneLog - Painel de Controle</title>
+    
+    <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- FontAwesome -->
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <!-- Babel (Compila o JSX no navegador) -->
+    <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+
     <style>
         .custom-scroll::-webkit-scrollbar { width: 6px; }
         .custom-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
-        th.sortable:hover { background-color: #e2e8f0; cursor: pointer; }
     </style>
 </head>
 <body class="bg-gray-50 min-h-screen font-sans text-gray-800">
-    <nav class="bg-blue-900 text-white p-4 shadow-md">
-        <div class="container mx-auto flex justify-between items-center">
-            <h1 class="text-xl font-bold flex items-center">
-                <i class="fas fa-robot text-blue-300 mr-3 text-2xl"></i> OneLog Enterprise
-            </h1>
-            <button onclick="logout()" id="btn-sair" class="hidden text-sm bg-blue-800 hover:bg-blue-700 px-4 py-2 rounded font-bold transition">Sair do Painel</button>
-        </div>
-    </nav>
+    
+    <!-- Ponto de Montagem do React -->
+    <div id="root"></div>
 
-    <main class="container mx-auto p-6 mt-4">
+    <!-- Aplicação React (Módulos Separados por Componentes) -->
+    <script type="text/babel">
+        const { useState, useEffect, useMemo, useCallback } = React;
+
+        // ============================================================================
+        // MÓDULO 1: COMPONENTES UI COMPARTILHADOS
+        // ============================================================================
         
-        <!-- SESSÃO DE LOGIN -->
-        <div id="auth-section" class="bg-white p-8 rounded-xl shadow-sm border border-gray-100 max-w-md mx-auto mt-10 text-center">
-            <div class="w-16 h-16 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-4 text-2xl">
-                <i class="fas fa-lock"></i>
+        const KpiCard = ({ title, value, subtitle, icon, colorClass }) => (
+            <div className={`bg-white p-6 rounded-xl shadow-sm border-l-4 ${colorClass}`}>
+                <h3 className="text-gray-500 text-xs font-bold uppercase">{title}</h3>
+                <p className={`text-3xl font-black mt-2 text-gray-800 flex items-center gap-3`}>
+                    {value}
+                    {subtitle && <span className="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded-full">{subtitle}</span>}
+                </p>
             </div>
-            <h2 class="font-bold text-xl mb-6">Acesso Administrativo</h2>
-            <input type="password" id="admin-token" placeholder="Insira a Chave de Segurança" class="w-full p-3 border rounded mb-4 focus:outline-none focus:border-blue-500 text-center tracking-widest">
-            <button onclick="loadDashboard()" class="bg-blue-600 text-white px-4 py-3 rounded w-full font-bold hover:bg-blue-700 transition">Desbloquear Painel</button>
-        </div>
+        );
 
-        <!-- SISTEMA DE ABAS (PÓS-LOGIN) -->
-        <div id="main-content" style="display:none;">
+        const StatusBadge = ({ status }) => {
+            const s = (status || 'ativo').toLowerCase();
+            const colors = {
+                'ativo': 'bg-green-700 text-white border-green-800',
+                'bloqueada': 'bg-red-700 text-white border-red-800',
+                'cadastro_inicial': 'bg-teal-100 text-teal-800 border-teal-200',
+                'provisoria_recebida': 'bg-gray-200 text-gray-800 border-gray-300',
+                'termo_assinado': 'bg-green-300 text-green-900 border-green-400'
+            };
+            const color = colors[s] || 'bg-blue-50 text-blue-800 border-blue-200';
+            const label = s.replace(/_/g, ' ').toUpperCase();
             
-            <div class="mb-6 border-b border-gray-200">
-                <nav class="-mb-px flex space-x-8">
-                    <button onclick="switchTab('dashboard')" id="tab-dashboard" class="border-blue-500 text-blue-600 whitespace-nowrap py-4 px-1 border-b-2 font-bold text-sm flex items-center gap-2">
-                        <i class="fas fa-satellite-dish"></i> Pool em Tempo Real
-                    </button>
-                    <button onclick="switchTab('analytics')" id="tab-analytics" class="border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm flex items-center gap-2">
-                        <i class="fas fa-chart-pie"></i> Histórico & Analytics
-                    </button>
-                </nav>
-            </div>
-
-            <!-- TELA 1: DASHBOARD EM TEMPO REAL -->
-            <div id="dashboard-section">
-                <div class="mb-4">
-                    <h2 class="text-xl font-bold text-gray-800">Métricas de Hoje</h2>
-                </div>
-
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-                    <div class="bg-white p-6 rounded-xl shadow-sm border-l-4 border-l-blue-500">
-                        <h3 class="text-gray-500 text-xs font-bold uppercase">Acessos Solicitados</h3>
-                        <p class="text-3xl font-black text-gray-800 mt-2" id="kpi-logins">0</p>
-                    </div>
-                    <div class="bg-white p-6 rounded-xl shadow-sm border-l-4 border-l-green-500">
-                        <h3 class="text-gray-500 text-xs font-bold uppercase">Cookies Injetados</h3>
-                        <p class="text-3xl font-black text-green-600 mt-2" id="kpi-cookies">0</p>
-                    </div>
-                    <div class="bg-white p-6 rounded-xl shadow-sm border-l-4 border-l-yellow-500">
-                        <h3 class="text-gray-500 text-xs font-bold uppercase">Execuções do Robô</h3>
-                        <p class="text-3xl font-black text-yellow-600 mt-2 flex items-center gap-3">
-                            <span id="kpi-robos">0</span>
-                            <span class="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded-full"><span id="kpi-fila">0</span> na fila</span>
-                        </p>
-                    </div>
-                    <div class="bg-white p-6 rounded-xl shadow-sm border-l-4 border-l-purple-500">
-                        <h3 class="text-gray-500 text-xs font-bold uppercase">Eficiência do Pool</h3>
-                        <p class="text-3xl font-black text-purple-600 mt-2"><span id="kpi-economia">0</span>%</p>
-                    </div>
-                </div>
-
-                <div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-4 gap-4">
-                    <h2 class="text-2xl font-bold text-gray-800"><i class="fas fa-users-cog mr-2 text-gray-400"></i>Pool de Contas BB</h2>
-                    <button onclick="openModal()" class="bg-blue-600 text-white px-5 py-2.5 rounded-lg font-bold hover:bg-blue-700 shadow transition flex items-center">
-                        <i class="fas fa-user-plus mr-2"></i> Nova Conta BB
-                    </button>
-                </div>
-
-                <!-- BARRA DE PESQUISA E FILTROS -->
-                <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-200 mb-4 flex flex-col md:flex-row gap-4">
-                    <div class="flex-1 relative">
-                        <i class="fas fa-search absolute left-3 top-3 text-gray-400"></i>
-                        <input type="text" id="search-input" placeholder="Pesquisar matrícula, nome..." class="w-full pl-10 p-2 border rounded outline-none focus:border-blue-500" onkeyup="renderTable()">
-                    </div>
-                    <div class="w-full md:w-56">
-                        <select id="filter-status" class="w-full p-2 border rounded outline-none focus:border-blue-500" onchange="renderTable()">
-                            <option value="">Todos os Status</option>
-                        </select>
-                    </div>
-                    <div class="w-full md:w-56">
-                        <select id="filter-sector" class="w-full p-2 border rounded outline-none focus:border-blue-500" onchange="renderTable()">
-                            <option value="">Todos os Setores</option>
-                        </select>
-                    </div>
-                </div>
-                
-                <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                    <div class="overflow-x-auto">
-                        <table class="w-full text-left border-collapse min-w-[900px]">
-                            <thead class="bg-gray-100 text-gray-600 text-xs uppercase tracking-wider border-b border-gray-200">
-                                <tr>
-                                    <th class="p-4 font-semibold sortable transition" onclick="sortTable('login')">Conta (Login) <i class="fas fa-sort ml-1"></i></th>
-                                    <th class="p-4 font-semibold sortable transition" onclick="sortTable('titular')">Titular <i class="fas fa-sort ml-1"></i></th>
-                                    <th class="p-4 font-semibold">Setores Vinculados</th>
-                                    <th class="p-4 font-semibold sortable transition text-center" onclick="sortTable('status')">Status / Validade <i class="fas fa-sort ml-1"></i></th>
-                                    <th class="p-4 font-semibold text-center">Ações</th>
-                                </tr>
-                            </thead>
-                            <tbody class="text-sm divide-y divide-gray-100" id="accounts-table">
-                                <!-- Renderizado via JS -->
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-            <!-- TELA 2: ANALYTICS (HISTÓRICO) -->
-            <div id="analytics-section" style="display:none;">
-                <div class="bg-white p-5 rounded-xl shadow-sm border border-gray-200 mb-6 flex flex-col md:flex-row items-end md:items-center gap-4">
-                    <div>
-                        <label class="text-xs font-bold text-gray-500 uppercase block mb-1">Data Início</label>
-                        <input type="date" id="date-start" class="p-2 border rounded outline-none focus:border-blue-500 text-sm">
-                    </div>
-                    <div>
-                        <label class="text-xs font-bold text-gray-500 uppercase block mb-1">Data Fim</label>
-                        <input type="date" id="date-end" class="p-2 border rounded outline-none focus:border-blue-500 text-sm">
-                    </div>
-                    <button onclick="fetchAnalytics()" class="bg-blue-800 text-white px-6 py-2 rounded font-bold hover:bg-blue-700 transition h-[38px] flex items-center">
-                        <i class="fas fa-search mr-2"></i> Filtrar Histórico
-                    </button>
-                </div>
-
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-                    <div class="bg-gradient-to-br from-blue-500 to-blue-700 p-6 rounded-xl shadow-sm text-white">
-                        <h3 class="text-blue-100 text-xs font-bold uppercase">Total de Acessos no Período</h3>
-                        <p class="text-4xl font-black mt-2" id="aly-total-logins">0</p>
-                    </div>
-                    <div class="bg-gradient-to-br from-green-500 to-green-700 p-6 rounded-xl shadow-sm text-white">
-                        <h3 class="text-green-100 text-xs font-bold uppercase">Cookies Fornecidos</h3>
-                        <p class="text-4xl font-black mt-2" id="aly-total-cookies">0</p>
-                    </div>
-                    <div class="bg-gradient-to-br from-purple-500 to-purple-700 p-6 rounded-xl shadow-sm text-white">
-                        <h3 class="text-purple-100 text-xs font-bold uppercase">Economia no Período</h3>
-                        <p class="text-4xl font-black mt-2"><span id="aly-economia">0</span>%</p>
-                    </div>
-                </div>
-
-                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                    <!-- Uso por Setor -->
-                    <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                        <div class="bg-gray-50 border-b border-gray-200 p-4">
-                            <h3 class="font-bold text-gray-700"><i class="fas fa-chart-bar mr-2 text-blue-500"></i>Ranking de Uso por Setor</h3>
-                        </div>
-                        <ul class="divide-y divide-gray-100 max-h-[400px] overflow-y-auto custom-scroll" id="aly-sectors-list">
-                            <li class="p-8 text-center text-gray-400">Clique em Filtrar para carregar.</li>
-                        </ul>
-                    </div>
-
-                    <!-- Uso por Conta -->
-                    <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                        <div class="bg-gray-50 border-b border-gray-200 p-4">
-                            <h3 class="font-bold text-gray-700"><i class="fas fa-id-card mr-2 text-green-500"></i>Ranking de Uso por Conta (Matrícula)</h3>
-                        </div>
-                        <ul class="divide-y divide-gray-100 max-h-[400px] overflow-y-auto custom-scroll" id="aly-accounts-list">
-                            <li class="p-8 text-center text-gray-400">Clique em Filtrar para carregar.</li>
-                        </ul>
-                    </div>
-                </div>
-            </div>
-
-        </div>
-    </main>
-
-    <!-- MODAL DE EDIÇÃO / CRIAÇÃO -->
-    <div id="account-modal" class="fixed inset-0 bg-black bg-opacity-50 hidden justify-center items-center z-50">
-        <div class="bg-white w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
-            <div class="bg-blue-50 border-b border-blue-100 p-5 flex justify-between items-center">
-                <h3 class="font-bold text-xl text-blue-900" id="modal-title">Nova Conta BB</h3>
-                <button onclick="closeModal()" class="text-blue-400 hover:text-blue-700 text-xl">&times;</button>
-            </div>
-            
-            <div class="p-6 overflow-y-auto custom-scroll">
-                <input type="hidden" id="modal-account-id">
-                
-                <div class="grid grid-cols-2 gap-4 mb-4">
-                    <div>
-                        <label class="text-xs font-bold text-gray-500 uppercase">Login (Matrícula)</label>
-                        <input type="text" id="modal-login" class="w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500 font-mono uppercase bg-gray-50" placeholder="Ex: F1234567">
-                    </div>
-                    <div>
-                        <label class="text-xs font-bold text-gray-500 uppercase">Titular da Conta</label>
-                        <input type="text" id="modal-titular" class="w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500" placeholder="Nome Completo">
-                    </div>
-                </div>
-
-                <div class="mb-4">
-                    <label class="text-xs font-bold text-gray-500 uppercase">Senha Banco do Brasil</label>
-                    <div class="relative w-full mt-1">
-                        <input type="password" id="modal-senha" class="w-full p-2.5 border rounded outline-none focus:border-blue-500 font-mono pr-10" placeholder="Digite a senha (ou deixe em branco)">
-                        <button type="button" onclick="togglePassword()" class="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-500 hover:text-blue-600 focus:outline-none">
-                            <i class="fas fa-eye" id="eye-icon"></i>
-                        </button>
-                    </div>
-                </div>
-
-                <div class="grid grid-cols-2 gap-4 mb-4">
-                    <div>
-                        <label class="text-xs font-bold text-gray-500 uppercase">Status perante o BB</label>
-                        <select id="modal-status" class="w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500 text-sm font-bold tracking-wide" onchange="checkCustomStatus()">
-                        </select>
-                        <input type="text" id="modal-status-custom" class="hidden w-full p-2 border rounded mt-2 text-sm outline-none focus:border-blue-500" placeholder="Digite o novo status...">
-                    </div>
-                    <div>
-                        <label class="text-xs font-bold text-gray-500 uppercase">Vencimento (Opcional)</label>
-                        <input type="date" id="modal-validade" class="w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500 text-sm text-gray-700">
-                    </div>
-                </div>
-
-                <div class="mb-4">
-                    <label class="text-xs font-bold text-gray-500 uppercase">Modificado em (Data Retroativa)</label>
-                    <input type="date" id="modal-status-updated-at" class="w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500 text-sm text-gray-700">
-                    <p class="text-[10px] text-gray-400 mt-1">Apenas se precisar corrigir a data do histórico.</p>
-                </div>
-
-                <div class="mb-2">
-                    <label class="text-xs font-bold text-gray-500 uppercase">Setores do AD Autorizados</label>
-                    <div id="modal-sectores-container" class="border rounded-lg p-3 bg-gray-50 max-h-40 overflow-y-auto custom-scroll grid grid-cols-2 gap-2">
-                    </div>
-                </div>
-            </div>
-            
-            <div class="p-5 border-t bg-gray-50 flex justify-end gap-3">
-                <button onclick="closeModal()" class="px-5 py-2 text-gray-600 font-bold hover:bg-gray-200 rounded transition">Cancelar</button>
-                <button onclick="saveAccount()" class="px-6 py-2 bg-blue-600 text-white font-bold rounded shadow hover:bg-blue-700 transition flex items-center">
-                    <i class="fas fa-save mr-2"></i> Salvar Conta
-                </button>
-            </div>
-        </div>
-    </div>
-
-    <script>
-        let currentToken = "";
-        let autoRefreshInterval;
-        let allAdSectors = [];
-        let globalAccountsData = [];
-        
-        let sortCol = 'login';
-        let sortAsc = true;
-
-        document.getElementById('admin-token').addEventListener('keypress', function (e) {
-            if (e.key === 'Enter') loadDashboard();
-        });
-
-        const STATUS_COLORS = {
-            'ativo': 'bg-green-700 text-white border-green-800',
-            'bloqueada': 'bg-red-700 text-white border-red-800',
-            'cadastro_inicial': 'bg-teal-100 text-teal-800 border-teal-200',
-            'provisoria_recebida': 'bg-gray-200 text-gray-800 border-gray-300',
-            'termo_assinado': 'bg-green-300 text-green-900 border-green-400'
+            return <div className={`${color} border px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider inline-block shadow-sm`}>{label}</div>;
         };
 
-        function getStatusVisual(status) {
-            let s = status.toLowerCase();
-            let color = STATUS_COLORS[s] || 'bg-blue-50 text-blue-800 border-blue-200';
-            let label = status.replace(/_/g, ' ').toUpperCase();
-            return { color, label };
-        }
+        // ============================================================================
+        // MÓDULO 2: TELA DE LOGIN (AUTH)
+        // ============================================================================
+        const AuthScreen = ({ onLogin }) => {
+            const [inputToken, setInputToken] = useState("");
 
-        // --- NAVEGAÇÃO ENTRE ABAS ---
-        function switchTab(tabName) {
-            const tabs = ['dashboard', 'analytics'];
-            tabs.forEach(t => {
-                document.getElementById(`tab-${t}`).className = "border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm flex items-center gap-2";
-                document.getElementById(`${t}-section`).style.display = "none";
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                onLogin(inputToken);
+            };
+
+            return (
+                <div className="bg-white p-8 rounded-xl shadow-sm border border-gray-100 max-w-md mx-auto mt-20 text-center">
+                    <div className="w-16 h-16 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-4 text-2xl">
+                        <i className="fas fa-lock"></i>
+                    </div>
+                    <h2 className="font-bold text-xl mb-6">Acesso Administrativo</h2>
+                    <form onSubmit={handleSubmit}>
+                        <input 
+                            type="password" 
+                            value={inputToken}
+                            onChange={(e) => setInputToken(e.target.value)}
+                            placeholder="Insira a Chave de Segurança" 
+                            className="w-full p-3 border rounded mb-4 focus:outline-none focus:border-blue-500 text-center tracking-widest"
+                        />
+                        <button type="submit" className="bg-blue-600 text-white px-4 py-3 rounded w-full font-bold hover:bg-blue-700 transition">
+                            Desbloquear Painel
+                        </button>
+                    </form>
+                </div>
+            );
+        };
+
+        // ============================================================================
+        // MÓDULO 3: MODAL DE CONTA (CRIAR/EDITAR) - AGORA COM SENHA VISÍVEL
+        // ============================================================================
+        const AccountModal = ({ isOpen, onClose, onSave, accountData, adSectors }) => {
+            if (!isOpen) return null;
+
+            const [formData, setFormData] = useState({
+                id: '', login: '', titular: '', senha: '', 
+                status: 'cadastro_inicial', status_custom: '', 
+                data_validade: '', status_updated_at: '', setores: []
             });
+            const [showPassword, setShowPassword] = useState(false);
 
-            document.getElementById(`tab-${tabName}`).className = "border-blue-500 text-blue-600 whitespace-nowrap py-4 px-1 border-b-2 font-bold text-sm flex items-center gap-2";
-            document.getElementById(`${tabName}-section`).style.display = "block";
-
-            if (tabName === 'analytics') {
-                const hoje = new Date().toISOString().split('T')[0];
-                let semanaPassada = new Date();
-                semanaPassada.setDate(semanaPassada.getDate() - 7);
-                document.getElementById('date-start').value = semanaPassada.toISOString().split('T')[0];
-                document.getElementById('date-end').value = hoje;
-                fetchAnalytics();
-            }
-        }
-
-        function logout() {
-            currentToken = "";
-            clearInterval(autoRefreshInterval);
-            document.getElementById('admin-token').value = "";
-            document.getElementById('auth-section').style.display = "block";
-            document.getElementById('main-content').style.display = "none";
-            document.getElementById('btn-sair').classList.add('hidden');
-        }
-
-        async function loadDashboard() {
-            const tokenInput = document.getElementById('admin-token').value || currentToken;
-            if(!tokenInput) return alert("Digite a chave.");
-            currentToken = tokenInput;
-
-            try {
-                await fetchADSectors();
-                await updateData(); 
-                
-                document.getElementById('auth-section').style.display = "none";
-                document.getElementById('main-content').style.display = "block";
-                document.getElementById('btn-sair').classList.remove('hidden');
-                
-                if(autoRefreshInterval) clearInterval(autoRefreshInterval);
-                autoRefreshInterval = setInterval(updateData, 5000);
-            } catch(e) {
-                alert("Acesso Negado. Chave incorreta.");
-                logout();
-            }
-        }
-
-        async function fetchADSectors() {
-            try {
-                const res = await fetch('/api/admin/ad_sectors', { headers: { 'X-Admin-Token': currentToken } });
-                if(res.ok) allAdSectors = await res.json();
-            } catch(e) {}
-        }
-
-        async function updateData() {
-            const resStats = await fetch('/api/admin/dashboard_stats', { headers: { 'X-Admin-Token': currentToken } });
-            if(!resStats.ok) throw new Error("Token Invalido");
-            const stats = await resStats.json();
-            
-            document.getElementById('kpi-logins').innerText = stats.logins_solicitados;
-            document.getElementById('kpi-cookies').innerText = stats.cookies_injetados;
-            document.getElementById('kpi-robos').innerText = stats.robos_executados;
-            document.getElementById('kpi-fila').innerText = stats.queue_size;
-            document.getElementById('kpi-economia').innerText = stats.economia_pct;
-
-            const resAcc = await fetch('/api/admin/accounts', { headers: { 'X-Admin-Token': currentToken } });
-            globalAccountsData = await resAcc.json();
-            
-            updateFiltersUI();
-            renderTable();
-        }
-
-        function updateFiltersUI() {
-            const statusSelect = document.getElementById('filter-status');
-            const sectorSelect = document.getElementById('filter-sector');
-            
-            let currentStatus = statusSelect.value;
-            let currentSector = sectorSelect.value;
-
-            let uniqueStatuses = new Set();
-            let uniqueSectors = new Set(allAdSectors); 
-
-            globalAccountsData.forEach(acc => {
-                if(acc.status) uniqueStatuses.add(acc.status.toLowerCase());
-                if(acc.setores) acc.setores.forEach(s => uniqueSectors.add(s));
-            });
-
-            statusSelect.innerHTML = `<option value="">Todos os Status</option>`;
-            Array.from(uniqueStatuses).sort().forEach(st => {
-                let label = st.replace(/_/g, ' ').toUpperCase();
-                statusSelect.innerHTML += `<option value="${st}">${label}</option>`;
-            });
-            statusSelect.value = currentStatus; 
-
-            sectorSelect.innerHTML = `<option value="">Todos os Setores</option>`;
-            Array.from(uniqueSectors).sort().forEach(sec => {
-                sectorSelect.innerHTML += `<option value="${sec}">${sec}</option>`;
-            });
-            sectorSelect.value = currentSector; 
-        }
-
-        function sortTable(col) {
-            if (sortCol === col) sortAsc = !sortAsc;
-            else { sortCol = col; sortAsc = true; }
-            renderTable();
-        }
-
-        function renderTable() {
-            const tbody = document.getElementById('accounts-table');
-            const searchQ = document.getElementById('search-input').value.toLowerCase();
-            const filterS = document.getElementById('filter-status').value.toLowerCase();
-            const filterSec = document.getElementById('filter-sector').value;
-
-            tbody.innerHTML = "";
-            
-            let filteredData = globalAccountsData.filter(acc => {
-                let safeStatus = acc.status ? acc.status.toLowerCase() : 'desconhecido';
-                if (filterS && safeStatus !== filterS) return false;
-                if (filterSec && (!acc.setores || !acc.setores.includes(filterSec))) return false;
-                if (searchQ) {
-                    let searchableStr = `${acc.login} ${acc.titular} ${safeStatus} ${(acc.setores || []).join(" ")}`.toLowerCase();
-                    if (!searchableStr.includes(searchQ)) return false;
+            useEffect(() => {
+                if (accountData) {
+                    setFormData({
+                        id: accountData.id,
+                        login: accountData.login,
+                        titular: accountData.titular === "Não informado" ? "" : accountData.titular,
+                        senha: accountData.senha || "", // Exibe a senha do banco!
+                        status: accountData.status || 'ativo',
+                        status_custom: '',
+                        data_validade: accountData.data_validade || '',
+                        status_updated_at: accountData.status_updated_at ? accountData.status_updated_at.split('T')[0] : '',
+                        setores: accountData.setores || []
+                    });
+                } else {
+                    setFormData({ id: '', login: '', titular: '', senha: '', status: 'cadastro_inicial', status_custom: '', data_validade: '', status_updated_at: '', setores: [] });
                 }
-                return true;
-            });
+                setShowPassword(false);
+            }, [accountData]);
 
-            filteredData.sort((a, b) => {
-                let valA = a[sortCol] || '';
-                let valB = b[sortCol] || '';
-                if(sortCol === 'status') { valA = a.status || ''; valB = b.status || ''; }
-                if (typeof valA === 'string') valA = valA.toLowerCase();
-                if (typeof valB === 'string') valB = valB.toLowerCase();
-                if (valA < valB) return sortAsc ? -1 : 1;
-                if (valA > valB) return sortAsc ? 1 : -1;
-                return 0;
-            });
+            const handleSectorToggle = (sector) => {
+                setFormData(prev => ({
+                    ...prev,
+                    setores: prev.setores.includes(sector) 
+                        ? prev.setores.filter(s => s !== sector)
+                        : [...prev.setores, sector]
+                }));
+            };
 
-            if (filteredData.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="5" class="p-8 text-center text-gray-500">Nenhum resultado encontrado.</td></tr>`;
-                return;
-            }
-
-            filteredData.forEach(acc => {
-                let safeStatus = acc.status || 'ativo';
-                let visual = getStatusVisual(safeStatus);
-                
-                let chipsHtml = acc.setores && acc.setores.length > 0 
-                    ? acc.setores.map(s => `<span class="bg-blue-100 text-blue-800 text-[10px] px-2 py-0.5 rounded border border-blue-200">${s}</span>`).join(" ")
-                    : `<span class="text-gray-400 text-xs italic">Nenhum setor</span>`;
-
-                let validadeHtml = `<div class="mt-1.5 text-[10px] text-gray-400 italic">Sem data de vencimento</div>`;
-                
-                if (['ativo', 'provisoria_recebida', 'termo_assinado'].includes(safeStatus.toLowerCase()) && acc.data_validade) {
-                    let parts = acc.data_validade.split('-');
-                    let dataVal = new Date(parts[0], parts[1]-1, parts[2]);
-                    let hoje = new Date();
-                    hoje.setHours(0,0,0,0);
-                    let diffDias = Math.ceil((dataVal - hoje) / (1000 * 60 * 60 * 24));
-                    
-                    if (diffDias <= 10 && diffDias >= 0) validadeHtml = `<div class="mt-1.5 text-[11px] text-orange-600 font-bold"><i class="fas fa-exclamation-triangle"></i> Vence em ${diffDias} dias</div>`;
-                    else if (diffDias < 0) validadeHtml = `<div class="mt-1.5 text-[11px] text-red-600 font-bold"><i class="fas fa-times-circle"></i> Vencida</div>`;
-                    else validadeHtml = `<div class="mt-1.5 text-[11px] text-green-600 font-bold"><i class="fas fa-check-circle"></i> Válida até ${dataVal.toLocaleDateString('pt-BR')}</div>`;
-                } 
-                
-                let modificadoHtml = "";
-                if (acc.status_updated_at) {
-                    let d = new Date(acc.status_updated_at);
-                    modificadoHtml = `<div class="mt-1 text-[10px] text-gray-500 font-medium"><i class="fas fa-history"></i> Modificado em: ${d.toLocaleDateString('pt-BR')}</div>`;
+            const handleSubmit = () => {
+                let finalStatus = formData.status;
+                if (finalStatus === "_custom_") {
+                    finalStatus = formData.status_custom.trim().toLowerCase().replace(/ /g, '_');
+                    if (!finalStatus) return alert("Digite o status personalizado.");
                 }
+                if (!formData.login) return alert("O Login é obrigatório.");
+                if (!formData.id && !formData.senha) return alert("A senha é obrigatória para contas novas.");
 
-                tbody.innerHTML += `
-                    <tr class="hover:bg-gray-50 transition border-b border-gray-100">
-                        <td class="p-4 font-mono font-bold text-gray-800"><i class="fas fa-fingerprint text-gray-400 mr-2"></i>${acc.login}</td>
-                        <td class="p-4 font-semibold text-gray-700">${acc.titular || '-'}</td>
-                        <td class="p-4 flex flex-wrap gap-1 max-w-[250px]">${chipsHtml}</td>
-                        <td class="p-4 text-center">
-                            <div class="${visual.color} border px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider inline-block shadow-sm">${visual.label}</div>
-                            ${validadeHtml}
-                            ${modificadoHtml}
-                        </td>
-                        <td class="p-4 text-center whitespace-nowrap">
-                            <button onclick="clearCookies(${acc.id})" class="text-orange-500 hover:text-orange-700 bg-orange-50 hover:bg-orange-100 p-2 rounded transition mr-1" title="Limpar Cookies da Sessão">
-                                <i class="fas fa-eraser"></i>
-                            </button>
-                            <button onclick="openModal(${acc.id})" class="text-blue-500 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 p-2 rounded transition mr-1" title="Configurar Conta">
-                                <i class="fas fa-cog"></i>
-                            </button>
-                            <button onclick="deleteAccount(${acc.id})" class="text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 p-2 rounded transition" title="Excluir Conta">
-                                <i class="fas fa-trash-alt"></i>
-                            </button>
-                        </td>
-                    </tr>
-                `;
-            });
-        }
+                onSave({ ...formData, status: finalStatus });
+            };
 
-        function populateSectorCheckboxes(selectedSectors = []) {
-            const container = document.getElementById('modal-sectores-container');
-            container.innerHTML = "";
-            allAdSectors.forEach(sector => {
-                const isChecked = selectedSectors.includes(sector) ? "checked" : "";
-                container.innerHTML += `
-                    <label class="flex items-center space-x-2 text-sm text-gray-700 cursor-pointer hover:bg-gray-200 p-1.5 rounded transition">
-                        <input type="checkbox" value="${sector}" class="sector-checkbox form-checkbox h-4 w-4 text-blue-600 border-gray-300 rounded" ${isChecked}>
-                        <span class="truncate">${sector}</span>
-                    </label>
-                `;
-            });
-        }
+            const isCustomStatus = !['ativo', 'bloqueada', 'cadastro_inicial'].includes(formData.status) && formData.status !== '_custom_';
 
-        function populateModalStatus(currentStatus = "ativo") {
-            const select = document.getElementById('modal-status');
-            const customInput = document.getElementById('modal-status-custom');
-            customInput.classList.add('hidden');
-            customInput.value = "";
-            
-            let uniqueStatuses = new Set(['ativo', 'bloqueada', 'cadastro_inicial']);
-            globalAccountsData.forEach(acc => { if(acc.status) uniqueStatuses.add(acc.status.toLowerCase()); });
-            if(currentStatus) uniqueStatuses.add(currentStatus.toLowerCase());
-
-            select.innerHTML = "";
-            uniqueStatuses.forEach(st => {
-                let label = st.replace(/_/g, ' ').toUpperCase();
-                let isSel = (st === currentStatus.toLowerCase()) ? "selected" : "";
-                select.innerHTML += `<option value="${st}" ${isSel}>${label}</option>`;
-            });
-            select.innerHTML += `<option value="_custom_">+ Outro (Personalizado)...</option>`;
-        }
-
-        function checkCustomStatus() {
-            const select = document.getElementById('modal-status');
-            const customInput = document.getElementById('modal-status-custom');
-            if (select.value === "_custom_") {
-                customInput.classList.remove('hidden');
-                customInput.focus();
-            } else customInput.classList.add('hidden');
-        }
-
-        // Função do Olhinho da Senha
-        function togglePassword() {
-            const input = document.getElementById('modal-senha');
-            const icon = document.getElementById('eye-icon');
-            if (input.type === 'password') {
-                input.type = 'text';
-                icon.classList.remove('fa-eye');
-                icon.classList.add('fa-eye-slash');
-            } else {
-                input.type = 'password';
-                icon.classList.remove('fa-eye-slash');
-                icon.classList.add('fa-eye');
-            }
-        }
-
-        function openModal(accountId = null) {
-            document.getElementById('account-modal').classList.remove('hidden');
-            document.getElementById('account-modal').classList.add('flex');
-
-            if (accountId) {
-                document.getElementById('modal-title').innerText = "Configurar Conta BB";
-                const acc = globalAccountsData.find(a => a.id === accountId);
-                
-                document.getElementById('modal-account-id').value = acc.id;
-                document.getElementById('modal-login').value = acc.login;
-                document.getElementById('modal-login').disabled = true;
-                document.getElementById('modal-titular').value = acc.titular === "Não informado" ? "" : acc.titular;
-                
-                // MÁGICA AQUI: Puxa a senha vinda do banco de dados (API) e preenche o campo!
-                document.getElementById('modal-senha').value = acc.senha || "";
-                
-                // Força o campo a nascer escondido (tipo password) com o ícone do olho aberto
-                document.getElementById('modal-senha').type = "password";
-                document.getElementById('eye-icon').className = "fas fa-eye";
-                
-                populateModalStatus(acc.status);
-                document.getElementById('modal-validade').value = acc.data_validade || "";
-                
-                let dateStr = "";
-                if(acc.status_updated_at) dateStr = acc.status_updated_at.split('T')[0];
-                document.getElementById('modal-status-updated-at').value = dateStr;
-                populateSectorCheckboxes(acc.setores || []);
-            } else {
-                document.getElementById('modal-title').innerText = "Adicionar Nova Conta";
-                document.getElementById('modal-account-id').value = "";
-                document.getElementById('modal-login').value = "";
-                document.getElementById('modal-login').disabled = false;
-                document.getElementById('modal-titular').value = "";
-                
-                // Reseta a senha para novas contas
-                document.getElementById('modal-senha').value = "";
-                document.getElementById('modal-senha').type = "password";
-                document.getElementById('eye-icon').className = "fas fa-eye";
-                
-                document.getElementById('modal-validade').value = "";
-                document.getElementById('modal-status-updated-at').value = "";
-                
-                populateModalStatus("cadastro_inicial");
-                populateSectorCheckboxes([]);
-            }
-        }
-
-        function closeModal() {
-            document.getElementById('account-modal').classList.add('hidden');
-            document.getElementById('account-modal').classList.remove('flex');
-        }
-
-        async function saveAccount() {
-            const accountId = document.getElementById('modal-account-id').value;
-            const login = document.getElementById('modal-login').value.toUpperCase();
-            const titular = document.getElementById('modal-titular').value;
-            const senha = document.getElementById('modal-senha').value;
-            const data_validade = document.getElementById('modal-validade').value;
-            const status_updated_at = document.getElementById('modal-status-updated-at').value; 
-            
-            const selectStatus = document.getElementById('modal-status').value;
-            let status = selectStatus;
-            if(selectStatus === "_custom_") {
-                status = document.getElementById('modal-status-custom').value.trim().toLowerCase().replace(/ /g, '_');
-                if(!status) return alert("Digite o nome do status personalizado.");
-            }
-
-            const checkedBoxes = document.querySelectorAll('.sector-checkbox:checked');
-            const setores = Array.from(checkedBoxes).map(cb => cb.value);
-
-            if (!login) return alert("O Login é obrigatório.");
-            if (!accountId && !senha) return alert("A senha é obrigatória para contas novas.");
-
-            const payload = { login, titular, status, setores, data_validade, status_updated_at };
-            if (senha) payload.senha = senha;
-
-            const url = accountId ? `/api/admin/accounts/${accountId}` : `/api/admin/accounts`;
-            const method = accountId ? 'PUT' : 'POST';
-
-            try {
-                const res = await fetch(url, { method: method, headers: { 'X-Admin-Token': currentToken, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-                if(res.ok) { closeModal(); updateData(); } 
-                else { const err = await res.json(); alert(err.erro || "Falha ao salvar conta."); }
-            } catch(e) { alert("Erro de conexão."); }
-        }
-
-        async function deleteAccount(accountId) {
-            if(!confirm("Atenção! Deseja remover esta conta permanentemente do sistema?")) return;
-            try {
-                const res = await fetch(`/api/admin/accounts/${accountId}`, { method: 'DELETE', headers: { 'X-Admin-Token': currentToken }});
-                if(res.ok) updateData();
-            } catch(e) {}
-        }
-        
-        async function clearCookies(accountId) {
-            if(!confirm("Deseja expurgar a sessão (cookies) desta conta no banco de dados? Isso fará o robô acordar do zero no próximo acesso.")) return;
-            try {
-                const res = await fetch(`/api/admin/accounts/${accountId}/clear`, { method: 'POST', headers: { 'X-Admin-Token': currentToken }});
-                if(res.ok) updateData();
-                else alert("Erro ao limpar cookies no banco.");
-            } catch(e) {}
-        }
-
-        // --- FETCH DA TELA DE ANALYTICS ---
-        async function fetchAnalytics() {
-            const start = document.getElementById('date-start').value;
-            const end = document.getElementById('date-end').value;
-            if(!start || !end) return alert("Preencha as datas.");
-
-            try {
-                const res = await fetch(`/api/admin/analytics?start=${start}&end=${end}`, { headers: { 'X-Admin-Token': currentToken }});
-                if(!res.ok) throw new Error();
-                const data = await res.json();
-
-                document.getElementById('aly-total-logins').innerText = data.total_logins;
-                document.getElementById('aly-total-cookies').innerText = data.total_cookies;
-                document.getElementById('aly-economia').innerText = data.economia_pct;
-
-                const sList = document.getElementById('aly-sectors-list');
-                sList.innerHTML = "";
-                if(data.sectors.length === 0) sList.innerHTML = `<li class="p-4 text-center text-gray-500">Sem dados no período.</li>`;
-                data.sectors.forEach(s => {
-                    let w = data.total_logins > 0 ? (s.count / data.total_logins) * 100 : 0;
-                    sList.innerHTML += `
-                        <li class="p-4 hover:bg-gray-50 flex items-center justify-between">
-                            <span class="font-bold text-gray-700 w-1/3">${s.name}</span>
-                            <div class="flex-1 mx-4 bg-gray-200 rounded-full h-2.5">
-                                <div class="bg-blue-500 h-2.5 rounded-full" style="width: ${w}%"></div>
+            return (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50">
+                    <div className="bg-white w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+                        <div className="bg-blue-50 border-b border-blue-100 p-5 flex justify-between items-center">
+                            <h3 className="font-bold text-xl text-blue-900">{formData.id ? "Configurar Conta BB" : "Nova Conta BB"}</h3>
+                            <button onClick={onClose} className="text-blue-400 hover:text-blue-700 text-xl">&times;</button>
+                        </div>
+                        
+                        <div className="p-6 overflow-y-auto custom-scroll">
+                            <div className="grid grid-cols-2 gap-4 mb-4">
+                                <div>
+                                    <label className="text-xs font-bold text-gray-500 uppercase">Login (Matrícula)</label>
+                                    <input type="text" value={formData.login} onChange={e => setFormData({...formData, login: e.target.value.toUpperCase()})} disabled={!!formData.id} className={`w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500 font-mono uppercase ${formData.id ? 'bg-gray-100' : ''}`} placeholder="Ex: F1234567" />
+                                </div>
+                                <div>
+                                    <label className="text-xs font-bold text-gray-500 uppercase">Titular da Conta</label>
+                                    <input type="text" value={formData.titular} onChange={e => setFormData({...formData, titular: e.target.value})} className="w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500" placeholder="Nome Completo" />
+                                </div>
                             </div>
-                            <span class="text-sm font-bold text-blue-600">${s.count} acessos</span>
-                        </li>
-                    `;
-                });
 
-                const aList = document.getElementById('aly-accounts-list');
-                aList.innerHTML = "";
-                if(data.accounts.length === 0) aList.innerHTML = `<li class="p-4 text-center text-gray-500">Sem dados no período.</li>`;
-                data.accounts.forEach(a => {
-                    let w = data.total_cookies > 0 ? (a.count / data.total_cookies) * 100 : 0;
-                    aList.innerHTML += `
-                        <li class="p-4 hover:bg-gray-50 flex items-center justify-between">
-                            <span class="font-mono font-bold text-gray-600 w-1/4">${a.name}</span>
-                            <div class="flex-1 mx-4 bg-gray-200 rounded-full h-2.5">
-                                <div class="bg-green-500 h-2.5 rounded-full" style="width: ${w}%"></div>
+                            <div className="mb-4 relative">
+                                <label className="text-xs font-bold text-gray-500 uppercase">Senha Banco do Brasil</label>
+                                <input type={showPassword ? "text" : "password"} value={formData.senha} onChange={e => setFormData({...formData, senha: e.target.value})} className="w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500 font-mono pr-10" placeholder="Digite a senha (ou deixe em branco para não alterar)" />
+                                <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-[34px] text-gray-500 hover:text-blue-600 focus:outline-none">
+                                    <i className={`fas ${showPassword ? 'fa-eye-slash' : 'fa-eye'}`}></i>
+                                </button>
                             </div>
-                            <span class="text-sm font-bold text-green-600">${a.count} sessões ativas</span>
-                        </li>
-                    `;
-                });
 
-            } catch(e) {
-                alert("Erro ao buscar histórico.");
-            }
-        }
+                            <div className="grid grid-cols-2 gap-4 mb-4">
+                                <div>
+                                    <label className="text-xs font-bold text-gray-500 uppercase">Status</label>
+                                    <select value={isCustomStatus ? "_custom_" : formData.status} onChange={e => setFormData({...formData, status: e.target.value})} className="w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500 text-sm font-bold tracking-wide">
+                                        <option value="ativo">ATIVO</option>
+                                        <option value="bloqueada">BLOQUEADA</option>
+                                        <option value="cadastro_inicial">CADASTRO INICIAL</option>
+                                        {isCustomStatus && <option value="_custom_">{formData.status.replace(/_/g, ' ').toUpperCase()}</option>}
+                                        {!isCustomStatus && <option value="_custom_">+ Outro...</option>}
+                                    </select>
+                                    {(formData.status === "_custom_" || isCustomStatus) && (
+                                        <input type="text" value={isCustomStatus ? formData.status : formData.status_custom} onChange={e => setFormData({...formData, status_custom: e.target.value})} className="w-full p-2 border rounded mt-2 text-sm outline-none focus:border-blue-500" placeholder="Novo status..." />
+                                    )}
+                                </div>
+                                <div>
+                                    <label className="text-xs font-bold text-gray-500 uppercase">Vencimento (Opcional)</label>
+                                    <input type="date" value={formData.data_validade} onChange={e => setFormData({...formData, data_validade: e.target.value})} className="w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500 text-sm" />
+                                </div>
+                            </div>
+
+                            <div className="mb-4">
+                                <label className="text-xs font-bold text-gray-500 uppercase">Modificado em (Retroativo)</label>
+                                <input type="date" value={formData.status_updated_at} onChange={e => setFormData({...formData, status_updated_at: e.target.value})} className="w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500 text-sm" />
+                            </div>
+
+                            <div className="mb-2">
+                                <label className="text-xs font-bold text-gray-500 uppercase">Setores do AD Autorizados</label>
+                                <div className="border rounded-lg p-3 bg-gray-50 max-h-40 overflow-y-auto custom-scroll grid grid-cols-2 gap-2">
+                                    {adSectors.map(sector => (
+                                        <label key={sector} className="flex items-center space-x-2 text-sm text-gray-700 cursor-pointer hover:bg-gray-200 p-1.5 rounded transition">
+                                            <input type="checkbox" checked={formData.setores.includes(sector)} onChange={() => handleSectorToggle(sector)} className="form-checkbox h-4 w-4 text-blue-600 border-gray-300 rounded" />
+                                            <span className="truncate">{sector}</span>
+                                        </label>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div className="p-5 border-t bg-gray-50 flex justify-end gap-3">
+                            <button onClick={onClose} className="px-5 py-2 text-gray-600 font-bold hover:bg-gray-200 rounded transition">Cancelar</button>
+                            <button onClick={handleSubmit} className="px-6 py-2 bg-blue-600 text-white font-bold rounded shadow hover:bg-blue-700 transition flex items-center">
+                                <i className="fas fa-save mr-2"></i> Salvar
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // ============================================================================
+        // MÓDULO 4: TAB VIEW - DASHBOARD (TEMPO REAL)
+        // ============================================================================
+        const DashboardView = ({ token, adSectors }) => {
+            const [stats, setStats] = useState({ logins_solicitados: 0, cookies_injetados: 0, robos_executados: 0, queue_size: 0, economia_pct: 0 });
+            const [accounts, setAccounts] = useState([]);
+            const [search, setSearch] = useState("");
+            const [statusFilter, setStatusFilter] = useState("");
+            const [sectorFilter, setSectorFilter] = useState("");
+            
+            const [isModalOpen, setIsModalOpen] = useState(false);
+            const [editingAccount, setEditingAccount] = useState(null);
+
+            const fetchData = useCallback(async () => {
+                try {
+                    const [resStats, resAcc] = await Promise.all([
+                        fetch('/api/admin/dashboard_stats', { headers: { 'X-Admin-Token': token } }),
+                        fetch('/api/admin/accounts', { headers: { 'X-Admin-Token': token } })
+                    ]);
+                    if (resStats.ok) setStats(await resStats.json());
+                    if (resAcc.ok) setAccounts(await resAcc.json());
+                } catch (e) { console.error("Erro ao buscar dados do dashboard:", e); }
+            }, [token]);
+
+            useEffect(() => {
+                fetchData();
+                const interval = setInterval(fetchData, 5000);
+                return () => clearInterval(interval);
+            }, [fetchData]);
+
+            const handleSaveAccount = async (payload) => {
+                const url = payload.id ? `/api/admin/accounts/${payload.id}` : `/api/admin/accounts`;
+                const method = payload.id ? 'PUT' : 'POST';
+                try {
+                    const res = await fetch(url, { method, headers: { 'X-Admin-Token': token, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                    if (res.ok) { setIsModalOpen(false); fetchData(); }
+                    else { const err = await res.json(); alert(err.erro); }
+                } catch (e) { alert("Erro de conexão."); }
+            };
+
+            const handleAction = async (action, id) => {
+                if (action === 'delete' && !confirm("Remover esta conta permanentemente?")) return;
+                if (action === 'clear' && !confirm("Expurgar a sessão (cookies) desta conta? O robô fará login do zero.")) return;
+                
+                const url = action === 'delete' ? `/api/admin/accounts/${id}` : `/api/admin/accounts/${id}/clear`;
+                const method = action === 'delete' ? 'DELETE' : 'POST';
+                
+                try {
+                    const res = await fetch(url, { method, headers: { 'X-Admin-Token': token }});
+                    if (res.ok) fetchData();
+                } catch (e) { console.error(e); }
+            };
+
+            const filteredAccounts = useMemo(() => {
+                return accounts.filter(acc => {
+                    const safeStatus = (acc.status || 'desconhecido').toLowerCase();
+                    if (statusFilter && safeStatus !== statusFilter) return false;
+                    if (sectorFilter && (!acc.setores || !acc.setores.includes(sectorFilter))) return false;
+                    if (search) {
+                        const q = search.toLowerCase();
+                        return acc.login.toLowerCase().includes(q) || (acc.titular && acc.titular.toLowerCase().includes(q));
+                    }
+                    return true;
+                }).sort((a, b) => a.login.localeCompare(b.login));
+            }, [accounts, search, statusFilter, sectorFilter]);
+
+            const uniqueStatuses = useMemo(() => [...new Set(accounts.map(a => (a.status || '').toLowerCase()))].filter(Boolean).sort(), [accounts]);
+
+            return (
+                <div>
+                    <h2 className="text-xl font-bold text-gray-800 mb-4">Métricas de Hoje</h2>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+                        <KpiCard title="Acessos Solicitados" value={stats.logins_solicitados} colorClass="border-l-blue-500" />
+                        <KpiCard title="Cookies Injetados" value={stats.cookies_injetados} colorClass="border-l-green-500" />
+                        <KpiCard title="Execuções do Robô" value={stats.robos_executados} subtitle={`${stats.queue_size} na fila`} colorClass="border-l-yellow-500" />
+                        <KpiCard title="Eficiência do Pool" value={`${stats.economia_pct}%`} colorClass="border-l-purple-500" />
+                    </div>
+
+                    <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-4 gap-4">
+                        <h2 className="text-2xl font-bold text-gray-800"><i className="fas fa-users-cog mr-2 text-gray-400"></i>Pool de Contas BB</h2>
+                        <button onClick={() => { setEditingAccount(null); setIsModalOpen(true); }} className="bg-blue-600 text-white px-5 py-2.5 rounded-lg font-bold hover:bg-blue-700 shadow transition flex items-center">
+                            <i className="fas fa-user-plus mr-2"></i> Nova Conta BB
+                        </button>
+                    </div>
+
+                    <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 mb-4 flex flex-col md:flex-row gap-4">
+                        <div className="flex-1 relative">
+                            <i className="fas fa-search absolute left-3 top-3 text-gray-400"></i>
+                            <input type="text" value={search} onChange={e => setSearch(e.target.value)} placeholder="Pesquisar matrícula, nome..." className="w-full pl-10 p-2 border rounded outline-none focus:border-blue-500" />
+                        </div>
+                        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="w-full md:w-56 p-2 border rounded outline-none focus:border-blue-500">
+                            <option value="">Todos os Status</option>
+                            {uniqueStatuses.map(s => <option key={s} value={s}>{s.replace(/_/g, ' ').toUpperCase()}</option>)}
+                        </select>
+                        <select value={sectorFilter} onChange={e => setSectorFilter(e.target.value)} className="w-full md:w-56 p-2 border rounded outline-none focus:border-blue-500">
+                            <option value="">Todos os Setores</option>
+                            {adSectors.map(s => <option key={s} value={s}>{s}</option>)}
+                        </select>
+                    </div>
+
+                    <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-left border-collapse min-w-[900px]">
+                                <thead className="bg-gray-100 text-gray-600 text-xs uppercase tracking-wider border-b border-gray-200">
+                                    <tr>
+                                        <th className="p-4 font-semibold">Conta (Login)</th>
+                                        <th className="p-4 font-semibold">Titular</th>
+                                        <th className="p-4 font-semibold">Setores Vinculados</th>
+                                        <th className="p-4 font-semibold text-center">Status / Validade</th>
+                                        <th className="p-4 font-semibold text-center">Ações</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="text-sm divide-y divide-gray-100">
+                                    {filteredAccounts.map(acc => (
+                                        <tr key={acc.id} className="hover:bg-gray-50 transition border-b border-gray-100">
+                                            <td className="p-4 font-mono font-bold text-gray-800"><i className="fas fa-fingerprint text-gray-400 mr-2"></i>{acc.login}</td>
+                                            <td className="p-4 font-semibold text-gray-700">{acc.titular || '-'}</td>
+                                            <td className="p-4 flex flex-wrap gap-1 max-w-[250px]">
+                                                {acc.setores && acc.setores.length > 0 
+                                                    ? acc.setores.map(s => <span key={s} className="bg-blue-100 text-blue-800 text-[10px] px-2 py-0.5 rounded border border-blue-200">{s}</span>)
+                                                    : <span className="text-gray-400 text-xs italic">Nenhum setor</span>}
+                                            </td>
+                                            <td className="p-4 text-center">
+                                                <StatusBadge status={acc.status} />
+                                                <div className="mt-1.5 text-[10px] text-gray-400 font-bold">{acc.data_validade ? `Validade: ${acc.data_validade}` : 'Sem vencimento'}</div>
+                                            </td>
+                                            <td className="p-4 text-center whitespace-nowrap">
+                                                <button onClick={() => handleAction('clear', acc.id)} className="text-orange-500 hover:text-orange-700 bg-orange-50 p-2 rounded transition mr-1" title="Limpar Cookies"><i className="fas fa-eraser"></i></button>
+                                                <button onClick={() => { setEditingAccount(acc); setIsModalOpen(true); }} className="text-blue-500 hover:text-blue-700 bg-blue-50 p-2 rounded transition mr-1" title="Editar"><i className="fas fa-cog"></i></button>
+                                                <button onClick={() => handleAction('delete', acc.id)} className="text-red-500 hover:text-red-700 bg-red-50 p-2 rounded transition" title="Excluir"><i className="fas fa-trash-alt"></i></button>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                    {filteredAccounts.length === 0 && <tr><td colSpan="5" className="p-8 text-center text-gray-500">Nenhum resultado encontrado.</td></tr>}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <AccountModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} onSave={handleSaveAccount} accountData={editingAccount} adSectors={adSectors} />
+                </div>
+            );
+        };
+
+        // ============================================================================
+        // MÓDULO 5: TAB VIEW - ANALYTICS (TELEMETRIA AVANÇADA)
+        // ============================================================================
+        const AnalyticsView = ({ token }) => {
+            const [dates, setDates] = useState({
+                start: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+                end: new Date().toISOString().split('T')[0]
+            });
+            const [data, setData] = useState(null);
+
+            const fetchAnalytics = async () => {
+                try {
+                    const res = await fetch(`/api/admin/analytics?start=${dates.start}&end=${dates.end}`, { headers: { 'X-Admin-Token': token } });
+                    if (res.ok) setData(await res.json());
+                } catch (e) { alert("Erro ao buscar histórico."); }
+            };
+
+            useEffect(() => { fetchAnalytics(); }, []);
+
+            if (!data) return <div className="text-center p-10"><i className="fas fa-spinner fa-spin text-3xl text-blue-500"></i></div>;
+
+            return (
+                <div>
+                    <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-200 mb-6 flex flex-col md:flex-row items-end md:items-center gap-4">
+                        <div>
+                            <label className="text-xs font-bold text-gray-500 uppercase block mb-1">Data Início</label>
+                            <input type="date" value={dates.start} onChange={e => setDates({...dates, start: e.target.value})} className="p-2 border rounded outline-none focus:border-blue-500 text-sm" />
+                        </div>
+                        <div>
+                            <label className="text-xs font-bold text-gray-500 uppercase block mb-1">Data Fim</label>
+                            <input type="date" value={dates.end} onChange={e => setDates({...dates, end: e.target.value})} className="p-2 border rounded outline-none focus:border-blue-500 text-sm" />
+                        </div>
+                        <button onClick={fetchAnalytics} className="bg-blue-800 text-white px-6 py-2 rounded font-bold hover:bg-blue-700 transition h-[38px] flex items-center">
+                            <i className="fas fa-search mr-2"></i> Filtrar Histórico
+                        </button>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+                        <div className="bg-gradient-to-br from-blue-500 to-blue-700 p-6 rounded-xl shadow-sm text-white">
+                            <h3 className="text-blue-100 text-xs font-bold uppercase">Total de Acessos no Período</h3>
+                            <p className="text-4xl font-black mt-2">{data.efficiency.total_logins_requested}</p>
+                        </div>
+                        <div className="bg-gradient-to-br from-green-500 to-green-700 p-6 rounded-xl shadow-sm text-white">
+                            <h3 className="text-green-100 text-xs font-bold uppercase">Cookies Fornecidos</h3>
+                            <p className="text-4xl font-black mt-2">{data.efficiency.total_cookies_injected}</p>
+                        </div>
+                        <div className="bg-gradient-to-br from-purple-500 to-purple-700 p-6 rounded-xl shadow-sm text-white">
+                            <h3 className="text-purple-100 text-xs font-bold uppercase">Economia no Período</h3>
+                            <p className="text-4xl font-black mt-2">{data.efficiency.economia_pct}%</p>
+                        </div>
+                    </div>
+
+                    {/* NOVOS PAINÉIS DE TELEMETRIA DOS ROBÔS */}
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+                        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                            <div className="bg-gray-50 border-b border-gray-200 p-4"><h3 className="font-bold text-gray-700"><i className="fas fa-robot mr-2 text-indigo-500"></i>Saúde da Frota (Robôs)</h3></div>
+                            <ul className="divide-y divide-gray-100 max-h-[300px] overflow-y-auto">
+                                {data.robots_performance.length === 0 && <li className="p-8 text-center text-gray-400">Sem dados operacionais.</li>}
+                                {data.robots_performance.map(r => (
+                                    <li key={r.name} className="p-4 flex items-center justify-between hover:bg-gray-50">
+                                        <span className="font-bold text-gray-700">{r.name}</span>
+                                        <div className="text-sm flex gap-4">
+                                            <span className="text-green-600 font-bold"><i className="fas fa-check-circle mr-1"></i>{r.success}</span>
+                                            <span className="text-red-500 font-bold"><i className="fas fa-times-circle mr-1"></i>{r.error}</span>
+                                        </div>
+                                        <span className="font-black text-indigo-600 bg-indigo-50 px-2 py-1 rounded">{r.success_rate}% Taxa</span>
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+
+                        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                            <div className="bg-gray-50 border-b border-gray-200 p-4"><h3 className="font-bold text-gray-700"><i className="fas fa-bug mr-2 text-red-500"></i>Diagnóstico de Falhas</h3></div>
+                            <ul className="divide-y divide-gray-100 max-h-[300px] overflow-y-auto">
+                                {data.error_diagnostics.length === 0 && <li className="p-8 text-center text-gray-400">Nenhum erro registrado.</li>}
+                                {data.error_diagnostics.map(e => (
+                                    <li key={e.reason} className="p-4 flex items-center justify-between hover:bg-gray-50">
+                                        <span className="text-sm font-medium text-gray-600 w-3/4 truncate pr-4" title={e.reason}>{e.reason}</span>
+                                        <span className="font-bold text-red-500 bg-red-50 px-3 py-1 rounded-full">{e.count} ocorrências</span>
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+                    </div>
+
+                    {/* RANKING ORIGINAL DE SETORES E CONTAS */}
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                            <div className="bg-gray-50 border-b border-gray-200 p-4"><h3 className="font-bold text-gray-700"><i className="fas fa-chart-bar mr-2 text-blue-500"></i>Ranking de Uso por Setor</h3></div>
+                            <ul className="divide-y divide-gray-100 max-h-[400px] overflow-y-auto">
+                                {data.sectors.length === 0 && <li className="p-8 text-center text-gray-400">Sem dados.</li>}
+                                {data.sectors.map(s => {
+                                    let w = data.efficiency.total_logins_requested > 0 ? (s.count / data.efficiency.total_logins_requested) * 100 : 0;
+                                    return (
+                                        <li key={s.name} className="p-4 hover:bg-gray-50 flex items-center justify-between">
+                                            <span className="font-bold text-gray-700 w-1/3 truncate">{s.name}</span>
+                                            <div className="flex-1 mx-4 bg-gray-200 rounded-full h-2.5"><div className="bg-blue-500 h-2.5 rounded-full" style={{width: `${w}%`}}></div></div>
+                                            <span className="text-sm font-bold text-blue-600">{s.count} acessos</span>
+                                        </li>
+                                    );
+                                })}
+                            </ul>
+                        </div>
+
+                        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                            <div className="bg-gray-50 border-b border-gray-200 p-4"><h3 className="font-bold text-gray-700"><i className="fas fa-id-card mr-2 text-green-500"></i>Ranking de Uso por Conta</h3></div>
+                            <ul className="divide-y divide-gray-100 max-h-[400px] overflow-y-auto">
+                                {data.accounts.length === 0 && <li className="p-8 text-center text-gray-400">Sem dados.</li>}
+                                {data.accounts.map(a => {
+                                    let w = data.efficiency.total_cookies_injected > 0 ? (a.count / data.efficiency.total_cookies_injected) * 100 : 0;
+                                    return (
+                                        <li key={a.name} className="p-4 hover:bg-gray-50 flex items-center justify-between">
+                                            <span className="font-mono font-bold text-gray-600 w-1/4">{a.name}</span>
+                                            <div className="flex-1 mx-4 bg-gray-200 rounded-full h-2.5"><div className="bg-green-500 h-2.5 rounded-full" style={{width: `${w}%`}}></div></div>
+                                            <span className="text-sm font-bold text-green-600">{a.count} sessões ativas</span>
+                                        </li>
+                                    );
+                                })}
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // ============================================================================
+        // MÓDULO PRINCIPAL: APP CONTAINER
+        // ============================================================================
+        const App = () => {
+            const [token, setToken] = useState("");
+            const [activeTab, setActiveTab] = useState("dashboard");
+            const [adSectors, setAdSectors] = useState([]);
+
+            const handleLogin = async (inputToken) => {
+                try {
+                    const res = await fetch('/api/admin/ad_sectors', { headers: { 'X-Admin-Token': inputToken } });
+                    if (res.ok) {
+                        setAdSectors(await res.json());
+                        setToken(inputToken);
+                    } else { alert("Acesso Negado. Chave incorreta."); }
+                } catch (e) { alert("Erro ao conectar com o servidor."); }
+            };
+
+            const handleLogout = () => { setToken(""); };
+
+            if (!token) return <AuthScreen onLogin={handleLogin} />;
+
+            return (
+                <div>
+                    <nav className="bg-blue-900 text-white p-4 shadow-md">
+                        <div className="container mx-auto flex justify-between items-center">
+                            <h1 className="text-xl font-bold flex items-center">
+                                <i className="fas fa-robot text-blue-300 mr-3 text-2xl"></i> OneLog Enterprise
+                            </h1>
+                            <button onClick={handleLogout} className="text-sm bg-blue-800 hover:bg-blue-700 px-4 py-2 rounded font-bold transition">Sair do Painel</button>
+                        </div>
+                    </nav>
+
+                    <main className="container mx-auto p-6 mt-4">
+                        <div className="mb-6 border-b border-gray-200">
+                            <nav className="-mb-px flex space-x-8">
+                                <button onClick={() => setActiveTab('dashboard')} className={`whitespace-nowrap py-4 px-1 border-b-2 font-bold text-sm flex items-center gap-2 ${activeTab === 'dashboard' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}>
+                                    <i className="fas fa-satellite-dish"></i> Pool em Tempo Real
+                                </button>
+                                <button onClick={() => setActiveTab('analytics')} className={`whitespace-nowrap py-4 px-1 border-b-2 font-bold text-sm flex items-center gap-2 ${activeTab === 'analytics' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}>
+                                    <i className="fas fa-chart-pie"></i> Histórico & Analytics
+                                </button>
+                            </nav>
+                        </div>
+
+                        {activeTab === 'dashboard' && <DashboardView token={token} adSectors={adSectors} />}
+                        {activeTab === 'analytics' && <AnalyticsView token={token} />}
+                    </main>
+                </div>
+            );
+        };
+
+        // Inicia a aplicação React
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
     </script>
 </body>
 </html>

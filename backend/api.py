@@ -72,30 +72,21 @@ def serve_shared(filename):
     shared_dir = os.path.join(base_dir, 'shared')
     return send_from_directory(shared_dir, filename)
 
-
 # --- ROTAS DE OPERAÇÃO (EXTENSÃO) ---
 @app.route('/api/zerocore/status', methods=['GET'])
 def get_status():
     setor_nome = request.args.get('setor')
     if not setor_nome: return jsonify({"mensagem": "Setor ausente."}), 400
 
-    # =========================================================================
-    # MÁGICA 2: AVISO UNIVERSAL
-    # Antes de olhar o status individual do setor, a API olha o Banco de Dados.
-    # Se QUALQUER robô terminou o cookie, ela avisa 'Concluído' na hora para 
-    # todos os "caroneiros" que estão esperando!
-    # =========================================================================
     db = SessionLocal()
     try:
         account = buscar_conta_para_setor(db, setor_nome)
         if account and account.cookie_payload and account.last_login_at:
-            if (datetime.utcnow() - account.last_login_at).total_seconds() / 60 < 20:
-                # TEXTO ATUALIZADO: Foco no usuário
+            if (datetime.utcnow() - account.last_login_at).total_seconds() / 60 < 19:
                 return jsonify({"concluido": True, "mensagem": "Conexão segura estabelecida!"})
     finally:
         db.close()
 
-    # Se o cookie ainda não está pronto, devolve o status normal (Aguardando...)
     status_str = redis_client.get(f"status:{setor_nome}")
     return jsonify(json.loads(status_str)) if status_str else jsonify({"mensagem": "Aguardando sincronização..."})
 
@@ -128,9 +119,8 @@ def request_login():
         if not account:
             return jsonify({"status": "erro", "mensagem": f"Setor {setor_nome} sem conta válida/ativa vinculada."}), 403
 
-        # Cenário 1: Já tem um cookie quentinho pronto. Entrega direto.
         if account.cookie_payload and account.last_login_at:
-            if (datetime.utcnow() - account.last_login_at).total_seconds() / 60 < 20:
+            if (datetime.utcnow() - account.last_login_at).total_seconds() / 60 < 19:
                 redis_client.incr(f'metrics:cookies_injetados:{hoje}')
                 redis_client.hincrby(f'metrics:account_logins:{hoje}', str(account.login), 1)
                 return jsonify({
@@ -139,21 +129,14 @@ def request_login():
                     "url": "https://juridico.bb.com.br/wfj"
                 })
         
-        # =========================================================================
-        # MÁGICA 1: O SISTEMA DE CARONA (PIGGYBACKING)
-        # =========================================================================
         lock_key = f"lock:queue:{account.id}"
         
-        # Cenário 2: Já tem um robô trabalhando NESSA conta agora mesmo?
         if redis_client.exists(lock_key):
-            # TEXTO ATUALIZADO: Foco no usuário
             redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Sincronizando com conexão em andamento...", "concluido": False}))
-            return jsonify({"status": "queued", "setor": setor_nome}) # Retorna queued SEM criar novo robô
+            return jsonify({"status": "queued", "setor": setor_nome}) 
             
-        # Cenário 3: Conta fria e nenhum robô trabalhando. Acorda um novo robô!
-        redis_client.setex(lock_key, 600, "1") # Coloca o cadeado na conta por 10 min
+        redis_client.setex(lock_key, 600, "1") 
         
-        # TEXTO ATUALIZADO: Foco no usuário
         redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Iniciando ambiente seguro na nuvem...", "concluido": False}))
         task_payload = json.dumps({"id": account.id, "setor": setor_nome, "user_agent": user_agent})
         redis_client.lpush("queue:login_requests", task_payload)
@@ -189,21 +172,17 @@ def renew_session():
             redis_client.hincrby(f'metrics:sector_logins:{hoje}', setor_nome, 1)
             
             if account.cookie_payload and account.last_login_at:
-                if (datetime.utcnow() - account.last_login_at).total_seconds() / 60 < 15:
-                    # TEXTO ATUALIZADO: Foco no usuário
+                if (datetime.utcnow() - account.last_login_at).total_seconds() / 60 < 19:
                     redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Sessão ativa recuperada com sucesso.", "concluido": True, "erro": False}))
                     redis_client.hincrby(f'metrics:account_logins:{hoje}', str(account.login), 1)
                     return jsonify({"status": "queued"})
             
-            # Mesmo sistema de Carona para a renovação de Marcapasso
             lock_key = f"lock:queue:{account.id}"
             if redis_client.exists(lock_key):
-                # TEXTO ATUALIZADO: Foco no usuário
                 redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Aguardando renovação de segurança...", "concluido": False, "erro": False}))
                 return jsonify({"status": "queued"})
 
             redis_client.setex(lock_key, 600, "1")
-            # TEXTO ATUALIZADO: Foco no usuário
             redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Renovando credenciais de acesso...", "concluido": False, "erro": False}))
             task_payload = json.dumps({"id": account.id, "setor": setor_nome, "user_agent": user_agent})
             redis_client.lpush("queue:login_requests", task_payload)
@@ -237,7 +216,7 @@ def get_session():
         db.close()
     return jsonify({"status": "erro"}), 404
 
-# --- ROTAS ADMINISTRATIVAS E DASHBOARD (SEM ALTERAÇÕES) ---
+# --- ROTAS ADMINISTRATIVAS E DASHBOARD ---
 @app.route('/api/admin/ad_sectors', methods=['GET'])
 @admin_required
 def admin_list_ad_sectors():
@@ -280,6 +259,7 @@ def admin_dashboard_stats():
 @app.route('/api/admin/analytics', methods=['GET'])
 @admin_required
 def admin_analytics():
+    # Agora a rota capta também a saúde dos robôs e os motivos das falhas de infraestrutura.
     start_str = request.args.get('start', datetime.utcnow().strftime('%Y-%m-%d'))
     end_str = request.args.get('end', datetime.utcnow().strftime('%Y-%m-%d'))
     
@@ -291,8 +271,12 @@ def admin_analytics():
 
     total_logins = 0
     total_cookies = 0
+    
     sector_stats = {}
     account_stats = {}
+    robot_success_stats = {}
+    robot_error_stats = {}
+    error_reasons_stats = {}
     
     current_date = start_date
     while current_date <= end_date:
@@ -301,27 +285,53 @@ def admin_analytics():
         total_logins += int(redis_client.get(f'metrics:logins_solicitados:{day_str}') or 0)
         total_cookies += int(redis_client.get(f'metrics:cookies_injetados:{day_str}') or 0)
         
-        sectors = redis_client.hgetall(f'metrics:sector_logins:{day_str}')
-        for sec, count in sectors.items():
+        for sec, count in redis_client.hgetall(f'metrics:sector_logins:{day_str}').items():
             sector_stats[sec] = sector_stats.get(sec, 0) + int(count)
             
-        accounts = redis_client.hgetall(f'metrics:account_logins:{day_str}')
-        for acc, count in accounts.items():
+        for acc, count in redis_client.hgetall(f'metrics:account_logins:{day_str}').items():
             account_stats[acc] = account_stats.get(acc, 0) + int(count)
+            
+        # Telemetria dos Robôs
+        for robo, count in redis_client.hgetall(f'metrics:robot_success:{day_str}').items():
+            robot_success_stats[robo] = robot_success_stats.get(robo, 0) + int(count)
+            
+        for robo, count in redis_client.hgetall(f'metrics:robot_error:{day_str}').items():
+            robot_error_stats[robo] = robot_error_stats.get(robo, 0) + int(count)
+            
+        for reason, count in redis_client.hgetall(f'metrics:error_reasons:{day_str}').items():
+            error_reasons_stats[reason] = error_reasons_stats.get(reason, 0) + int(count)
             
         current_date += timedelta(days=1)
 
     sorted_sectors = [{"name": k, "count": v} for k, v in sorted(sector_stats.items(), key=lambda x: x[1], reverse=True)]
     sorted_accounts = [{"name": k, "count": v} for k, v in sorted(account_stats.items(), key=lambda x: x[1], reverse=True)]
+    
+    # Prepara o Array de Robôs mesclando os sucessos e erros
+    all_robots = set(list(robot_success_stats.keys()) + list(robot_error_stats.keys()))
+    robots_data = []
+    for robo in all_robots:
+        s = robot_success_stats.get(robo, 0)
+        e = robot_error_stats.get(robo, 0)
+        robots_data.append({
+            "name": robo, "success": s, "error": e, 
+            "success_rate": round((s / (s + e)) * 100, 1) if (s + e) > 0 else 0
+        })
+    robots_data.sort(key=lambda x: x['name'])
+    
+    sorted_reasons = [{"reason": k, "count": v} for k, v in sorted(error_reasons_stats.items(), key=lambda x: x[1], reverse=True)]
     economia_pct = round((total_cookies / total_logins) * 100, 1) if total_logins > 0 else 0
 
     return jsonify({
         "period": f"{start_str} a {end_str}",
-        "total_logins": total_logins,
-        "total_cookies": total_cookies,
-        "economia_pct": economia_pct,
+        "efficiency": {
+            "total_logins_requested": total_logins,
+            "total_cookies_injected": total_cookies,
+            "economia_pct": economia_pct
+        },
         "sectors": sorted_sectors,
-        "accounts": sorted_accounts
+        "accounts": sorted_accounts,
+        "robots_performance": robots_data,
+        "error_diagnostics": sorted_reasons
     })
 
 @app.route('/api/admin/accounts', methods=['GET', 'POST'])

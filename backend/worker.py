@@ -87,6 +87,7 @@ def mata_fantasmas_do_chrome(pid_pai):
 def processar_login(account_id, setor_solicitado, thread_id):
     meu_pid = os.getpid()
     db = SessionLocal()
+    hoje = datetime.utcnow().strftime('%Y-%m-%d')
     
     logger.info(f"[ROBÔ {thread_id} | {setor_solicitado}] Aplicando Jitter aleatório para despistar balanceadores do BB...")
     time.sleep(random.uniform(2.0, 7.0))
@@ -158,7 +159,6 @@ def processar_login(account_id, setor_solicitado, thread_id):
                             sb.sleep(4) 
                             
                             try:
-                                # O SEU CLIQUE BRUTO QUE NÃO QUEBRA!
                                 sb.click(captcha_container) 
                                 logger.info(f"[ROBÔ {thread_id} | {setor}] >>> Clique bruto no captcha realizado.")
                             except Exception as e:
@@ -173,6 +173,9 @@ def processar_login(account_id, setor_solicitado, thread_id):
                         
                         sb.wait_for_element("#idToken3", timeout=35)
                         logger.info(f"[ROBÔ {thread_id} | {setor}] >>> SUCESSO! Campo de senha apareceu!")
+                        
+                        # TELEMETRIA: Sucesso de Autenticação (Fura-bloqueio)
+                        get_redis().hincrby(f"metrics:robot_success:{hoje}", f"ROBÔ {thread_id}", 1)
                         
                     finally:
                         get_redis().delete("lock:bb_door")
@@ -233,14 +236,34 @@ def processar_login(account_id, setor_solicitado, thread_id):
                 
                 get_redis().delete("lock:bb_door")
                 
-                fail_count = get_redis().incr("metrics:captcha_consecutive_failures")
-                logger.info(f"[ROBÔ {thread_id} | {setor}] Medidor de bloqueios Cloudflare: {fail_count}/6")
+                # TELEMETRIA: Registro de Falhas e Categorização Inteligente
+                get_redis().hincrby(f"metrics:robot_error:{hoje}", f"ROBÔ {thread_id}", 1)
                 
-                if fail_count >= 6: 
-                    logger.error(f"[ROBÔ {thread_id} | {setor}] 🚨 NÍVEL DE AMEAÇA MÁXIMO ATINGIDO NO CLOUDFLARE!")
-                    logger.error(f"[ROBÔ {thread_id} | {setor}] Acionando protocolo de Fôlego de 3 minutos para toda a frota.")
-                    get_redis().setex("lock:cooldown", 180, "true") 
-                    get_redis().set("metrics:captcha_consecutive_failures", 0) 
+                err_msg = str(e).lower()
+                is_infra_error = False
+                
+                if "errno 11" in err_msg or "resource temporarily unavailable" in err_msg or "-5" in err_msg or "thread" in err_msg or "not reachable" in err_msg:
+                    motivo_falha = "Esgotamento de Recursos (OS/Docker)"
+                    is_infra_error = True
+                elif "timeout" in err_msg or "nosuchelement" in err_msg:
+                    motivo_falha = "Timeout na Navegação / Elemento não encontrado"
+                else:
+                    motivo_falha = "Bloqueio Cloudflare ou Erro Desconhecido"
+                
+                get_redis().hincrby(f"metrics:error_reasons:{hoje}", motivo_falha, 1)
+                
+                # Só soma no medidor do Cloudflare se NÃO for erro de infraestrutura
+                if not is_infra_error:
+                    fail_count = get_redis().incr("metrics:captcha_consecutive_failures")
+                    logger.info(f"[ROBÔ {thread_id} | {setor}] Medidor de bloqueios Cloudflare: {fail_count}/6")
+                    
+                    if fail_count >= 6: 
+                        logger.error(f"[ROBÔ {thread_id} | {setor}] 🚨 NÍVEL DE AMEAÇA MÁXIMO ATINGIDO NO CLOUDFLARE!")
+                        logger.error(f"[ROBÔ {thread_id} | {setor}] Acionando protocolo de Fôlego para toda a frota.")
+                        get_redis().setex("lock:cooldown", 180, "true") 
+                        get_redis().set("metrics:captcha_consecutive_failures", 0) 
+                else:
+                    logger.info(f"[ROBÔ {thread_id} | {setor}] ⚠️ Falha classificada como Infraestrutura. Medidor do Cloudflare não será acionado.")
                 
                 if sb_instance:
                      try:
@@ -329,7 +352,6 @@ def auto_dispatcher():
                     if not acc.cookie_payload:
                         precisa_renovar = True
                     elif acc.last_login_at:
-                        # O PULO DO GATO AQUI: 18 Minutos cravados!
                         minutos_passados = (agora - acc.last_login_at).total_seconds() / 60
                         if minutos_passados >= 18:
                             precisa_renovar = True
