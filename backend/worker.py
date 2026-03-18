@@ -89,12 +89,26 @@ def processar_login(account_id, setor_solicitado, thread_id):
     db = SessionLocal()
     hoje = datetime.utcnow().strftime('%Y-%m-%d')
     
-    logger.info(f"[ROBÔ {thread_id} | {setor_solicitado}] Aplicando Jitter aleatório para despistar balanceadores do BB...")
-    time.sleep(random.uniform(2.0, 7.0))
-
     try:
         account = db.query(AccountBB).filter(AccountBB.id == int(account_id)).first()
         if not account: return
+
+        # =======================================================================
+        # 🛑 BLINDAGEM CONTRA TRABALHO DUPLICADO (Otimização de Servidor)
+        # Se a conta já tem um cookie fresco (menos de 15 min), o robô aborta 
+        # a tarefa imediatamente para não desperdiçar RAM e Cloudflare!
+        # =======================================================================
+        if account.cookie_payload and account.last_login_at:
+            minutos_passados = (datetime.utcnow() - account.last_login_at).total_seconds() / 60
+            if minutos_passados < 15:
+                logger.info(f"[ROBÔ {thread_id} | {setor_solicitado}] ♻️ Tarefa duplicada detectada! A conta {account_id} já tem cookies frescos ({minutos_passados:.1f}m). Abortando para poupar servidor.")
+                get_redis().delete(f"lock:queue:{account_id}")
+                update_status(setor_solicitado, "Sessão renovada e salva no Pool!", concluido=True, thread_id=thread_id)
+                return
+        # =======================================================================
+
+        logger.info(f"[ROBÔ {thread_id} | {setor_solicitado}] Aplicando Jitter aleatório para despistar balanceadores do BB...")
+        time.sleep(random.uniform(2.0, 7.0))
 
         setor = setor_solicitado
         usuario, senha = account.login, account.senha
@@ -156,7 +170,7 @@ def processar_login(account_id, setor_solicitado, thread_id):
                         
                         if sb.is_element_visible(captcha_container):
                             update_status(setor, "Cloudflare detectado. Aguardando estabilização...", imagem=img, thread_id=thread_id)
-                            sb.sleep(10) 
+                            sb.sleep(4) 
                             
                             try:
                                 sb.click(captcha_container) 
@@ -179,7 +193,6 @@ def processar_login(account_id, setor_solicitado, thread_id):
                             logger.info(f"[ROBÔ {thread_id} | {setor}] >>> SUCESSO! Campo de senha apareceu!")
                         except Exception as wait_e:
                             logger.error(f"[ROBÔ {thread_id} | {setor}] 🚨 ARMADILHA DETECTADA! O campo de senha não carregou. O Cloudflare abriu um popup inútil ou bloqueou o fluxo.")
-                            # Dispara um erro com nome específico para a nossa telemetria pegar
                             raise Exception(f"Armadilha Cloudflare: Popup inútil ou loop infinito bloqueou o campo de senha. Erro original: {wait_e}")
                         # =======================================================================
                         
@@ -254,7 +267,6 @@ def processar_login(account_id, setor_solicitado, thread_id):
                 if "errno 11" in err_msg or "resource temporarily unavailable" in err_msg or "-5" in err_msg or "thread" in err_msg or "not reachable" in err_msg:
                     motivo_falha = "Esgotamento de Recursos (OS/Docker)"
                     is_infra_error = True
-                # NOVO: Classifica especificamente a armadilha do popup inútil!
                 elif "armadilha cloudflare" in err_msg:
                     motivo_falha = "Bloqueio Cloudflare (Armadilha/Popup)"
                 elif "timeout" in err_msg or "nosuchelement" in err_msg:
@@ -355,10 +367,22 @@ def auto_dispatcher():
             try:
                 contas = db.query(AccountBB).filter(
                     AccountBB.status.in_(['active', 'ativo', 'provisoria_recebida', 'termo_assinado'])
-                ).all()
+                ).order_by(AccountBB.id.asc()).all()
 
                 agora = datetime.utcnow()
+                setores_processados = set() 
+                
                 for acc in contas:
+                    setor = "GERAL"
+                    if acc.setores:
+                        setores_list = [s for s in acc.setores.split('|') if s]
+                        if setores_list: setor = setores_list[0]
+                    
+                    if setor in setores_processados:
+                        continue
+                        
+                    setores_processados.add(setor)
+
                     precisa_renovar = False
                     
                     if not acc.cookie_payload:
@@ -373,11 +397,6 @@ def auto_dispatcher():
                         if not get_redis().exists(lock_key):
                             get_redis().setex(lock_key, 600, "1")
                             
-                            setor = "GERAL"
-                            if acc.setores:
-                                setores_list = [s for s in acc.setores.split('|') if s]
-                                if setores_list: setor = setores_list[0]
-                                    
                             payload = json.dumps({"id": acc.id, "setor": setor, "auto": True})
                             get_redis().lpush("queue:login_requests", payload)
                             logger.info(f"🔄 [DISPATCHER] Conta {acc.login} ({setor}) enfileirada para pré-aquecimento (Ciclo 18m).")
@@ -406,7 +425,6 @@ if __name__ == "__main__":
     
     workers = []
     
-    # Cria os processos iniciais
     for i in range(MAX_WORKERS):
         p = multiprocessing.Process(target=worker_loop, args=(i + 1,), daemon=True)
         p.start()
@@ -415,9 +433,6 @@ if __name__ == "__main__":
     dispatcher = multiprocessing.Process(target=auto_dispatcher, daemon=True)
     dispatcher.start()
         
-    # =========================================================================
-    # 🐕 O CÃO DE GUARDA (Watchdog de OOM)
-    # =========================================================================
     while True:
         try:
             time.sleep(30) 
