@@ -15,7 +15,7 @@
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     
-    <!-- Babel -->
+    <!-- Babel (Compila o JSX no navegador) -->
     <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
 
     <style>
@@ -346,10 +346,10 @@
                 <div>
                     <h2 className="text-xl font-bold text-gray-800 mb-4">Métricas de Hoje</h2>
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-                        <KpiCard title="Acessos Solicitados" value={stats.logins_solicitados} colorClass="border-l-blue-500" />
-                        <KpiCard title="Cookies Injetados" value={stats.cookies_injetados} colorClass="border-l-green-500" />
-                        <KpiCard title="Execuções do Robô" value={stats.robos_executados} subtitle={`${stats.queue_size} na fila`} colorClass="border-l-yellow-500" />
-                        <KpiCard title="Eficiência do Pool" value={`${stats.economia_pct}%`} colorClass="border-l-purple-500" />
+                        <KpiCard title="Acessos Solicitados" value={stats.logins_solicitados || 0} colorClass="border-l-blue-500" />
+                        <KpiCard title="Cookies Injetados" value={stats.cookies_injetados || 0} colorClass="border-l-green-500" />
+                        <KpiCard title="Execuções do Robô" value={stats.robos_executados || 0} subtitle={`${stats.queue_size || 0} na fila`} colorClass="border-l-yellow-500" />
+                        <KpiCard title="Eficiência do Pool" value={`${stats.economia_pct || 0}%`} colorClass="border-l-purple-500" />
                     </div>
 
                     <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-4 gap-4">
@@ -425,7 +425,7 @@
         };
 
         // ============================================================================
-        // MÓDULO 5: TAB VIEW - ANALYTICS (COM FOTOS DOS ERROS)
+        // MÓDULO 5: TAB VIEW - ANALYTICS (PROTEGIDO CONTRA VERSÕES DE API)
         // ============================================================================
         const AnalyticsView = ({ token }) => {
             const [dates, setDates] = useState({
@@ -456,6 +456,15 @@
 
             if (!data) return <div className="text-center p-10"><i className="fas fa-spinner fa-spin text-3xl text-blue-500"></i></div>;
 
+            // --- PROTEÇÃO ANTI-CRASH (Suporta tanto a API antiga quanto a Nova) ---
+            const totalLogins = data.efficiency ? data.efficiency.total_logins_requested : (data.total_logins || 0);
+            const totalCookies = data.efficiency ? data.efficiency.total_cookies_injected : (data.total_cookies || 0);
+            const economiaPct = data.efficiency ? data.efficiency.economia_pct : (data.economia_pct || 0);
+            const robotsPerformance = data.robots_performance || [];
+            const errorDiagnostics = data.error_diagnostics || [];
+            const sectorsData = data.sectors || [];
+            const accountsData = data.accounts || [];
+
             return (
                 <div>
                     <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-200 mb-6 flex flex-col md:flex-row items-end md:items-center gap-4">
@@ -475,15 +484,15 @@
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
                         <div className="bg-gradient-to-br from-blue-500 to-blue-700 p-6 rounded-xl shadow-sm text-white">
                             <h3 className="text-blue-100 text-xs font-bold uppercase">Total de Acessos no Período</h3>
-                            <p className="text-4xl font-black mt-2">{data.efficiency.total_logins_requested}</p>
+                            <p className="text-4xl font-black mt-2">{totalLogins}</p>
                         </div>
                         <div className="bg-gradient-to-br from-green-500 to-green-700 p-6 rounded-xl shadow-sm text-white">
                             <h3 className="text-green-100 text-xs font-bold uppercase">Cookies Fornecidos</h3>
-                            <p className="text-4xl font-black mt-2">{data.efficiency.total_cookies_injected}</p>
+                            <p className="text-4xl font-black mt-2">{totalCookies}</p>
                         </div>
                         <div className="bg-gradient-to-br from-purple-500 to-purple-700 p-6 rounded-xl shadow-sm text-white">
                             <h3 className="text-purple-100 text-xs font-bold uppercase">Economia no Período</h3>
-                            <p className="text-4xl font-black mt-2">{data.efficiency.economia_pct}%</p>
+                            <p className="text-4xl font-black mt-2">{economiaPct}%</p>
                         </div>
                     </div>
 
@@ -492,8 +501,8 @@
                         <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                             <div className="bg-gray-50 border-b border-gray-200 p-4"><h3 className="font-bold text-gray-700"><i className="fas fa-robot mr-2 text-indigo-500"></i>Saúde da Frota (Robôs)</h3></div>
                             <ul className="divide-y divide-gray-100 max-h-[300px] overflow-y-auto custom-scroll">
-                                {data.robots_performance.length === 0 && <li className="p-8 text-center text-gray-400">Sem dados operacionais.</li>}
-                                {data.robots_performance.map(r => (
+                                {robotsPerformance.length === 0 && <li className="p-8 text-center text-gray-400">Sem dados operacionais. (Atualize a API)</li>}
+                                {robotsPerformance.map(r => (
                                     <li key={r.name} className="p-4 flex items-center justify-between hover:bg-gray-50">
                                         <span className="font-bold text-gray-700">{r.name}</span>
                                         <div className="text-sm flex gap-4">
@@ -509,8 +518,8 @@
                         <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                             <div className="bg-gray-50 border-b border-gray-200 p-4"><h3 className="font-bold text-gray-700"><i className="fas fa-bug mr-2 text-red-500"></i>Diagnóstico de Falhas</h3></div>
                             <ul className="divide-y divide-gray-100 max-h-[300px] overflow-y-auto custom-scroll">
-                                {data.error_diagnostics.length === 0 && <li className="p-8 text-center text-gray-400">Nenhum erro registrado.</li>}
-                                {data.error_diagnostics.map(e => (
+                                {errorDiagnostics.length === 0 && <li className="p-8 text-center text-gray-400">Nenhum erro registrado ou API desatualizada.</li>}
+                                {errorDiagnostics.map(e => (
                                     <li key={e.reason} className="p-4 flex items-center justify-between hover:bg-gray-50">
                                         <span className="text-sm font-medium text-gray-600 w-3/4 truncate pr-4" title={e.reason}>{e.reason}</span>
                                         <span className="font-bold text-red-500 bg-red-50 px-3 py-1 rounded-full">{e.count} ocorrências</span>
@@ -520,7 +529,7 @@
                         </div>
                     </div>
 
-                    {/* GALERIA DE PRINTS DOS ERROS (NOVIDADE) */}
+                    {/* GALERIA DE PRINTS DOS ERROS */}
                     <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden mb-6">
                         <div className="bg-gray-50 border-b border-gray-200 p-4 flex justify-between items-center">
                             <h3 className="font-bold text-gray-700"><i className="fas fa-camera mr-2 text-red-500"></i>Galeria de Erros Recentes (Debug)</h3>
@@ -528,7 +537,7 @@
                         </div>
                         <div className="p-6">
                             {errorImages.length === 0 ? (
-                                <p className="text-gray-400 text-center py-4">Nenhuma imagem de erro encontrada no diretório compartilhado.</p>
+                                <p className="text-gray-400 text-center py-4">Nenhuma imagem de erro encontrada ou aguardando atualização da API.</p>
                             ) : (
                                 <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4">
                                     {errorImages.map(img => (
@@ -548,14 +557,14 @@
                         </div>
                     </div>
 
-                    {/* RANKING ORIGINAL DE SETORES E CONTAS (CORRIGIDO MATEMÁTICA DA BARRA VERDE) */}
+                    {/* RANKING ORIGINAL DE SETORES E CONTAS */}
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                         <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                             <div className="bg-gray-50 border-b border-gray-200 p-4"><h3 className="font-bold text-gray-700"><i className="fas fa-chart-bar mr-2 text-blue-500"></i>Ranking de Uso por Setor</h3></div>
                             <ul className="divide-y divide-gray-100 max-h-[400px] overflow-y-auto custom-scroll">
-                                {data.sectors.length === 0 && <li className="p-8 text-center text-gray-400">Sem dados.</li>}
-                                {data.sectors.map(s => {
-                                    let maxVal = data.efficiency.total_logins_requested > 0 ? data.efficiency.total_logins_requested : 1;
+                                {sectorsData.length === 0 && <li className="p-8 text-center text-gray-400">Sem dados.</li>}
+                                {sectorsData.map(s => {
+                                    let maxVal = totalLogins > 0 ? totalLogins : 1;
                                     let w = Math.min((s.count / maxVal) * 100, 100);
                                     return (
                                         <li key={s.name} className="p-4 hover:bg-gray-50 flex items-center justify-between">
@@ -571,9 +580,9 @@
                         <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                             <div className="bg-gray-50 border-b border-gray-200 p-4"><h3 className="font-bold text-gray-700"><i className="fas fa-id-card mr-2 text-green-500"></i>Ranking de Acessos por Conta</h3></div>
                             <ul className="divide-y divide-gray-100 max-h-[400px] overflow-y-auto custom-scroll">
-                                {data.accounts.length === 0 && <li className="p-8 text-center text-gray-400">Sem dados.</li>}
-                                {data.accounts.map(a => {
-                                    let maxVal = data.efficiency.total_logins_requested > 0 ? data.efficiency.total_logins_requested : 1;
+                                {accountsData.length === 0 && <li className="p-8 text-center text-gray-400">Sem dados.</li>}
+                                {accountsData.map(a => {
+                                    let maxVal = totalLogins > 0 ? totalLogins : 1;
                                     let w = Math.min((a.count / maxVal) * 100, 100);
                                     return (
                                         <li key={a.name} className="p-4 hover:bg-gray-50 flex items-center justify-between">

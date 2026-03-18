@@ -156,7 +156,7 @@ def processar_login(account_id, setor_solicitado, thread_id):
                         
                         if sb.is_element_visible(captcha_container):
                             update_status(setor, "Cloudflare detectado. Aguardando estabilização...", imagem=img, thread_id=thread_id)
-                            sb.sleep(4) 
+                            sb.sleep(10) 
                             
                             try:
                                 sb.click(captcha_container) 
