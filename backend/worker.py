@@ -6,7 +6,7 @@ import multiprocessing
 import signal
 import psutil
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 from seleniumbase import SB
 import logging
 import sys
@@ -71,21 +71,32 @@ def snapshot(sb, setor, nome_arquivo, thread_id=None):
     logger.info(f"{prefix} 📸 Snapshot gerado: {img_url}")
     return img_url
 
-def mata_fantasmas_do_chrome(pid_pai):
+def limpar_memoria_residual(sb_instance=None):
+    """
+    Desliga os motores de forma educada e silenciosa. 
+    Fecha o navegador e limpa a memória RAM sem matar as conexões 
+    dos advogados que estão logando em outras threads.
+    """
+    if sb_instance:
+        try:
+            sb_instance.driver.quit()
+        except Exception:
+            pass
+
+    # Garante que as sobras do Xvfb (Monitor Virtual) e Chromes zumbis da própria thread acabem.
     try:
-        pai = psutil.Process(pid_pai)
-        filhos = pai.children(recursive=True)
-        for filho in filhos:
+        proc = psutil.Process(os.getpid())
+        for child in proc.children(recursive=True):
             try:
-                nome = filho.name().lower()
+                nome = child.name().lower()
                 if "chrome" in nome or "chromedriver" in nome or "xvfb" in nome:
-                    filho.terminate()
-                    filho.kill()
-            except psutil.NoSuchProcess: pass
-    except Exception: pass
+                    child.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+    except Exception:
+        pass
 
 def processar_login(account_id, setor_solicitado, thread_id):
-    meu_pid = os.getpid()
     db = SessionLocal()
     hoje = datetime.utcnow().strftime('%Y-%m-%d')
     
@@ -95,8 +106,6 @@ def processar_login(account_id, setor_solicitado, thread_id):
 
         # =======================================================================
         # 🛑 BLINDAGEM CONTRA TRABALHO DUPLICADO (Otimização de Servidor)
-        # Se a conta já tem um cookie fresco (menos de 15 min), o robô aborta 
-        # a tarefa imediatamente para não desperdiçar RAM e Cloudflare!
         # =======================================================================
         if account.cookie_payload and account.last_login_at:
             minutos_passados = (datetime.utcnow() - account.last_login_at).total_seconds() / 60
@@ -245,9 +254,7 @@ def processar_login(account_id, setor_solicitado, thread_id):
                         get_redis().set("metrics:captcha_consecutive_failures", 0)
                         get_redis().delete(f"lock:queue:{account_id}")
                         
-                        try: sb.driver.quit() 
-                        except: pass
-                        mata_fantasmas_do_chrome(meu_pid)
+                        limpar_memoria_residual(sb_instance)
                         return 
                         
                     else:
@@ -264,7 +271,7 @@ def processar_login(account_id, setor_solicitado, thread_id):
                 err_msg = str(e).lower()
                 is_infra_error = False
                 
-                if "errno 11" in err_msg or "resource temporarily unavailable" in err_msg or "-5" in err_msg or "thread" in err_msg or "not reachable" in err_msg:
+                if "errno 11" in err_msg or "resource temporarily unavailable" in err_msg or "-5" in err_msg or "thread" in err_msg or "not reachable" in err_msg or "recursion" in err_msg:
                     motivo_falha = "Esgotamento de Recursos (OS/Docker)"
                     is_infra_error = True
                 elif "armadilha cloudflare" in err_msg:
@@ -294,12 +301,9 @@ def processar_login(account_id, setor_solicitado, thread_id):
                          img = snapshot(sb_instance, setor, f"erro_tentativa_{tentativa}", thread_id=thread_id)
                      except Exception:
                          img = None
-                         
-                     try: sb_instance.driver.quit() 
-                     except: pass
                 else: img = None
                 
-                mata_fantasmas_do_chrome(meu_pid)
+                limpar_memoria_residual(sb_instance)
 
                 if tentativa == max_tentativas_gerais:
                     logger.error(f"[ROBÔ {thread_id} | {setor}] FALHA DEFINITIVA APÓS {max_tentativas_gerais} TENTATIVAS.")
@@ -354,7 +358,7 @@ def worker_loop(thread_id):
             time.sleep(5)
 
 def auto_dispatcher():
-    logger.info("🤖 [DISPATCHER] Ativado! As contas serão mantidas quentes 24/7.")
+    logger.info("🤖 [DISPATCHER] Ativado! Horário de aquecimento automático: 07h às 19h (GMT-3).")
     time.sleep(10) 
     
     while True:
@@ -363,13 +367,24 @@ def auto_dispatcher():
                 time.sleep(30)
                 continue
 
+            # =======================================================
+            # 🌙 CONTROLE DE EXPEDIENTE (Economia Noturna)
+            # =======================================================
+            agora_utc = datetime.utcnow()
+            agora_local = agora_utc - timedelta(hours=3) # Fuso GMT-3
+            hora_atual = agora_local.hour
+
+            if not (7 <= hora_atual < 19):
+                time.sleep(60)
+                continue
+            # =======================================================
+
             db = SessionLocal()
             try:
                 contas = db.query(AccountBB).filter(
                     AccountBB.status.in_(['active', 'ativo', 'provisoria_recebida', 'termo_assinado'])
                 ).order_by(AccountBB.id.asc()).all()
 
-                agora = datetime.utcnow()
                 setores_processados = set() 
                 
                 for acc in contas:
@@ -388,7 +403,7 @@ def auto_dispatcher():
                     if not acc.cookie_payload:
                         precisa_renovar = True
                     elif acc.last_login_at:
-                        minutos_passados = (agora - acc.last_login_at).total_seconds() / 60
+                        minutos_passados = (agora_utc - acc.last_login_at).total_seconds() / 60
                         if minutos_passados >= 18:
                             precisa_renovar = True
                     
