@@ -96,6 +96,21 @@ def limpar_memoria_residual(sb_instance=None):
     except Exception:
         pass
 
+def faxina_global_de_emergencia():
+    """Vassoura nuclear: elimina qualquer Chrome do sistema (incluindo órfãos) para restaurar a RAM."""
+    logger.warning("🧹 Iniciando EXPURGO GLOBAL para limpar zombies órfãos do Docker e restaurar a RAM a 100%!")
+    try:
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                nome = proc.info.get('name', '').lower()
+                cmdline = " ".join(proc.info.get('cmdline', []) or []).lower()
+                if "chrome" in nome or "chromedriver" in nome or "xvfb" in nome or "chrome" in cmdline:
+                    proc.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                pass
+    except Exception as e:
+        logger.error(f"Erro no expurgo global: {e}")
+
 def processar_login(account_id, setor_solicitado, thread_id):
     db = SessionLocal()
     hoje = datetime.utcnow().strftime('%Y-%m-%d')
@@ -351,7 +366,15 @@ def worker_loop(thread_id):
             else:
                 logger.info(f"[ROBÔ {thread_id} | {setor}] Nova tarefa capturada! Conta ID: {account_id}")
                 
-            processar_login(account_id, setor, thread_id)
+            # =========================================================================
+            # ❤️ MONITOR CARDÍACO: O Robô assina o ponto antes de começar
+            # =========================================================================
+            get_redis().set(f"heartbeat:{thread_id}", str(int(time.time())))
+            try:
+                processar_login(account_id, setor, thread_id)
+            finally:
+                # Retira o pulso ao concluir (com sucesso ou falha limpa)
+                get_redis().delete(f"heartbeat:{thread_id}")
             
         except Exception as e:
             logger.error(f"[ROBÔ {thread_id}] Erro no loop principal: {e}")
@@ -386,6 +409,8 @@ def auto_dispatcher():
                 ).order_by(AccountBB.id.asc()).all()
 
                 setores_processados = set() 
+                menor_tempo_para_vencer = 18.0
+                tarefas_enfileiradas = 0
                 
                 for acc in contas:
                     setor = "GERAL"
@@ -400,12 +425,19 @@ def auto_dispatcher():
 
                     precisa_renovar = False
                     
-                    if not acc.cookie_payload:
-                        precisa_renovar = True
-                    elif acc.last_login_at:
+                    # Lógica para saber quanto tempo de paz nós temos
+                    if acc.cookie_payload and acc.last_login_at:
                         minutos_passados = (agora_utc - acc.last_login_at).total_seconds() / 60
+                        tempo_restante = 18.0 - minutos_passados
+                        
+                        if tempo_restante < menor_tempo_para_vencer:
+                            menor_tempo_para_vencer = tempo_restante
+                            
                         if minutos_passados >= 18:
                             precisa_renovar = True
+                    else:
+                        precisa_renovar = True
+                        menor_tempo_para_vencer = 0.0
                     
                     if precisa_renovar:
                         lock_key = f"lock:queue:{acc.id}"
@@ -415,6 +447,23 @@ def auto_dispatcher():
                             payload = json.dumps({"id": acc.id, "setor": setor, "auto": True})
                             get_redis().lpush("queue:login_requests", payload)
                             logger.info(f"🔄 [DISPATCHER] Conta {acc.login} ({setor}) enfileirada para pré-aquecimento (Ciclo 18m).")
+                            tarefas_enfileiradas += 1
+
+                # =========================================================================
+                # 🧹 EXPURGO DINÂMICO (Faxina Preventiva nas Brechas de Tempo)
+                # =========================================================================
+                if tarefas_enfileiradas == 0 and menor_tempo_para_vencer >= 5.0:
+                    # Temos pelo menos 5 minutos garantidos de paz. Tem alguém na fila manual?
+                    if get_redis().llen("queue:login_requests") == 0 and get_redis().llen("queue:priority_logins") == 0:
+                        # Tem algum robô trabalhando agora? (Verifica pelo Monitor Cardíaco)
+                        robos_trabalhando = get_redis().keys("heartbeat:*")
+                        if not robos_trabalhando:
+                            # Tudo 100% ocioso! Já fizemos expurgo nas últimas 2 horas?
+                            if get_redis().set("lock:idle_purge", "1", ex=7200, nx=True):
+                                logger.info(f"✨ [DISPATCHER] Brecha de {menor_tempo_para_vencer:.1f}m garantida na agenda! Nenhum robô trabalhando. Iniciando Expurgo Dinâmico...")
+                                faxina_global_de_emergencia()
+                # =========================================================================
+
             finally:
                 db.close()
                 
@@ -431,9 +480,11 @@ if __name__ == "__main__":
         r.delete("queue:priority_logins") 
         r.delete("lock:cooldown") 
         r.delete("lock:bb_door") 
+        r.delete("lock:idle_purge")
         r.set("metrics:captcha_consecutive_failures", 0) 
         for key in r.scan_iter("lock:queue:*"): r.delete(key)
         for key in r.scan_iter("status:*"): r.delete(key)
+        for key in r.scan_iter("heartbeat:*"): r.delete(key)
     except: pass
     
     logger.info(f"🚀 Iniciando a Frota OneLog com {MAX_WORKERS} Robôs em paralelo...")
@@ -448,6 +499,9 @@ if __name__ == "__main__":
     dispatcher = multiprocessing.Process(target=auto_dispatcher, daemon=True)
     dispatcher.start()
         
+    # =========================================================================
+    # 🐕 O CÃO DE GUARDA (Evoluído com Monitor Cardíaco)
+    # =========================================================================
     while True:
         try:
             time.sleep(30) 
@@ -458,13 +512,29 @@ if __name__ == "__main__":
                 dispatcher.start()
                 
             for idx, w in enumerate(workers):
+                r_id = w["id"]
+                ressuscitar = False
+
                 if not w["process"].is_alive():
-                    r_id = w["id"]
-                    logger.error(f"🚨 ALERTA: ROBÔ {r_id} morreu inesperadamente (Provável OOM). Ressuscitando clone...")
-                    
+                    logger.error(f"🚨 ALERTA: ROBÔ {r_id} morreu inesperadamente (Provável OOM).")
+                    ressuscitar = True
+                else:
+                    # ❤️ Leitura do Eletrocardiograma (Deteção de Coma / Deadlock)
+                    hb_str = get_redis().get(f"heartbeat:{r_id}")
+                    if hb_str:
+                        segundos_trabalhando = int(time.time()) - int(hb_str)
+                        if segundos_trabalhando > 300: # 5 minutos presos na mesma tela = Deadlock!
+                            logger.error(f"🚨 ALERTA: ROBÔ {r_id} em COMA (Deadlock) há {segundos_trabalhando}s! Puxando o cabo da tomada da força...")
+                            w["process"].kill() # Assassina o processo travado
+                            faxina_global_de_emergencia() # Remove os restos do Chrome do Linux
+                            ressuscitar = True
+                            
+                if ressuscitar:
+                    logger.info(f"🔄 Clonando um novo ROBÔ {r_id} saudável...")
                     new_p = multiprocessing.Process(target=worker_loop, args=(r_id,), daemon=True)
                     new_p.start()
                     workers[idx]["process"] = new_p
+                    get_redis().delete(f"heartbeat:{r_id}")
                     
         except KeyboardInterrupt:
             logger.info("Encerrando sistema...")
