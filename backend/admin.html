@@ -59,15 +59,41 @@
             return <div className={`${color} border px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider inline-block shadow-sm`}>{label}</div>;
         };
 
+        const formatSeconds = (value) => {
+            if (value === null || value === undefined || value === '') return '-';
+            const total = Number(value);
+            if (!Number.isFinite(total) || total <= 0) return '0s';
+            const hours = Math.floor(total / 3600);
+            const minutes = Math.floor((total % 3600) / 60);
+            const seconds = total % 60;
+            if (hours > 0) return `${hours}h ${minutes}m`;
+            if (minutes > 0) return `${minutes}m ${seconds}s`;
+            return `${seconds}s`;
+        };
+
+        const formatMinutes = (value) => {
+            if (value === null || value === undefined || value === '') return '-';
+            const num = Number(value);
+            if (!Number.isFinite(num)) return '-';
+            return `${num.toFixed(1)} min`;
+        };
+
         // ============================================================================
         // MÓDULO 2: TELA DE LOGIN (AUTH)
         // ============================================================================
         const AuthScreen = ({ onLogin }) => {
-            const [inputToken, setInputToken] = useState("");
+            const [username, setUsername] = useState("");
+            const [password, setPassword] = useState("");
+            const [error, setError] = useState("");
+            const [loading, setLoading] = useState(false);
 
-            const handleSubmit = (e) => {
+            const handleSubmit = async (e) => {
                 e.preventDefault();
-                onLogin(inputToken);
+                setLoading(true);
+                setError("");
+                const result = await onLogin({ username, password });
+                if (!result.ok) setError(result.message || "Acesso negado.");
+                setLoading(false);
             };
 
             return (
@@ -78,16 +104,25 @@
                     <h2 className="font-bold text-xl mb-6">Acesso Administrativo</h2>
                     <form onSubmit={handleSubmit}>
                         <input 
-                            type="password" 
-                            value={inputToken}
-                            onChange={(e) => setInputToken(e.target.value)}
-                            placeholder="Insira a Chave de Segurança" 
-                            className="w-full p-3 border rounded mb-4 focus:outline-none focus:border-blue-500 text-center tracking-widest"
+                            type="text" 
+                            value={username}
+                            onChange={(e) => setUsername(e.target.value)}
+                            placeholder="Usuário do Windows" 
+                            className="w-full p-3 border rounded mb-3 focus:outline-none focus:border-blue-500 text-center"
                         />
-                        <button type="submit" className="bg-blue-600 text-white px-4 py-3 rounded w-full font-bold hover:bg-blue-700 transition">
-                            Desbloquear Painel
+                        <input 
+                            type="password" 
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                            placeholder="Senha do Windows" 
+                            className="w-full p-3 border rounded mb-4 focus:outline-none focus:border-blue-500 text-center"
+                        />
+                        {error && <div className="mb-4 text-sm text-red-600 font-semibold">{error}</div>}
+                        <button disabled={loading} type="submit" className="bg-blue-600 text-white px-4 py-3 rounded w-full font-bold hover:bg-blue-700 transition disabled:opacity-60">
+                            {loading ? 'Validando acesso...' : 'Entrar com AD'}
                         </button>
                     </form>
+                    <p className="text-xs text-gray-500 mt-4">Acesso restrito a membros ativos de Domain Admins.</p>
                 </div>
             );
         };
@@ -95,7 +130,7 @@
         // ============================================================================
         // MÓDULO 3: MODAL DE CONTA (CRIAR/EDITAR)
         // ============================================================================
-        const AccountModal = ({ isOpen, onClose, onSave, accountData, adSectors }) => {
+        const AccountModal = ({ isOpen, onClose, onSave, accountData, adSectors, token }) => {
             if (!isOpen) return null;
 
             const [formData, setFormData] = useState({
@@ -104,6 +139,8 @@
                 data_validade: '', status_updated_at: '', setores: []
             });
             const [showPassword, setShowPassword] = useState(false);
+            const [passwordRevealed, setPasswordRevealed] = useState(false);
+            const [revealingPassword, setRevealingPassword] = useState(false);
 
             useEffect(() => {
                 if (accountData) {
@@ -111,7 +148,7 @@
                         id: accountData.id,
                         login: accountData.login,
                         titular: accountData.titular === "Não informado" ? "" : accountData.titular,
-                        senha: accountData.senha || "",
+                        senha: "",
                         status: accountData.status || 'ativo',
                         status_custom: '',
                         data_validade: accountData.data_validade || '',
@@ -122,7 +159,30 @@
                     setFormData({ id: '', login: '', titular: '', senha: '', status: 'cadastro_inicial', status_custom: '', data_validade: '', status_updated_at: '', setores: [] });
                 }
                 setShowPassword(false);
+                setPasswordRevealed(false);
+                setRevealingPassword(false);
             }, [accountData]);
+
+            const handleRevealPassword = async () => {
+                if (!formData.id) return;
+                if (!confirm("Revelar a senha desta conta agora? Esta ação ficará auditada.")) return;
+                setRevealingPassword(true);
+                try {
+                    const res = await fetch(`/api/admin/accounts/${formData.id}/secret`, { headers: { 'X-Admin-Token': token } });
+                    const data = await res.json();
+                    if (!res.ok) {
+                        alert(data.erro || "Não foi possível revelar a senha.");
+                        return;
+                    }
+                    setFormData(prev => ({ ...prev, senha: data.senha || "" }));
+                    setPasswordRevealed(true);
+                    setShowPassword(true);
+                } catch (e) {
+                    alert("Erro ao revelar a senha.");
+                } finally {
+                    setRevealingPassword(false);
+                }
+            };
 
             const handleSectorToggle = (sector) => {
                 setFormData(prev => ({
@@ -169,10 +229,17 @@
 
                             <div className="mb-4 relative">
                                 <label className="text-xs font-bold text-gray-500 uppercase">Senha Banco do Brasil</label>
-                                <input type={showPassword ? "text" : "password"} value={formData.senha} onChange={e => setFormData({...formData, senha: e.target.value})} className="w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500 font-mono pr-10" placeholder="Digite a senha (ou deixe em branco)" />
+                                <input type={showPassword ? "text" : "password"} value={formData.senha} onChange={e => setFormData({...formData, senha: e.target.value})} className="w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500 font-mono pr-20" placeholder={formData.id ? "Deixe em branco para manter a senha atual" : "Digite a senha"} />
                                 <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-[34px] text-gray-500 hover:text-blue-600 focus:outline-none">
                                     <i className={`fas ${showPassword ? 'fa-eye-slash' : 'fa-eye'}`}></i>
                                 </button>
+                                {formData.id && (
+                                    <button type="button" onClick={handleRevealPassword} disabled={revealingPassword} className="absolute right-10 top-[34px] text-gray-500 hover:text-blue-600 focus:outline-none disabled:opacity-50" title="Revelar senha">
+                                        <i className={`fas ${revealingPassword ? 'fa-spinner fa-spin' : 'fa-key'}`}></i>
+                                    </button>
+                                )}
+                                {formData.id && !passwordRevealed && <div className="mt-1 text-[11px] text-gray-500">Senha não carregada por padrão.</div>}
+                                {passwordRevealed && <div className="mt-1 text-[11px] text-amber-600 font-semibold">Senha revelada sob auditoria.</div>}
                             </div>
 
                             <div className="grid grid-cols-2 gap-4 mb-4">
@@ -228,13 +295,22 @@
         // MÓDULO 4: TAB VIEW - DASHBOARD (TEMPO REAL)
         // ============================================================================
         const DashboardView = ({ token, adSectors }) => {
-            const [stats, setStats] = useState({ logins_solicitados: 0, cookies_injetados: 0, robos_executados: 0, queue_size: 0, economia_pct: 0 });
+            const [stats, setStats] = useState({ logins_solicitados: 0, cookies_injetados: 0, robos_executados: 0, queue_size: 0, economia_pct: 0, active_users_now: 0, hot_pool_accounts: 0, workers_busy: 0, workers_total: 0, avg_cookie_age: 0, avg_session_cycle: 0, queue_snapshot: {} });
             const [accounts, setAccounts] = useState([]);
+            const [liveOverview, setLiveOverview] = useState({ workers: [], active_users: [], hot_sessions: [], backoff_accounts: [], queue: {} });
+            const [recentRequests, setRecentRequests] = useState([]);
+            const [auditEvents, setAuditEvents] = useState([]);
             
             // Filtros e Ordenação
             const [search, setSearch] = useState("");
             const [statusFilter, setStatusFilter] = useState("");
             const [sectorFilter, setSectorFilter] = useState("");
+            const [activeSectorFilter, setActiveSectorFilter] = useState("");
+            const [showAllActiveUsers, setShowAllActiveUsers] = useState(false);
+            const [showAllRecentRequests, setShowAllRecentRequests] = useState(false);
+            const [showAllHotSessions, setShowAllHotSessions] = useState(false);
+            const [showAllBackoffAccounts, setShowAllBackoffAccounts] = useState(false);
+            const [showAllAuditEvents, setShowAllAuditEvents] = useState(false);
             const [sortCol, setSortCol] = useState('default');
             const [sortAsc, setSortAsc] = useState(true);
             
@@ -243,12 +319,18 @@
 
             const fetchData = useCallback(async () => {
                 try {
-                    const [resStats, resAcc] = await Promise.all([
+                    const [resStats, resAcc, resLive, resRecent, resAudit] = await Promise.all([
                         fetch('/api/admin/dashboard_stats', { headers: { 'X-Admin-Token': token } }),
-                        fetch('/api/admin/accounts', { headers: { 'X-Admin-Token': token } })
+                        fetch('/api/admin/accounts', { headers: { 'X-Admin-Token': token } }),
+                        fetch('/api/admin/live_overview', { headers: { 'X-Admin-Token': token } }),
+                        fetch('/api/admin/recent_requests?limit=60', { headers: { 'X-Admin-Token': token } }),
+                        fetch('/api/admin/audit?limit=60', { headers: { 'X-Admin-Token': token } })
                     ]);
                     if (resStats.ok) setStats(await resStats.json());
                     if (resAcc.ok) setAccounts(await resAcc.json());
+                    if (resLive.ok) setLiveOverview(await resLive.json());
+                    if (resRecent.ok) setRecentRequests(await resRecent.json());
+                    if (resAudit.ok) setAuditEvents(await resAudit.json());
                 } catch (e) { console.error("Erro ao buscar dados do dashboard:", e); }
             }, [token]);
 
@@ -342,14 +424,247 @@
                 return <i className={`fas fa-sort-${sortAsc ? 'up' : 'down'} ml-1 text-blue-500`}></i>;
             };
 
+            const activeUsersBySector = useMemo(() => {
+                const groups = {};
+                (liveOverview.active_users || []).forEach(entry => {
+                    const key = entry.setor || 'Sem setor';
+                    if (!groups[key]) groups[key] = { setor: key, count: 0, lastSeen: entry.last_seen_at, users: [] };
+                    groups[key].count += 1;
+                    groups[key].users.push(entry);
+                    if ((entry.last_seen_at || '') > (groups[key].lastSeen || '')) groups[key].lastSeen = entry.last_seen_at;
+                });
+                return Object.values(groups).sort((a, b) => b.count - a.count || a.setor.localeCompare(b.setor));
+            }, [liveOverview.active_users]);
+
+            const visibleActiveUsers = useMemo(() => {
+                const items = activeSectorFilter
+                    ? (liveOverview.active_users || []).filter(entry => (entry.setor || 'Sem setor') === activeSectorFilter)
+                    : (liveOverview.active_users || []);
+                return showAllActiveUsers ? items : items.slice(0, 8);
+            }, [liveOverview.active_users, activeSectorFilter, showAllActiveUsers]);
+
+            const visibleRecentRequests = useMemo(() => (
+                showAllRecentRequests ? recentRequests : recentRequests.slice(0, 12)
+            ), [recentRequests, showAllRecentRequests]);
+
+            const visibleHotSessions = useMemo(() => (
+                showAllHotSessions ? (liveOverview.hot_sessions || []) : (liveOverview.hot_sessions || []).slice(0, 6)
+            ), [liveOverview.hot_sessions, showAllHotSessions]);
+
+            const visibleBackoffAccounts = useMemo(() => (
+                showAllBackoffAccounts ? (liveOverview.backoff_accounts || []) : (liveOverview.backoff_accounts || []).slice(0, 6)
+            ), [liveOverview.backoff_accounts, showAllBackoffAccounts]);
+
+            const visibleAuditEvents = useMemo(() => (
+                showAllAuditEvents ? auditEvents : auditEvents.slice(0, 8)
+            ), [auditEvents, showAllAuditEvents]);
+
+            const outcomeClass = (outcome) => {
+                const value = (outcome || '').toLowerCase();
+                if (value.includes('hit') || value.includes('returned') || value.includes('hot')) return 'bg-green-100 text-green-800';
+                if (value.includes('queued')) return 'bg-yellow-100 text-yellow-800';
+                if (value.includes('denied') || value.includes('error') || value.includes('not_found')) return 'bg-red-100 text-red-800';
+                return 'bg-gray-100 text-gray-700';
+            };
+
+            const workerStateClass = (state) => {
+                const value = (state || '').toLowerCase();
+                if (value === 'idle') return 'bg-gray-100 text-gray-700';
+                if (value.includes('cooldown')) return 'bg-yellow-100 text-yellow-800';
+                if (value === 'error') return 'bg-red-100 text-red-800';
+                if (value === 'running') return 'bg-blue-100 text-blue-800';
+                return 'bg-indigo-100 text-indigo-800';
+            };
+
             return (
                 <div>
                     <h2 className="text-xl font-bold text-gray-800 mb-4">Métricas de Hoje</h2>
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6 gap-6 mb-8">
                         <KpiCard title="Acessos Solicitados" value={stats.logins_solicitados || 0} colorClass="border-l-blue-500" />
                         <KpiCard title="Cookies Injetados" value={stats.cookies_injetados || 0} colorClass="border-l-green-500" />
-                        <KpiCard title="Execuções do Robô" value={stats.robos_executados || 0} subtitle={`${stats.queue_size || 0} na fila`} colorClass="border-l-yellow-500" />
+                        <KpiCard title="Usuários Ativos Agora" value={stats.active_users_now || 0} colorClass="border-l-cyan-500" />
+                        <KpiCard title="Sessões Quentes" value={stats.hot_pool_accounts || 0} subtitle={`${stats.queue_size || 0} na fila`} colorClass="border-l-emerald-500" />
+                        <KpiCard title="Workers" value={`${stats.workers_busy || 0}/${stats.workers_total || 0}`} subtitle="ocupados" colorClass="border-l-yellow-500" />
                         <KpiCard title="Eficiência do Pool" value={`${stats.economia_pct || 0}%`} colorClass="border-l-purple-500" />
+                        <KpiCard title="Idade Média do Cookie" value={formatMinutes(stats.avg_cookie_age)} subtitle={`ciclo ${formatMinutes(stats.avg_session_cycle)}`} colorClass="border-l-pink-500" />
+                    </div>
+
+                    <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 mb-8">
+                        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                            <div className="bg-gray-50 border-b border-gray-200 p-4 flex justify-between items-center">
+                                <h3 className="font-bold text-gray-700"><i className="fas fa-heart-pulse mr-2 text-blue-500"></i>Workers em Tempo Real</h3>
+                                <span className="text-xs text-gray-400">{liveOverview.generated_at || ''}</span>
+                            </div>
+                            <div className="p-4 space-y-3">
+                                {liveOverview.workers?.length ? liveOverview.workers.map(worker => (
+                                    <div key={worker.thread_id} className="border rounded-lg p-3 bg-gray-50">
+                                        <div className="flex items-center justify-between mb-2">
+                                            <span className="font-black text-gray-800">ROBÔ {worker.thread_id}</span>
+                                            <span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase ${workerStateClass(worker.state)}`}>{worker.state}</span>
+                                        </div>
+                                        <div className="text-sm text-gray-700">{worker.message || 'Sem mensagem'}</div>
+                                        <div className="mt-2 text-xs text-gray-500 flex flex-wrap gap-3">
+                                            <span>Setor: <strong>{worker.setor || '-'}</strong></span>
+                                            <span>Conta: <strong>{worker.account_id || '-'}</strong></span>
+                                            <span>Atualização: <strong>{formatSeconds(worker.stale_seconds)}</strong></span>
+                                        </div>
+                                    </div>
+                                )) : <p className="text-gray-400 text-sm">Sem telemetria de worker.</p>}
+                            </div>
+                        </div>
+
+                        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                            <div className="bg-gray-50 border-b border-gray-200 p-4 flex justify-between items-center">
+                                <h3 className="font-bold text-gray-700"><i className="fas fa-users-viewfinder mr-2 text-emerald-500"></i>Usuários/Setores Ativos</h3>
+                                <button onClick={() => setShowAllActiveUsers(!showAllActiveUsers)} className="text-xs bg-white border border-gray-200 px-3 py-1 rounded font-bold text-gray-600 hover:bg-gray-100">
+                                    {showAllActiveUsers ? 'Ver menos' : 'Ver tudo'}
+                                </button>
+                            </div>
+                            <div className="p-4 border-b border-gray-100">
+                                <div className="flex flex-wrap gap-2">
+                                    <button onClick={() => setActiveSectorFilter("")} className={`px-3 py-1 rounded-full text-xs font-bold border ${activeSectorFilter === "" ? 'bg-emerald-600 text-white border-emerald-700' : 'bg-white text-gray-600 border-gray-200'}`}>
+                                        Todos ({liveOverview.active_users?.length || 0})
+                                    </button>
+                                    {activeUsersBySector.slice(0, 8).map(group => (
+                                        <button key={group.setor} onClick={() => setActiveSectorFilter(group.setor)} className={`px-3 py-1 rounded-full text-xs font-bold border ${activeSectorFilter === group.setor ? 'bg-emerald-600 text-white border-emerald-700' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>
+                                            {group.setor} ({group.count})
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                            <div className="max-h-[320px] overflow-y-auto custom-scroll divide-y divide-gray-100">
+                                {visibleActiveUsers.length ? visibleActiveUsers.map((entry, idx) => (
+                                    <div key={`${entry.setor}-${idx}`} className="p-4 hover:bg-gray-50">
+                                        <div className="flex items-center justify-between">
+                                            <span className="font-bold text-gray-800">{entry.setor || '-'}</span>
+                                            <span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase ${outcomeClass(entry.outcome)}`}>{entry.outcome || 'ativo'}</span>
+                                        </div>
+                                        <div className="mt-1 text-sm text-gray-600">{entry.login || 'Conta não resolvida'}</div>
+                                        <div className="mt-2 text-xs text-gray-500 flex flex-wrap gap-3">
+                                            <span>Endpoint: <strong>{entry.endpoint || '-'}</strong></span>
+                                            <span>Há: <strong>{formatSeconds(entry.idle_seconds)}</strong></span>
+                                            <span>IP: <strong>{entry.ip || '-'}</strong></span>
+                                        </div>
+                                    </div>
+                                )) : <p className="p-6 text-gray-400 text-sm">Nenhuma atividade recente.</p>}
+                            </div>
+                        </div>
+
+                        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                            <div className="bg-gray-50 border-b border-gray-200 p-4">
+                                <h3 className="font-bold text-gray-700"><i className="fas fa-cookie-bite mr-2 text-purple-500"></i>Sessões Quentes / Backoff</h3>
+                            </div>
+                            <div className="p-4">
+                                <div className="mb-4">
+                                    <h4 className="text-xs font-bold uppercase text-gray-400 mb-2">Próximas a Renovar</h4>
+                                    <div className="flex justify-end mb-2">
+                                        <button onClick={() => setShowAllHotSessions(!showAllHotSessions)} className="text-xs bg-white border border-gray-200 px-3 py-1 rounded font-bold text-gray-600 hover:bg-gray-100">
+                                            {showAllHotSessions ? 'Ver menos' : 'Ver tudo'}
+                                        </button>
+                                    </div>
+                                    <div className="space-y-2 max-h-[150px] overflow-y-auto custom-scroll">
+                                        {visibleHotSessions.length ? visibleHotSessions.map(session => (
+                                            <div key={session.account_id} className="border rounded-lg p-3 bg-gray-50">
+                                                <div className="flex items-center justify-between">
+                                                    <span className="font-bold text-gray-800">{session.login}</span>
+                                                    <span className="text-xs text-purple-700 font-bold">{formatMinutes(session.minutes_to_refresh)}</span>
+                                                </div>
+                                                <div className="mt-1 text-xs text-gray-500">Idade: {formatMinutes(session.cookie_age_minutes)} | Cookies: {session.cookie_count}</div>
+                                            </div>
+                                        )) : <p className="text-gray-400 text-sm">Nenhuma sessão quente.</p>}
+                                    </div>
+                                </div>
+                                <div>
+                                    <h4 className="text-xs font-bold uppercase text-gray-400 mb-2">Contas em Backoff</h4>
+                                    <div className="flex justify-end mb-2">
+                                        <button onClick={() => setShowAllBackoffAccounts(!showAllBackoffAccounts)} className="text-xs bg-white border border-gray-200 px-3 py-1 rounded font-bold text-gray-600 hover:bg-gray-100">
+                                            {showAllBackoffAccounts ? 'Ver menos' : 'Ver tudo'}
+                                        </button>
+                                    </div>
+                                    <div className="space-y-2 max-h-[150px] overflow-y-auto custom-scroll">
+                                        {visibleBackoffAccounts.length ? visibleBackoffAccounts.map(item => (
+                                            <div key={item.account_id} className="border rounded-lg p-3 bg-red-50 border-red-100">
+                                                <div className="flex items-center justify-between">
+                                                    <span className="font-bold text-gray-800">{item.login}</span>
+                                                    <span className="text-xs text-red-700 font-bold">{formatSeconds(item.backoff_seconds)}</span>
+                                                </div>
+                                                <div className="mt-1 text-xs text-gray-500">{(item.setores || []).join(', ') || 'Sem setor'}</div>
+                                            </div>
+                                        )) : <p className="text-gray-400 text-sm">Nenhuma conta em backoff.</p>}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden mb-8">
+                        <div className="bg-gray-50 border-b border-gray-200 p-4 flex justify-between items-center">
+                            <h3 className="font-bold text-gray-700"><i className="fas fa-stream mr-2 text-orange-500"></i>Últimas Solicitações</h3>
+                            <div className="text-xs text-gray-500 flex gap-4 items-center">
+                                <span>Fila normal: <strong>{liveOverview.queue?.login_requests || 0}</strong></span>
+                                <span>Prioridade: <strong>{liveOverview.queue?.priority_logins || 0}</strong></span>
+                                <span>Cooldown: <strong>{liveOverview.queue?.cooldown_active ? 'sim' : 'não'}</strong></span>
+                                <span>Infra-cooldown: <strong>{liveOverview.queue?.infra_cooldown_active ? 'sim' : 'não'}</strong></span>
+                                <button onClick={() => setShowAllRecentRequests(!showAllRecentRequests)} className="text-xs bg-white border border-gray-200 px-3 py-1 rounded font-bold text-gray-600 hover:bg-gray-100">
+                                    {showAllRecentRequests ? 'Ver menos' : 'Ver tudo'}
+                                </button>
+                            </div>
+                        </div>
+                        <div className="overflow-x-auto max-h-[360px] custom-scroll">
+                            <table className="w-full text-left min-w-[980px]">
+                                <thead className="bg-gray-100 text-gray-600 text-xs uppercase tracking-wider border-b border-gray-200">
+                                    <tr>
+                                        <th className="p-3 font-semibold">Quando</th>
+                                        <th className="p-3 font-semibold">Endpoint</th>
+                                        <th className="p-3 font-semibold">Setor</th>
+                                        <th className="p-3 font-semibold">Conta</th>
+                                        <th className="p-3 font-semibold">Resultado</th>
+                                        <th className="p-3 font-semibold">Idade Cookie</th>
+                                        <th className="p-3 font-semibold">IP</th>
+                                        <th className="p-3 font-semibold">User-Agent</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-gray-100 text-sm">
+                                    {visibleRecentRequests.length ? visibleRecentRequests.map((item, idx) => (
+                                        <tr key={`${item.ts}-${idx}`} className="hover:bg-gray-50">
+                                            <td className="p-3 font-mono text-xs text-gray-600 whitespace-nowrap">{item.ts_local || item.ts || '-'}</td>
+                                            <td className="p-3"><span className="bg-blue-50 text-blue-700 px-2 py-1 rounded text-xs font-bold">{item.endpoint || '-'}</span></td>
+                                            <td className="p-3 font-semibold text-gray-700">{item.setor || '-'}</td>
+                                            <td className="p-3 font-mono text-gray-700">{item.login || '-'}</td>
+                                            <td className="p-3"><span className={`px-2 py-1 rounded text-xs font-bold uppercase ${outcomeClass(item.outcome)}`}>{item.outcome || '-'}</span></td>
+                                            <td className="p-3 text-gray-600">{item.cookie_age_minutes !== undefined ? formatMinutes(item.cookie_age_minutes) : '-'}</td>
+                                            <td className="p-3 font-mono text-xs text-gray-600">{item.ip || '-'}</td>
+                                            <td className="p-3 text-xs text-gray-500 max-w-[280px] truncate" title={item.user_agent || ''}>{item.user_agent || '-'}</td>
+                                        </tr>
+                                    )) : <tr><td colSpan="8" className="p-8 text-center text-gray-500">Sem eventos recentes.</td></tr>}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden mb-8">
+                        <div className="bg-gray-50 border-b border-gray-200 p-4 flex justify-between items-center">
+                            <h3 className="font-bold text-gray-700"><i className="fas fa-user-shield mr-2 text-slate-600"></i>Auditoria Administrativa</h3>
+                            <button onClick={() => setShowAllAuditEvents(!showAllAuditEvents)} className="text-xs bg-white border border-gray-200 px-3 py-1 rounded font-bold text-gray-600 hover:bg-gray-100">
+                                {showAllAuditEvents ? 'Ver menos' : 'Ver tudo'}
+                            </button>
+                        </div>
+                        <div className="divide-y divide-gray-100 max-h-[280px] overflow-y-auto custom-scroll">
+                            {visibleAuditEvents.length ? visibleAuditEvents.map((item, idx) => (
+                                <div key={`${item.ts}-${idx}`} className="p-4 hover:bg-gray-50">
+                                    <div className="flex items-center justify-between gap-4">
+                                        <div>
+                                            <div className="font-bold text-gray-800">{item.action}</div>
+                                            <div className="text-sm text-gray-600">{item.actor} {item.target ? `• ${item.target}` : ''}</div>
+                                        </div>
+                                        <div className="text-right text-xs text-gray-500">
+                                            <div>{item.ts_local || '-'}</div>
+                                            <div>{item.ip || '-'}</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            )) : <div className="p-6 text-gray-400 text-sm">Sem eventos de auditoria.</div>}
+                        </div>
                     </div>
 
                     <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-4 gap-4">
@@ -389,6 +704,7 @@
                                         <th className="p-4 font-semibold text-center cursor-pointer hover:bg-gray-200 transition" onClick={() => handleSort('status')}>
                                             Status / Validade {renderSortIcon('status')}
                                         </th>
+                                        <th className="p-4 font-semibold text-center">Sessão</th>
                                         <th className="p-4 font-semibold text-center">Ações</th>
                                     </tr>
                                 </thead>
@@ -406,6 +722,15 @@
                                                 <StatusBadge status={acc.status} />
                                                 <div className="mt-1.5 text-[10px] text-gray-400 font-bold">{acc.data_validade ? `Validade: ${acc.data_validade}` : 'Sem vencimento'}</div>
                                             </td>
+                                            <td className="p-4 text-center">
+                                                <div className={`inline-block px-3 py-1 rounded-full text-[10px] font-bold uppercase ${acc.cookie_hot ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600'}`}>
+                                                    {acc.cookie_hot ? 'quente' : 'fria'}
+                                                </div>
+                                                <div className="mt-2 text-[11px] text-gray-500">{acc.last_login}</div>
+                                                <div className="text-[11px] text-gray-500">Idade: {formatMinutes(acc.cookie_age_minutes)}</div>
+                                                <div className="text-[11px] text-gray-500">Restam: {formatMinutes(acc.minutes_to_refresh)}</div>
+                                                {acc.backoff_seconds > 0 && <div className="text-[11px] text-red-600 font-bold">Backoff: {formatSeconds(acc.backoff_seconds)}</div>}
+                                            </td>
                                             <td className="p-4 text-center whitespace-nowrap">
                                                 <button onClick={() => handleAction('clear', acc.id)} className="text-orange-500 hover:text-orange-700 bg-orange-50 p-2 rounded transition mr-1" title="Limpar Cookies"><i className="fas fa-eraser"></i></button>
                                                 <button onClick={() => { setEditingAccount(acc); setIsModalOpen(true); }} className="text-blue-500 hover:text-blue-700 bg-blue-50 p-2 rounded transition mr-1" title="Editar"><i className="fas fa-cog"></i></button>
@@ -413,13 +738,13 @@
                                             </td>
                                         </tr>
                                     ))}
-                                    {sortedAndFilteredAccounts.length === 0 && <tr><td colSpan="5" className="p-8 text-center text-gray-500">Nenhum resultado encontrado.</td></tr>}
+                                    {sortedAndFilteredAccounts.length === 0 && <tr><td colSpan="6" className="p-8 text-center text-gray-500">Nenhum resultado encontrado.</td></tr>}
                                 </tbody>
                             </table>
                         </div>
                     </div>
 
-                    <AccountModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} onSave={handleSaveAccount} accountData={editingAccount} adSectors={adSectors} />
+                    <AccountModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} onSave={handleSaveAccount} accountData={editingAccount} adSectors={adSectors} token={token} />
                 </div>
             );
         };
@@ -460,10 +785,15 @@
             const totalLogins = data.efficiency ? data.efficiency.total_logins_requested : (data.total_logins || 0);
             const totalCookies = data.efficiency ? data.efficiency.total_cookies_injected : (data.total_cookies || 0);
             const economiaPct = data.efficiency ? data.efficiency.economia_pct : (data.economia_pct || 0);
+            const avgCookieAge = data.efficiency ? data.efficiency.avg_cookie_age_minutes : 0;
+            const avgSessionCycle = data.efficiency ? data.efficiency.avg_session_cycle_minutes : 0;
+            const maxSessionCycle = data.efficiency ? data.efficiency.max_session_cycle_minutes : 0;
             const robotsPerformance = data.robots_performance || [];
             const errorDiagnostics = data.error_diagnostics || [];
             const sectorsData = data.sectors || [];
             const accountsData = data.accounts || [];
+            const requestEndpoints = data.request_endpoints || [];
+            const requestOutcomes = data.request_outcomes || [];
 
             return (
                 <div>
@@ -481,7 +811,7 @@
                         </button>
                     </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-6 mb-6">
                         <div className="bg-gradient-to-br from-blue-500 to-blue-700 p-6 rounded-xl shadow-sm text-white">
                             <h3 className="text-blue-100 text-xs font-bold uppercase">Total de Acessos no Período</h3>
                             <p className="text-4xl font-black mt-2">{totalLogins}</p>
@@ -493,6 +823,15 @@
                         <div className="bg-gradient-to-br from-purple-500 to-purple-700 p-6 rounded-xl shadow-sm text-white">
                             <h3 className="text-purple-100 text-xs font-bold uppercase">Economia no Período</h3>
                             <p className="text-4xl font-black mt-2">{economiaPct}%</p>
+                        </div>
+                        <div className="bg-gradient-to-br from-pink-500 to-pink-700 p-6 rounded-xl shadow-sm text-white">
+                            <h3 className="text-pink-100 text-xs font-bold uppercase">Idade Média do Cookie</h3>
+                            <p className="text-4xl font-black mt-2">{avgCookieAge}m</p>
+                        </div>
+                        <div className="bg-gradient-to-br from-indigo-500 to-indigo-700 p-6 rounded-xl shadow-sm text-white">
+                            <h3 className="text-indigo-100 text-xs font-bold uppercase">Ciclo Médio / Máximo</h3>
+                            <p className="text-3xl font-black mt-2">{avgSessionCycle}m</p>
+                            <p className="text-indigo-100 text-xs mt-1">pico {maxSessionCycle}m</p>
                         </div>
                     </div>
 
@@ -557,6 +896,34 @@
                         </div>
                     </div>
 
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+                        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                            <div className="bg-gray-50 border-b border-gray-200 p-4"><h3 className="font-bold text-gray-700"><i className="fas fa-route mr-2 text-sky-500"></i>Endpoints Mais Chamados</h3></div>
+                            <ul className="divide-y divide-gray-100 max-h-[260px] overflow-y-auto custom-scroll">
+                                {requestEndpoints.length === 0 && <li className="p-8 text-center text-gray-400">Sem dados.</li>}
+                                {requestEndpoints.map(item => (
+                                    <li key={item.name} className="p-4 flex items-center justify-between hover:bg-gray-50">
+                                        <span className="font-bold text-gray-700">{item.name}</span>
+                                        <span className="text-sm font-bold text-sky-600 bg-sky-50 px-3 py-1 rounded-full">{item.count}</span>
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+
+                        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                            <div className="bg-gray-50 border-b border-gray-200 p-4"><h3 className="font-bold text-gray-700"><i className="fas fa-filter-circle-dollar mr-2 text-amber-500"></i>Resultados das Requisições</h3></div>
+                            <ul className="divide-y divide-gray-100 max-h-[260px] overflow-y-auto custom-scroll">
+                                {requestOutcomes.length === 0 && <li className="p-8 text-center text-gray-400">Sem dados.</li>}
+                                {requestOutcomes.map(item => (
+                                    <li key={item.name} className="p-4 flex items-center justify-between hover:bg-gray-50">
+                                        <span className="font-bold text-gray-700">{item.name}</span>
+                                        <span className="text-sm font-bold text-amber-600 bg-amber-50 px-3 py-1 rounded-full">{item.count}</span>
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+                    </div>
+
                     {/* RANKING ORIGINAL DE SETORES E CONTAS */}
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                         <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
@@ -604,20 +971,47 @@
         // ============================================================================
         const App = () => {
             const [token, setToken] = useState("");
+            const [adminUser, setAdminUser] = useState(null);
             const [activeTab, setActiveTab] = useState("dashboard");
             const [adSectors, setAdSectors] = useState([]);
 
-            const handleLogin = async (inputToken) => {
+            const handleLogin = async ({ username, password }) => {
                 try {
-                    const res = await fetch('/api/admin/ad_sectors', { headers: { 'X-Admin-Token': inputToken } });
+                    const loginRes = await fetch('/api/admin/login', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ username, password })
+                    });
+                    const loginData = await loginRes.json();
+                    if (!loginRes.ok) {
+                        return { ok: false, message: loginData.erro || "Acesso negado." };
+                    }
+                    const adminToken = loginData.token;
+                    const res = await fetch('/api/admin/ad_sectors', { headers: { 'X-Admin-Token': adminToken } });
                     if (res.ok) {
                         setAdSectors(await res.json());
-                        setToken(inputToken);
-                    } else { alert("Acesso Negado. Chave incorreta."); }
-                } catch (e) { alert("Erro ao conectar com o servidor."); }
+                        setToken(adminToken);
+                        setAdminUser(loginData.user || null);
+                        return { ok: true };
+                    }
+                    return { ok: false, message: "Falha ao carregar painel." };
+                } catch (e) {
+                    return { ok: false, message: "Erro ao conectar com o servidor." };
+                }
             };
 
-            const handleLogout = () => { setToken(""); };
+            const handleLogout = async () => {
+                try {
+                    if (token) {
+                        await fetch('/api/admin/logout', { method: 'POST', headers: { 'X-Admin-Token': token } });
+                    }
+                } catch (e) {
+                    console.error("Erro ao encerrar sessão administrativa:", e);
+                } finally {
+                    setToken("");
+                    setAdminUser(null);
+                }
+            };
 
             if (!token) return <AuthScreen onLogin={handleLogin} />;
 
@@ -628,7 +1022,13 @@
                             <h1 className="text-xl font-bold flex items-center">
                                 <i className="fas fa-robot text-blue-300 mr-3 text-2xl"></i> OneLog Enterprise
                             </h1>
-                            <button onClick={handleLogout} className="text-sm bg-blue-800 hover:bg-blue-700 px-4 py-2 rounded font-bold transition">Sair do Painel</button>
+                            <div className="flex items-center gap-4">
+                                <div className="text-right">
+                                    <div className="text-sm font-bold">{adminUser?.display_name || adminUser?.username || 'Administrador'}</div>
+                                    <div className="text-[11px] text-blue-200">{adminUser?.username || ''}</div>
+                                </div>
+                                <button onClick={handleLogout} className="text-sm bg-blue-800 hover:bg-blue-700 px-4 py-2 rounded font-bold transition">Sair do Painel</button>
+                            </div>
                         </div>
                     </nav>
 

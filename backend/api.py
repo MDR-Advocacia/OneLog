@@ -1,28 +1,260 @@
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory, g
 from flask_cors import CORS
 import redis
 import json
 import os
 import time
+import secrets
 from datetime import datetime, timedelta
 from database import SessionLocal, Sector, AccountBB, init_db, seed_db
-from ad_integration import autenticar_e_obter_setor, listar_ous_bb_ad
+from ad_integration import autenticar_e_obter_setor, autenticar_admin_ad, listar_ous_bb_ad
 from functools import wraps
+from zoneinfo import ZoneInfo
 
 app = Flask(__name__)
 CORS(app)
 
-ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "mudar-urgente")
+ADMIN_BREAKGLASS_TOKEN = os.getenv("ADMIN_BREAKGLASS_TOKEN", "").strip()
 redis_client = redis.Redis.from_url(os.getenv('REDIS_URL', 'redis://localhost:6379/0'), decode_responses=True)
+COOKIE_REUSE_MINUTES = int(os.getenv("COOKIE_REUSE_MINUTES", "22"))
+APP_TIMEZONE = os.getenv("APP_TIMEZONE", "America/Fortaleza")
+RECENT_REQUESTS_LIMIT = int(os.getenv("RECENT_REQUESTS_LIMIT", "300"))
+ACTIVE_CLIENT_TTL_SECONDS = int(os.getenv("ACTIVE_CLIENT_TTL_SECONDS", "2700"))
+RECENT_REQUEST_WINDOW_MINUTES = int(os.getenv("RECENT_REQUEST_WINDOW_MINUTES", "30"))
+ADMIN_SESSION_TTL_SECONDS = int(os.getenv("ADMIN_SESSION_TTL_SECONDS", "28800"))
+
+def get_local_now():
+    try:
+        return datetime.now(ZoneInfo(APP_TIMEZONE))
+    except Exception:
+        return datetime.utcnow() - timedelta(hours=3)
+
+def extract_client_ip():
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.headers.get("X-Real-IP") or request.remote_addr or "-"
+
+def trim_user_agent(user_agent, max_len=120):
+    if not user_agent:
+        return ""
+    user_agent = str(user_agent)
+    return user_agent if len(user_agent) <= max_len else user_agent[:max_len - 1] + "…"
+
+def push_recent_request(event):
+    redis_client.lpush("admin:recent_requests", json.dumps(event, ensure_ascii=False))
+    redis_client.ltrim("admin:recent_requests", 0, RECENT_REQUESTS_LIMIT - 1)
+
+def mark_live_activity(setor_nome=None, account=None, endpoint=None, outcome=None, user_agent=None):
+    now = datetime.utcnow()
+    payload = {
+        "setor": setor_nome,
+        "endpoint": endpoint,
+        "outcome": outcome,
+        "ip": extract_client_ip(),
+        "user_agent": trim_user_agent(user_agent or request.headers.get("User-Agent") or ""),
+        "last_seen_at": now.isoformat(),
+        "last_seen_local": get_local_now().strftime("%d/%m/%Y %H:%M:%S")
+    }
+    if account:
+        payload["account_id"] = account.id
+        payload["login"] = account.login
+    if setor_nome:
+        redis_client.setex(f"live:setor:{setor_nome}", ACTIVE_CLIENT_TTL_SECONDS, json.dumps(payload, ensure_ascii=False))
+    if account:
+        redis_client.setex(f"live:account:{account.id}", ACTIVE_CLIENT_TTL_SECONDS, json.dumps(payload, ensure_ascii=False))
+
+def record_request_event(endpoint, setor_nome=None, account=None, outcome=None, user_agent=None, cookie_age_minutes=None, extra=None):
+    now_utc = datetime.utcnow()
+    today = now_utc.strftime('%Y-%m-%d')
+    event = {
+        "ts": now_utc.isoformat(),
+        "ts_local": get_local_now().strftime("%d/%m/%Y %H:%M:%S"),
+        "endpoint": endpoint,
+        "setor": setor_nome,
+        "outcome": outcome,
+        "ip": extract_client_ip(),
+        "user_agent": trim_user_agent(user_agent or request.headers.get("User-Agent") or "")
+    }
+    if account:
+        event["account_id"] = account.id
+        event["login"] = account.login
+    if cookie_age_minutes is not None:
+        event["cookie_age_minutes"] = round(cookie_age_minutes, 2)
+        redis_client.incrbyfloat(f"metrics:cookie_age_sum:{today}", float(cookie_age_minutes))
+        redis_client.incr(f"metrics:cookie_age_count:{today}")
+    if extra:
+        event.update(extra)
+
+    redis_client.incr(f"metrics:request_total:{today}")
+    redis_client.hincrby(f"metrics:request_endpoint:{today}", endpoint, 1)
+    if outcome:
+        redis_client.hincrby(f"metrics:request_outcome:{today}", outcome, 1)
+    push_recent_request(event)
+    mark_live_activity(setor_nome=setor_nome, account=account, endpoint=endpoint, outcome=outcome, user_agent=user_agent)
+
+def record_session_cycle(account, new_login_at):
+    if not account or not account.last_login_at:
+        return
+    cycle_minutes = (new_login_at - account.last_login_at).total_seconds() / 60
+    if cycle_minutes <= 0:
+        return
+    today = new_login_at.strftime('%Y-%m-%d')
+    redis_client.incrbyfloat(f"metrics:session_cycle_sum:{today}", cycle_minutes)
+    redis_client.incr(f"metrics:session_cycle_count:{today}")
+    previous_max = float(redis_client.get(f"metrics:session_cycle_max:{today}") or 0)
+    if cycle_minutes > previous_max:
+        redis_client.set(f"metrics:session_cycle_max:{today}", round(cycle_minutes, 2))
+
+def get_cookie_age_minutes(account):
+    if not account or not account.last_login_at:
+        return None
+    return (datetime.utcnow() - account.last_login_at).total_seconds() / 60
+
+def get_queue_snapshot():
+    return {
+        "login_requests": redis_client.llen("queue:login_requests"),
+        "priority_logins": redis_client.llen("queue:priority_logins"),
+        "cooldown_active": redis_client.exists("lock:cooldown") == 1,
+        "infra_cooldown_active": redis_client.exists("lock:infra_cooldown") == 1,
+    }
+
+def parse_json_safe(raw):
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        return None
+
+def get_live_entries(prefix):
+    items = []
+    now = datetime.utcnow()
+    for key in redis_client.scan_iter(prefix):
+        data = parse_json_safe(redis_client.get(key))
+        if not data:
+            continue
+        try:
+            ts = datetime.fromisoformat(data["last_seen_at"])
+            data["idle_seconds"] = int((now - ts).total_seconds())
+        except Exception:
+            data["idle_seconds"] = None
+        items.append(data)
+    items.sort(key=lambda x: x.get("last_seen_at", ""), reverse=True)
+    return items
+
+def get_worker_states():
+    items = []
+    now = int(time.time())
+    for key in redis_client.scan_iter("worker:state:*"):
+        data = parse_json_safe(redis_client.get(key))
+        if not data:
+            continue
+        ts = int(data.get("ts") or 0)
+        data["stale_seconds"] = max(0, now - ts) if ts else None
+        items.append(data)
+    items.sort(key=lambda x: x.get("thread_id", 0))
+    return items
+
+def get_account_runtime(account):
+    cookie_age_minutes = get_cookie_age_minutes(account)
+    backoff_seconds = redis_client.ttl(f"cooldown:account:{account.id}")
+    cookie_count = 0
+    if account.cookie_payload:
+        try:
+            cookie_count = len(json.loads(account.cookie_payload))
+        except Exception:
+            cookie_count = 0
+    return {
+        "cookie_age_minutes": round(cookie_age_minutes, 1) if cookie_age_minutes is not None else None,
+        "cookie_hot": cookie_age_minutes is not None and cookie_age_minutes < COOKIE_REUSE_MINUTES,
+        "minutes_to_refresh": round(max(0, COOKIE_REUSE_MINUTES - cookie_age_minutes), 1) if cookie_age_minutes is not None else None,
+        "backoff_seconds": backoff_seconds if backoff_seconds and backoff_seconds > 0 else 0,
+        "cookie_count": cookie_count
+    }
 
 def admin_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         token = request.headers.get("X-Admin-Token")
-        if not token or token != ADMIN_TOKEN:
+        if ADMIN_BREAKGLASS_TOKEN and token == ADMIN_BREAKGLASS_TOKEN:
+            g.admin_session = {"username": "breakglass", "display_name": "Breakglass Admin"}
+            g.admin_token = token
+            return f(*args, **kwargs)
+        if not token:
             return jsonify({"erro": "Acesso negado."}), 403
+        session_raw = redis_client.get(f"admin:session:{token}")
+        if not session_raw:
+            return jsonify({"erro": "Acesso negado."}), 403
+        g.admin_session = parse_json_safe(session_raw) or {}
+        g.admin_token = token
+        redis_client.expire(f"admin:session:{token}", ADMIN_SESSION_TTL_SECONDS)
         return f(*args, **kwargs)
     return decorated_function
+
+def get_admin_actor():
+    session = getattr(g, "admin_session", {}) or {}
+    return session.get("username") or session.get("display_name") or "admin"
+
+def record_admin_audit(action, target=None, extra=None):
+    event = {
+        "ts": datetime.utcnow().isoformat(),
+        "ts_local": get_local_now().strftime("%d/%m/%Y %H:%M:%S"),
+        "actor": get_admin_actor(),
+        "action": action,
+        "target": target,
+        "ip": extract_client_ip()
+    }
+    if extra:
+        event.update(extra)
+    redis_client.lpush("admin:audit", json.dumps(event, ensure_ascii=False))
+    redis_client.ltrim("admin:audit", 0, 199)
+
+@app.route('/api/admin/login', methods=['POST'])
+def admin_login():
+    data = request.get_json(silent=True) or {}
+    username = (data.get('username') or '').strip()
+    password = data.get('password') or ''
+
+    if not username or not password:
+        return jsonify({"erro": "Usuário e senha são obrigatórios."}), 400
+
+    auth = autenticar_admin_ad(username, password)
+    if auth.get('status') != 'sucesso':
+        return jsonify({"erro": auth.get('mensagem', 'Acesso negado.')}), 403
+
+    token = secrets.token_urlsafe(32)
+    session_payload = {
+        "username": auth.get("usuario", username),
+        "display_name": auth.get("display_name", username),
+        "email": auth.get("email", ""),
+        "grupo_admin": auth.get("grupo_admin", ""),
+        "created_at": datetime.utcnow().isoformat()
+    }
+    redis_client.setex(f"admin:session:{token}", ADMIN_SESSION_TTL_SECONDS, json.dumps(session_payload))
+    redis_client.lpush("admin:audit", json.dumps({
+        "ts": datetime.utcnow().isoformat(),
+        "ts_local": get_local_now().strftime("%d/%m/%Y %H:%M:%S"),
+        "actor": session_payload["username"],
+        "action": "admin_login",
+        "target": "panel",
+        "ip": extract_client_ip()
+    }, ensure_ascii=False))
+    redis_client.ltrim("admin:audit", 0, 199)
+    return jsonify({
+        "token": token,
+        "user": session_payload,
+        "ttl_seconds": ADMIN_SESSION_TTL_SECONDS
+    })
+
+@app.route('/api/admin/logout', methods=['POST'])
+@admin_required
+def admin_logout():
+    token = getattr(g, "admin_token", None)
+    if token and not (ADMIN_BREAKGLASS_TOKEN and token == ADMIN_BREAKGLASS_TOKEN):
+        redis_client.delete(f"admin:session:{token}")
+    record_admin_audit("admin_logout", target="panel")
+    return jsonify({"ok": True})
 
 def inicializar_sistema():
     tentativas = 10
@@ -82,12 +314,15 @@ def get_status():
     try:
         account = buscar_conta_para_setor(db, setor_nome)
         if account and account.cookie_payload and account.last_login_at:
-            if (datetime.utcnow() - account.last_login_at).total_seconds() / 60 < 19:
+            cookie_age = get_cookie_age_minutes(account)
+            if cookie_age is not None and cookie_age < COOKIE_REUSE_MINUTES:
+                record_request_event("status", setor_nome=setor_nome, account=account, outcome="pool_hot", cookie_age_minutes=cookie_age)
                 return jsonify({"concluido": True, "mensagem": "Conexão segura estabelecida!"})
     finally:
         db.close()
 
     status_str = redis_client.get(f"status:{setor_nome}")
+    record_request_event("status", setor_nome=setor_nome, outcome="awaiting_sync")
     return jsonify(json.loads(status_str)) if status_str else jsonify({"mensagem": "Aguardando sincronização..."})
 
 @app.route('/api/zerocore/login', methods=['POST'])
@@ -97,10 +332,13 @@ def request_login():
     user_agent = data.get('user_agent')
     
     if not username or not password:
+        record_request_event("login", outcome="missing_credentials", user_agent=user_agent)
         return jsonify({"status": "erro", "mensagem": "Usuário e senha são obrigatórios."}), 400
 
     ad_result = autenticar_e_obter_setor(username, password)
-    if ad_result['status'] == 'erro': return jsonify(ad_result), 401
+    if ad_result['status'] == 'erro':
+        record_request_event("login", outcome="ad_denied", user_agent=user_agent)
+        return jsonify(ad_result), 401
 
     setor_nome = ad_result['setor']
     
@@ -118,12 +356,15 @@ def request_login():
         account = buscar_conta_para_setor(db, setor_nome)
         
         if not account:
+            record_request_event("login", setor_nome=setor_nome, outcome="no_account", user_agent=user_agent)
             return jsonify({"status": "erro", "mensagem": f"Setor {setor_nome} sem conta válida/ativa vinculada."}), 403
 
         if account.cookie_payload and account.last_login_at:
-            if (datetime.utcnow() - account.last_login_at).total_seconds() / 60 < 20:
+            cookie_age = get_cookie_age_minutes(account)
+            if cookie_age is not None and cookie_age < COOKIE_REUSE_MINUTES:
                 redis_client.incr(f'metrics:cookies_injetados:{hoje}')
                 redis_client.hincrby(f'metrics:account_logins:{hoje}', str(account.login), 1)
+                record_request_event("login", setor_nome=setor_nome, account=account, outcome="pool_hit", user_agent=user_agent, cookie_age_minutes=cookie_age)
                 return jsonify({
                     "status": "sucesso", "setor": setor_nome,
                     "cookies": json.loads(account.cookie_payload),
@@ -136,6 +377,7 @@ def request_login():
         lock_key = f"lock:queue:{account.id}"
         if redis_client.exists(lock_key):
             redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Sincronizando com conexão em andamento...", "concluido": False}))
+            record_request_event("login", setor_nome=setor_nome, account=account, outcome="already_queued", user_agent=user_agent)
             return jsonify({"status": "queued", "setor": setor_nome}) 
             
         redis_client.setex(lock_key, 600, "1")
@@ -147,9 +389,11 @@ def request_login():
         
         redis_client.incr(f'metrics:robos_executados:{hoje}')
         redis_client.hincrby(f'metrics:account_logins:{hoje}', str(account.login), 1)
+        record_request_event("login", setor_nome=setor_nome, account=account, outcome="queued", user_agent=user_agent)
         
         return jsonify({"status": "queued", "setor": setor_nome})
     except Exception as e:
+        record_request_event("login", setor_nome=setor_nome, outcome="api_error", user_agent=user_agent, extra={"error": str(e)})
         return jsonify({"status": "erro", "mensagem": f"Erro interno na API: {str(e)}"}), 500
     finally:
         db.close()
@@ -166,6 +410,7 @@ def renew_session():
     if username and password:
         ad_result = autenticar_e_obter_setor(username, password)
         if ad_result['status'] == 'erro':
+            record_request_event("renew", setor_nome=setor_nome, outcome="ad_denied", user_agent=user_agent)
             return jsonify({"status": "unauthorized", "mensagem": "Credenciais inválidas."}), 401
 
     db = SessionLocal()
@@ -176,9 +421,11 @@ def renew_session():
             redis_client.hincrby(f'metrics:sector_logins:{hoje}', setor_nome, 1)
             
             if account.cookie_payload and account.last_login_at:
-                if (datetime.utcnow() - account.last_login_at).total_seconds() / 60 < 15:
+                cookie_age = get_cookie_age_minutes(account)
+                if cookie_age is not None and cookie_age < COOKIE_REUSE_MINUTES:
                     redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Sessão quente retornada do Pool.", "concluido": True, "erro": False}))
                     redis_client.hincrby(f'metrics:account_logins:{hoje}', str(account.login), 1)
+                    record_request_event("renew", setor_nome=setor_nome, account=account, outcome="pool_hit", user_agent=user_agent, cookie_age_minutes=cookie_age)
                     return jsonify({"status": "queued"})
             
             # =========================================================
@@ -187,6 +434,7 @@ def renew_session():
             lock_key = f"lock:queue:{account.id}"
             if redis_client.exists(lock_key):
                 redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Aguardando renovação de segurança...", "concluido": False, "erro": False}))
+                record_request_event("renew", setor_nome=setor_nome, account=account, outcome="already_queued", user_agent=user_agent)
                 return jsonify({"status": "queued"})
 
             redis_client.setex(lock_key, 600, "1")
@@ -198,9 +446,11 @@ def renew_session():
             
             redis_client.incr(f'metrics:robos_executados:{hoje}')
             redis_client.hincrby(f'metrics:account_logins:{hoje}', str(account.login), 1)
+            record_request_event("renew", setor_nome=setor_nome, account=account, outcome="queued", user_agent=user_agent)
             return jsonify({"status": "queued"})
     finally:
         db.close()
+    record_request_event("renew", setor_nome=setor_nome, outcome="not_found", user_agent=user_agent)
     return jsonify({"status": "erro"}), 404
 
 @app.route('/api/zerocore/session', methods=['GET', 'POST'])
@@ -214,15 +464,18 @@ def get_session():
     if username and password:
         ad_result = autenticar_e_obter_setor(username, password)
         if ad_result['status'] == 'erro':
+            record_request_event("session", setor_nome=setor_nome, outcome="ad_denied")
             return jsonify({"status": "unauthorized", "mensagem": "Credenciais AD inválidas."}), 401
     
     db = SessionLocal()
     try:
         account = buscar_conta_para_setor(db, setor_nome)
         if account and account.cookie_payload:
+            record_request_event("session", setor_nome=setor_nome, account=account, outcome="cookie_returned", cookie_age_minutes=get_cookie_age_minutes(account))
             return jsonify({"status": "sucesso", "cookies": json.loads(account.cookie_payload)})
     finally:
         db.close()
+    record_request_event("session", setor_nome=setor_nome, outcome="not_found")
     return jsonify({"status": "erro"}), 404
 
 # --- ROTAS ADMINISTRATIVAS E DASHBOARD ---
@@ -246,12 +499,23 @@ def admin_dashboard_stats():
     try:
         total_accounts = db.query(AccountBB).count()
         active_accounts = db.query(AccountBB).filter(AccountBB.status.in_(['active', 'ativo', 'provisoria_recebida', 'termo_assinado'])).count()
-        queue_size = redis_client.llen("queue:login_requests")
+        queue_size = redis_client.llen("queue:login_requests") + redis_client.llen("queue:priority_logins")
         
         logins_solicitados = int(redis_client.get(f'metrics:logins_solicitados:{hoje}') or 0)
         cookies_injetados = int(redis_client.get(f'metrics:cookies_injetados:{hoje}') or 0)
         robos_executados = int(redis_client.get(f'metrics:robos_executados:{hoje}') or 0)
         economia_pct = round((cookies_injetados / logins_solicitados) * 100, 1) if logins_solicitados > 0 else 0
+        cookie_age_sum = float(redis_client.get(f'metrics:cookie_age_sum:{hoje}') or 0)
+        cookie_age_count = int(redis_client.get(f'metrics:cookie_age_count:{hoje}') or 0)
+        avg_cookie_age = round(cookie_age_sum / cookie_age_count, 1) if cookie_age_count > 0 else 0
+        cycle_sum = float(redis_client.get(f'metrics:session_cycle_sum:{hoje}') or 0)
+        cycle_count = int(redis_client.get(f'metrics:session_cycle_count:{hoje}') or 0)
+        avg_session_cycle = round(cycle_sum / cycle_count, 1) if cycle_count > 0 else 0
+        hot_pool_accounts = 0
+        for acc in db.query(AccountBB).filter(AccountBB.last_login_at.isnot(None), AccountBB.cookie_payload.isnot(None)).all():
+            age = get_cookie_age_minutes(acc)
+            if age is not None and age < COOKIE_REUSE_MINUTES:
+                hot_pool_accounts += 1
 
         return jsonify({
             "active_accounts": active_accounts,
@@ -260,10 +524,103 @@ def admin_dashboard_stats():
             "logins_solicitados": logins_solicitados,
             "cookies_injetados": cookies_injetados,
             "robos_executados": robos_executados,
-            "economia_pct": economia_pct
+            "economia_pct": economia_pct,
+            "avg_cookie_age": avg_cookie_age,
+            "avg_session_cycle": avg_session_cycle,
+            "hot_pool_accounts": hot_pool_accounts,
+            "active_users_now": len(get_live_entries("live:setor:*")),
+            "workers_busy": len([w for w in get_worker_states() if w.get("state") not in ("idle", "starting")]),
+            "workers_total": len(get_worker_states()),
+            "queue_snapshot": get_queue_snapshot()
         })
     finally:
         db.close()
+
+@app.route('/api/admin/live_overview', methods=['GET'])
+@admin_required
+def admin_live_overview():
+    db = SessionLocal()
+    try:
+        accounts = db.query(AccountBB).all()
+        hot_sessions = []
+        backoff_accounts = []
+        for acc in accounts:
+            runtime = get_account_runtime(acc)
+            if runtime["cookie_hot"]:
+                hot_sessions.append({
+                    "account_id": acc.id,
+                    "login": acc.login,
+                    "titular": acc.titular or "",
+                    "setores": [s for s in (acc.setores or "").split("|") if s],
+                    "cookie_age_minutes": runtime["cookie_age_minutes"],
+                    "minutes_to_refresh": runtime["minutes_to_refresh"],
+                    "cookie_count": runtime["cookie_count"],
+                    "last_login_at": acc.last_login_at.isoformat() if acc.last_login_at else None
+                })
+            if runtime["backoff_seconds"] > 0:
+                backoff_accounts.append({
+                    "account_id": acc.id,
+                    "login": acc.login,
+                    "titular": acc.titular or "",
+                    "setores": [s for s in (acc.setores or "").split("|") if s],
+                    "backoff_seconds": runtime["backoff_seconds"]
+                })
+
+        hot_sessions.sort(key=lambda x: x["minutes_to_refresh"])
+        backoff_accounts.sort(key=lambda x: x["backoff_seconds"], reverse=True)
+
+        return jsonify({
+            "generated_at": get_local_now().strftime("%d/%m/%Y %H:%M:%S"),
+            "cookie_reuse_minutes": COOKIE_REUSE_MINUTES,
+            "queue": get_queue_snapshot(),
+            "workers": get_worker_states(),
+            "active_users": get_live_entries("live:setor:*"),
+            "active_accounts": get_live_entries("live:account:*"),
+            "hot_sessions": hot_sessions[:20],
+            "backoff_accounts": backoff_accounts[:20]
+        })
+    finally:
+        db.close()
+
+@app.route('/api/admin/recent_requests', methods=['GET'])
+@admin_required
+def admin_recent_requests():
+    limit = min(int(request.args.get('limit', 80)), 200)
+    items = []
+    for raw in redis_client.lrange("admin:recent_requests", 0, limit - 1):
+        data = parse_json_safe(raw)
+        if data:
+            items.append(data)
+    return jsonify(items)
+
+@app.route('/api/admin/error_images', methods=['GET'])
+@admin_required
+def admin_error_images():
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    shared_dir = os.path.join(base_dir, 'shared')
+    if not os.path.exists(shared_dir):
+        return jsonify([])
+
+    images = []
+    for name in os.listdir(shared_dir):
+        if not name.lower().endswith('.png'):
+            continue
+        lower_name = name.lower()
+        if 'erro' not in lower_name and 'error' not in lower_name:
+            continue
+        path = os.path.join(shared_dir, name)
+        try:
+            mtime = datetime.fromtimestamp(os.path.getmtime(path))
+        except OSError:
+            continue
+        images.append({
+            "name": name,
+            "url": f"/shared/{name}",
+            "date_str": mtime.strftime("%d/%m/%Y %H:%M"),
+            "ts": mtime.isoformat()
+        })
+    images.sort(key=lambda x: x["ts"], reverse=True)
+    return jsonify(images[:60])
 
 @app.route('/api/admin/analytics', methods=['GET'])
 @admin_required
@@ -280,12 +637,19 @@ def admin_analytics():
 
     total_logins = 0
     total_cookies = 0
+    total_cookie_age_sum = 0.0
+    total_cookie_age_count = 0
+    total_session_cycle_sum = 0.0
+    total_session_cycle_count = 0
+    max_session_cycle = 0.0
     
     sector_stats = {}
     account_stats = {}
     robot_success_stats = {}
     robot_error_stats = {}
     error_reasons_stats = {}
+    request_endpoint_stats = {}
+    request_outcome_stats = {}
     
     current_date = start_date
     while current_date <= end_date:
@@ -293,6 +657,11 @@ def admin_analytics():
         
         total_logins += int(redis_client.get(f'metrics:logins_solicitados:{day_str}') or 0)
         total_cookies += int(redis_client.get(f'metrics:cookies_injetados:{day_str}') or 0)
+        total_cookie_age_sum += float(redis_client.get(f'metrics:cookie_age_sum:{day_str}') or 0)
+        total_cookie_age_count += int(redis_client.get(f'metrics:cookie_age_count:{day_str}') or 0)
+        total_session_cycle_sum += float(redis_client.get(f'metrics:session_cycle_sum:{day_str}') or 0)
+        total_session_cycle_count += int(redis_client.get(f'metrics:session_cycle_count:{day_str}') or 0)
+        max_session_cycle = max(max_session_cycle, float(redis_client.get(f'metrics:session_cycle_max:{day_str}') or 0))
         
         for sec, count in redis_client.hgetall(f'metrics:sector_logins:{day_str}').items():
             sector_stats[sec] = sector_stats.get(sec, 0) + int(count)
@@ -309,6 +678,12 @@ def admin_analytics():
             
         for reason, count in redis_client.hgetall(f'metrics:error_reasons:{day_str}').items():
             error_reasons_stats[reason] = error_reasons_stats.get(reason, 0) + int(count)
+
+        for endpoint, count in redis_client.hgetall(f'metrics:request_endpoint:{day_str}').items():
+            request_endpoint_stats[endpoint] = request_endpoint_stats.get(endpoint, 0) + int(count)
+
+        for outcome, count in redis_client.hgetall(f'metrics:request_outcome:{day_str}').items():
+            request_outcome_stats[outcome] = request_outcome_stats.get(outcome, 0) + int(count)
             
         current_date += timedelta(days=1)
 
@@ -328,19 +703,28 @@ def admin_analytics():
     robots_data.sort(key=lambda x: x['name'])
     
     sorted_reasons = [{"reason": k, "count": v} for k, v in sorted(error_reasons_stats.items(), key=lambda x: x[1], reverse=True)]
+    sorted_endpoints = [{"name": k, "count": v} for k, v in sorted(request_endpoint_stats.items(), key=lambda x: x[1], reverse=True)]
+    sorted_outcomes = [{"name": k, "count": v} for k, v in sorted(request_outcome_stats.items(), key=lambda x: x[1], reverse=True)]
     economia_pct = round((total_cookies / total_logins) * 100, 1) if total_logins > 0 else 0
+    avg_cookie_age = round(total_cookie_age_sum / total_cookie_age_count, 1) if total_cookie_age_count > 0 else 0
+    avg_session_cycle = round(total_session_cycle_sum / total_session_cycle_count, 1) if total_session_cycle_count > 0 else 0
 
     return jsonify({
         "period": f"{start_str} a {end_str}",
         "efficiency": {
             "total_logins_requested": total_logins,
             "total_cookies_injected": total_cookies,
-            "economia_pct": economia_pct
+            "economia_pct": economia_pct,
+            "avg_cookie_age_minutes": avg_cookie_age,
+            "avg_session_cycle_minutes": avg_session_cycle,
+            "max_session_cycle_minutes": round(max_session_cycle, 1)
         },
         "sectors": sorted_sectors,
         "accounts": sorted_accounts,
         "robots_performance": robots_data,
-        "error_diagnostics": sorted_reasons
+        "error_diagnostics": sorted_reasons,
+        "request_endpoints": sorted_endpoints,
+        "request_outcomes": sorted_outcomes
     })
 
 @app.route('/api/admin/accounts', methods=['GET', 'POST'])
@@ -355,17 +739,24 @@ def gerenciar_contas():
                 lista_setores = [s for s in (acc.setores or "").split("|") if s]
                 if not lista_setores and acc.sector:
                     lista_setores = [acc.sector.nome]
+                runtime = get_account_runtime(acc)
 
                 result.append({
                     "id": acc.id,
                     "login": acc.login,
-                    "senha": acc.senha,
                     "titular": acc.titular or "Não informado",
                     "setores": lista_setores,
                     "status": acc.status,
                     "data_validade": acc.data_validade,
                     "status_updated_at": acc.status_updated_at.isoformat() if acc.status_updated_at else None,
-                    "last_login": acc.last_login_at.strftime("%d/%m/%Y %H:%M") if acc.last_login_at else "Nunca conectou"
+                    "last_login": acc.last_login_at.strftime("%d/%m/%Y %H:%M") if acc.last_login_at else "Nunca conectou",
+                    "last_login_at": acc.last_login_at.isoformat() if acc.last_login_at else None,
+                    "user_agent_used": trim_user_agent(acc.user_agent_used or "", 90),
+                    "cookie_hot": runtime["cookie_hot"],
+                    "cookie_age_minutes": runtime["cookie_age_minutes"],
+                    "minutes_to_refresh": runtime["minutes_to_refresh"],
+                    "backoff_seconds": runtime["backoff_seconds"],
+                    "cookie_count": runtime["cookie_count"]
                 })
             return jsonify(result)
             
@@ -393,6 +784,7 @@ def gerenciar_contas():
             account.setores = "|" + "|".join(setores_lista) + "|" if setores_lista else ""
             
             db.commit()
+            record_admin_audit("account_create", target=account.login, extra={"account_id": account.id})
             return jsonify({"mensagem": "Conta criada com sucesso!"})
     except Exception as e:
         db.rollback()
@@ -409,8 +801,10 @@ def editar_conta(account_id):
         if not acc: return jsonify({"erro": "Conta não encontrada."}), 404
         
         if request.method == 'DELETE':
+            login_ref = acc.login
             db.delete(acc)
             db.commit()
+            record_admin_audit("account_delete", target=login_ref, extra={"account_id": account_id})
             return jsonify({"mensagem": "Conta excluída."})
             
         elif request.method == 'PUT':
@@ -440,6 +834,7 @@ def editar_conta(account_id):
                 acc.setores = "|" + "|".join(setores_lista) + "|" if setores_lista else ""
             
             db.commit()
+            record_admin_audit("account_update", target=acc.login, extra={"account_id": acc.id})
             return jsonify({"mensagem": "Conta atualizada com sucesso!"})
     except Exception as e:
         db.rollback()
@@ -459,12 +854,37 @@ def clear_account_cookies(account_id):
         acc.last_login_at = None
         
         db.commit()
+        record_admin_audit("account_clear_cookies", target=acc.login, extra={"account_id": acc.id})
         return jsonify({"mensagem": "Sessão purgada com sucesso!"})
     except Exception as e:
         db.rollback()
         return jsonify({"erro": str(e)}), 500
     finally:
         db.close()
+
+@app.route('/api/admin/accounts/<int:account_id>/secret', methods=['GET'])
+@admin_required
+def get_account_secret(account_id):
+    db = SessionLocal()
+    try:
+        acc = db.query(AccountBB).filter(AccountBB.id == account_id).first()
+        if not acc:
+            return jsonify({"erro": "Conta não encontrada."}), 404
+        record_admin_audit("account_reveal_secret", target=acc.login, extra={"account_id": acc.id})
+        return jsonify({"login": acc.login, "senha": acc.senha})
+    finally:
+        db.close()
+
+@app.route('/api/admin/audit', methods=['GET'])
+@admin_required
+def admin_audit():
+    limit = min(int(request.args.get('limit', 40)), 200)
+    items = []
+    for raw in redis_client.lrange("admin:audit", 0, limit - 1):
+        data = parse_json_safe(raw)
+        if data:
+            items.append(data)
+    return jsonify(items)
 
 @app.route('/api/zerocore/reset', methods=['POST'])
 def api_reset():
