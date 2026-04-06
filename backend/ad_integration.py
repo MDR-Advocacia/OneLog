@@ -9,6 +9,7 @@ AD_SERVER_IP = os.getenv("AD_SERVER_IP", "206.42.43.192")
 AD_DOMAIN = os.getenv("AD_DOMAIN", "mdr.local")
 AD_BASE_DN = os.getenv("AD_BASE_DN", "DC=mdr,DC=local")
 AD_ADMIN_GROUP_DN = os.getenv("AD_ADMIN_GROUP_DN", "CN=Domain Admins,CN=Users,DC=mdr,DC=local")
+AD_ADMIN_GROUP_NAME = os.getenv("AD_ADMIN_GROUP_NAME", "Domain Admins")
 
 def _parse_int_attr(entry, attr_name, default=0):
     try:
@@ -35,6 +36,68 @@ def _is_entry_active(entry):
             return False
 
     return True
+
+def _normalize_dn(value):
+    return str(value or "").strip().lower()
+
+def _resolver_grupos_admin(conn):
+    grupos = []
+    grupo_dn_configurado = (AD_ADMIN_GROUP_DN or "").strip()
+    if grupo_dn_configurado:
+        grupos.append(grupo_dn_configurado)
+
+    grupo_nome = (AD_ADMIN_GROUP_NAME or "").strip()
+    if grupo_nome:
+        grupo_nome_escapado = escape_filter_chars(grupo_nome)
+        conn.search(
+            search_base=AD_BASE_DN,
+            search_filter=(
+                f"(&(objectClass=group)"
+                f"(|(cn={grupo_nome_escapado})"
+                f"(name={grupo_nome_escapado})"
+                f"(sAMAccountName={grupo_nome_escapado})))"
+            ),
+            search_scope=SUBTREE,
+            attributes=['distinguishedName', 'cn', 'sAMAccountName']
+        )
+        for entry in conn.entries:
+            dn = str(getattr(entry, 'distinguishedName', '') or '').strip()
+            if dn:
+                grupos.append(dn)
+
+    grupos_unicos = []
+    vistos = set()
+    for grupo_dn in grupos:
+        chave = _normalize_dn(grupo_dn)
+        if not chave or chave in vistos:
+            continue
+        vistos.add(chave)
+        grupos_unicos.append(grupo_dn)
+
+    logger.info(f"Grupos administrativos candidatos resolvidos no AD: {grupos_unicos}")
+    return grupos_unicos
+
+def _usuario_pertence_a_grupo_admin(conn, usuario, user_dn, grupos_admin_dn):
+    usuario_escapado = escape_filter_chars(usuario)
+    user_dn_escapado = escape_filter_chars(user_dn)
+
+    for grupo_dn in grupos_admin_dn:
+        grupo_escapado = escape_filter_chars(grupo_dn)
+        conn.search(
+            search_base=AD_BASE_DN,
+            search_filter=(
+                f"(&(objectClass=user)"
+                f"(sAMAccountName={usuario_escapado})"
+                f"(distinguishedName={user_dn_escapado})"
+                f"(memberOf:1.2.840.113556.1.4.1941:={grupo_escapado}))"
+            ),
+            search_scope=SUBTREE,
+            attributes=['distinguishedName']
+        )
+        if conn.entries:
+            return grupo_dn
+
+    return None
 
 def autenticar_e_obter_setor(usuario, senha):
     """
@@ -94,27 +157,48 @@ def autenticar_admin_ad(usuario, senha):
         logger.info(f"Autenticação administrativa bem-sucedida no AD para o usuário: {usuario}")
 
         usuario_escapado = escape_filter_chars(usuario)
-        grupo_escapado = escape_filter_chars(AD_ADMIN_GROUP_DN)
-
         conn.search(
             search_base=AD_BASE_DN,
-            search_filter=(
-                f"(&(objectClass=user)"
-                f"(sAMAccountName={usuario_escapado})"
-                f"(memberOf:1.2.840.113556.1.4.1941:={grupo_escapado}))"
-            ),
+            search_filter=f"(&(objectClass=user)(sAMAccountName={usuario_escapado}))",
             search_scope=SUBTREE,
             attributes=['distinguishedName', 'displayName', 'cn', 'mail', 'memberOf', 'sAMAccountName', 'userAccountControl', 'accountExpires']
         )
 
         if not conn.entries:
-            logger.warning(f"Usuário {usuario} autenticou no AD, mas não pertence ao grupo administrativo permitido.")
-            return {"status": "erro", "mensagem": "Acesso negado: usuário sem permissão administrativa."}
+            logger.warning(f"Usuário {usuario} autenticou no AD, mas não foi localizado na busca do diretório.")
+            return {"status": "erro", "mensagem": "Acesso negado: usuário não encontrado no diretório."}
 
         entry = conn.entries[0]
         if not _is_entry_active(entry):
             logger.warning(f"Usuário {usuario} pertence ao grupo administrativo, mas a conta do AD está inativa/desabilitada.")
             return {"status": "erro", "mensagem": "Acesso negado: conta do Windows inativa ou desabilitada."}
+
+        user_dn = str(getattr(entry, 'distinguishedName', '') or '').strip()
+        grupos_admin_dn = _resolver_grupos_admin(conn)
+        grupo_admin_match = _usuario_pertence_a_grupo_admin(conn, usuario, user_dn, grupos_admin_dn)
+
+        if not grupo_admin_match:
+            grupos_diretos = []
+            try:
+                member_of = getattr(entry, 'memberOf', None)
+                if member_of is not None:
+                    valores = getattr(member_of, 'values', None)
+                    if valores:
+                        grupos_diretos = [str(v) for v in valores]
+                    elif getattr(member_of, 'value', None):
+                        grupos_diretos = [str(member_of.value)]
+            except Exception:
+                grupos_diretos = []
+
+            grupos_diretos_normalizados = {_normalize_dn(item) for item in grupos_diretos if item}
+            for grupo_dn in grupos_admin_dn:
+                if _normalize_dn(grupo_dn) in grupos_diretos_normalizados:
+                    grupo_admin_match = grupo_dn
+                    break
+
+        if not grupo_admin_match:
+            logger.warning(f"Usuário {usuario} autenticou no AD, mas não pertence ao grupo administrativo permitido.")
+            return {"status": "erro", "mensagem": "Acesso negado: usuário sem permissão administrativa."}
 
         display_name = str(getattr(entry, 'displayName', '') or getattr(entry, 'cn', '') or usuario)
         email = str(getattr(entry, 'mail', '') or "")
@@ -124,7 +208,7 @@ def autenticar_admin_ad(usuario, senha):
             "usuario": str(getattr(entry, 'sAMAccountName', usuario) or usuario),
             "display_name": display_name,
             "email": email,
-            "grupo_admin": AD_ADMIN_GROUP_DN
+            "grupo_admin": grupo_admin_match
         }
 
     except Exception as e:
