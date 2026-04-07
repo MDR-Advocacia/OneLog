@@ -54,6 +54,8 @@ IDLE_PURGE_MIN_IDLE_SECONDS = int(os.getenv("IDLE_PURGE_MIN_IDLE_SECONDS", "1200
 IDLE_PURGE_INTERVAL_SECONDS = int(os.getenv("IDLE_PURGE_INTERVAL_SECONDS", "5400"))
 COOKIE_REUSE_MINUTES = int(os.getenv("COOKIE_REUSE_MINUTES", "22"))
 TASK_HEARTBEAT_INTERVAL_SECONDS = int(os.getenv("TASK_HEARTBEAT_INTERVAL_SECONDS", "15"))
+CLOUDFLARE_SECOND_LOOK_SECONDS = int(os.getenv("CLOUDFLARE_SECOND_LOOK_SECONDS", "10"))
+CLOUDFLARE_PASSWORD_WAIT_SECONDS = int(os.getenv("CLOUDFLARE_PASSWORD_WAIT_SECONDS", "35"))
 
 # ====================================================================
 # SISTEMA DE ROTAÇÃO DE PROXIES (PREPARAÇÃO PARA O MIKROTIK)
@@ -386,11 +388,36 @@ def processar_login(account_id, setor_solicitado, thread_id):
                         # O DETECTOR DE ARMADILHAS DO CLOUDFLARE (POPUP)
                         # =======================================================================
                         try:
-                            sb.wait_for_element("#idToken3", timeout=35)
+                            sb.wait_for_element("#idToken3", timeout=CLOUDFLARE_PASSWORD_WAIT_SECONDS)
                             logger.info(f"[ROBÔ {thread_id} | {setor}] >>> SUCESSO! Campo de senha apareceu!")
                         except Exception as wait_e:
-                            logger.error(f"[ROBÔ {thread_id} | {setor}] 🚨 ARMADILHA DETECTADA! O campo de senha não carregou. O Cloudflare abriu um popup inútil ou bloqueou o fluxo.")
-                            raise Exception(f"Armadilha Cloudflare: Popup inútil ou loop infinito bloqueou o campo de senha. Erro original: {wait_e}")
+                            cloudflare_ainda_visivel = False
+                            try:
+                                cloudflare_ainda_visivel = (
+                                    sb.is_element_visible("div.cf-turnstile")
+                                    or sb.is_text_visible("Verify you are human")
+                                    or sb.is_text_visible("Verifying")
+                                )
+                            except Exception:
+                                cloudflare_ainda_visivel = False
+
+                            if cloudflare_ainda_visivel:
+                                update_status(setor, "Cloudflare ainda em validação. Fazendo segunda checagem antes de abortar...", imagem=img, thread_id=thread_id)
+                            else:
+                                update_status(setor, "Tela lenta após desafio. Revalidando campo de senha antes de abortar...", imagem=img, thread_id=thread_id)
+
+                            sb.sleep(CLOUDFLARE_SECOND_LOOK_SECONDS)
+                            img = snapshot(sb, setor, f"03b_rechecagem_T{tentativa}", thread_id=thread_id)
+
+                            try:
+                                sb.wait_for_element("#idToken3", timeout=max(8, CLOUDFLARE_SECOND_LOOK_SECONDS))
+                                logger.info(f"[ROBÔ {thread_id} | {setor}] >>> Campo de senha apareceu na segunda checagem. Falso alarme evitado.")
+                            except Exception as second_wait_e:
+                                logger.error(f"[ROBÔ {thread_id} | {setor}] 🚨 ARMADILHA DETECTADA! O campo de senha não carregou mesmo após rechecagem.")
+                                raise Exception(
+                                    "Armadilha Cloudflare: campo de senha ausente após dupla checagem. "
+                                    f"Erro inicial: {wait_e}. Erro final: {second_wait_e}"
+                                )
                         # =======================================================================
                         
                         # TELEMETRIA: Sucesso de Autenticação (Fura-bloqueio)
@@ -485,7 +512,6 @@ def processar_login(account_id, setor_solicitado, thread_id):
                 elif "armadilha cloudflare" in err_msg:
                     motivo_falha = "Bloqueio Cloudflare (Armadilha/Popup)"
                     is_cloudflare_trap = True
-                    fail_fast = True
                 elif "timeout" in err_msg or "nosuchelement" in err_msg:
                     motivo_falha = "Timeout na Navegação / Elemento não encontrado"
                 else:
@@ -511,7 +537,7 @@ def processar_login(account_id, setor_solicitado, thread_id):
                         fail_fast = True
 
                 if is_cloudflare_trap:
-                    logger.warning(f"[ROBÔ {thread_id} | {setor}] Cloudflare explícito detectado. Abortando novas tentativas imediatas para não aprisionar a frota.")
+                    logger.warning(f"[ROBÔ {thread_id} | {setor}] Cloudflare explícito detectado após dupla checagem. Mantendo retry normal, sem cooldown pesado imediato.")
                 elif is_infra_error:
                     logger.warning(f"[ROBÔ {thread_id} | {setor}] Infraestrutura do host degradada. Abortando novas tentativas imediatas para poupar RAM/threads.")
                 
@@ -531,8 +557,6 @@ def processar_login(account_id, setor_solicitado, thread_id):
                     update_status(setor, f"Falha no processo. Nova tentativa automática em {max(1, backoff_seconds // 60)} min.", erro=True, imagem=img, thread_id=thread_id)
                     if is_infra_error:
                         activate_infra_cooldown(f"{setor} em quarentena por falha de infraestrutura", seconds=INFRA_COOLDOWN_SECONDS)
-                    elif is_cloudflare_trap:
-                        get_redis().setex("lock:cooldown", 300, "true")
                 else:
                     update_status(setor, f"Sessão queimada. Reiniciando navegador do zero (Tentativa {tentativa+1})...", imagem=img, thread_id=thread_id)
                     time.sleep(3)
