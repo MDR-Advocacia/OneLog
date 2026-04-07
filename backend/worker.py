@@ -6,6 +6,7 @@ import multiprocessing
 import signal
 import psutil
 import random
+import threading
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from seleniumbase import SB
@@ -52,6 +53,7 @@ PURGE_INFRA_COOLDOWN_SECONDS = int(os.getenv("PURGE_INFRA_COOLDOWN_SECONDS", "90
 IDLE_PURGE_MIN_IDLE_SECONDS = int(os.getenv("IDLE_PURGE_MIN_IDLE_SECONDS", "1200"))
 IDLE_PURGE_INTERVAL_SECONDS = int(os.getenv("IDLE_PURGE_INTERVAL_SECONDS", "5400"))
 COOKIE_REUSE_MINUTES = int(os.getenv("COOKIE_REUSE_MINUTES", "22"))
+TASK_HEARTBEAT_INTERVAL_SECONDS = int(os.getenv("TASK_HEARTBEAT_INTERVAL_SECONDS", "15"))
 
 # ====================================================================
 # SISTEMA DE ROTAÇÃO DE PROXIES (PREPARAÇÃO PARA O MIKROTIK)
@@ -212,6 +214,17 @@ def snapshot(sb, setor, nome_arquivo, thread_id=None):
     prefix = f"[ROBÔ {thread_id} | {setor}]" if thread_id else f"[{setor}]"
     logger.info(f"{prefix} 📸 Snapshot gerado: {img_url}")
     return img_url
+
+def start_task_heartbeat(thread_id):
+    stop_event = threading.Event()
+
+    def pulse():
+        while not stop_event.wait(TASK_HEARTBEAT_INTERVAL_SECONDS):
+            touch_heartbeat(thread_id)
+
+    heartbeat_thread = threading.Thread(target=pulse, daemon=True)
+    heartbeat_thread.start()
+    return stop_event
 
 def limpar_memoria_residual(sb_instance=None):
     """
@@ -462,12 +475,17 @@ def processar_login(account_id, setor_solicitado, thread_id):
                 
                 err_msg = str(e).lower()
                 is_infra_error = False
+                is_cloudflare_trap = False
+                fail_fast = False
                 
                 if "errno 11" in err_msg or "resource temporarily unavailable" in err_msg or "-5" in err_msg or "thread" in err_msg or "not reachable" in err_msg or "recursion" in err_msg:
                     motivo_falha = "Esgotamento de Recursos (OS/Docker)"
                     is_infra_error = True
+                    fail_fast = True
                 elif "armadilha cloudflare" in err_msg:
                     motivo_falha = "Bloqueio Cloudflare (Armadilha/Popup)"
+                    is_cloudflare_trap = True
+                    fail_fast = True
                 elif "timeout" in err_msg or "nosuchelement" in err_msg:
                     motivo_falha = "Timeout na Navegação / Elemento não encontrado"
                 else:
@@ -490,6 +508,12 @@ def processar_login(account_id, setor_solicitado, thread_id):
                     infra_fail_count = get_redis().incr("metrics:infra_consecutive_failures")
                     if infra_fail_count >= 3:
                         activate_infra_cooldown(f"pico de falhas de infraestrutura ({infra_fail_count} seguidas)")
+                        fail_fast = True
+
+                if is_cloudflare_trap:
+                    logger.warning(f"[ROBÔ {thread_id} | {setor}] Cloudflare explícito detectado. Abortando novas tentativas imediatas para não aprisionar a frota.")
+                elif is_infra_error:
+                    logger.warning(f"[ROBÔ {thread_id} | {setor}] Infraestrutura do host degradada. Abortando novas tentativas imediatas para poupar RAM/threads.")
                 
                 if sb_instance:
                      try:
@@ -500,11 +524,15 @@ def processar_login(account_id, setor_solicitado, thread_id):
                 
                 limpar_memoria_residual(sb_instance)
 
-                if tentativa == max_tentativas_gerais:
-                    logger.error(f"[ROBÔ {thread_id} | {setor}] FALHA DEFINITIVA APÓS {max_tentativas_gerais} TENTATIVAS.")
+                if tentativa == max_tentativas_gerais or fail_fast:
+                    logger.error(f"[ROBÔ {thread_id} | {setor}] FALHA DEFINITIVA APÓS {tentativa} TENTATIVA(S).")
                     backoff_seconds = ACCOUNT_INFRA_BACKOFF_SECONDS if is_infra_error else ACCOUNT_RETRY_BACKOFF_SECONDS
                     arm_account_backoff(account_id, motivo_falha, backoff_seconds)
                     update_status(setor, f"Falha no processo. Nova tentativa automática em {max(1, backoff_seconds // 60)} min.", erro=True, imagem=img, thread_id=thread_id)
+                    if is_infra_error:
+                        activate_infra_cooldown(f"{setor} em quarentena por falha de infraestrutura", seconds=INFRA_COOLDOWN_SECONDS)
+                    elif is_cloudflare_trap:
+                        get_redis().setex("lock:cooldown", 300, "true")
                 else:
                     update_status(setor, f"Sessão queimada. Reiniciando navegador do zero (Tentativa {tentativa+1})...", imagem=img, thread_id=thread_id)
                     time.sleep(3)
@@ -563,9 +591,11 @@ def worker_loop(thread_id):
             # ❤️ MONITOR CARDÍACO: O Robô assina o ponto antes de começar
             # =========================================================================
             touch_heartbeat(thread_id)
+            heartbeat_stop = start_task_heartbeat(thread_id)
             try:
                 processar_login(account_id, setor, thread_id)
             finally:
+                heartbeat_stop.set()
                 # Retira o pulso ao concluir (com sucesso ou falha limpa)
                 get_redis().delete(f"heartbeat:{thread_id}")
                 set_worker_state(thread_id, "idle", message="Aguardando missões...")
