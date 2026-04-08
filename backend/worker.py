@@ -60,7 +60,7 @@ CLOUDFLARE_PASSWORD_WAIT_SECONDS = int(os.getenv("CLOUDFLARE_PASSWORD_WAIT_SECON
 # ====================================================================
 # SISTEMA DE ROTAÇÃO DE PROXIES (PREPARAÇÃO PARA O MIKROTIK)
 # ====================================================================
-PROXY_ENV = os.getenv("PROXY_LIST", "socks5://206.42.43.192:45123")
+PROXY_ENV = os.getenv("PROXY_LIST", "socks5://189.124.176.141:45123")
 PROXY_LIST = [p.strip() for p in PROXY_ENV.split(',') if p.strip()]
 
 def get_random_proxy():
