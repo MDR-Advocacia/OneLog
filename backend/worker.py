@@ -346,10 +346,14 @@ def processar_login(account_id, setor_solicitado, thread_id):
                             logger.warning(f"[ROBÔ {thread_id} | {setor}] Aviso na faxina CDP: {cdp_e}")
                             
                         sb.delete_all_cookies()
-                        sb.execute_script("window.localStorage.clear(); window.sessionStorage.clear();")
+                        try:
+                            sb.execute_script("window.localStorage.clear(); window.sessionStorage.clear();")
+                        except Exception as storage_e:
+                            logger.warning(f"[ROBÔ {thread_id} | {setor}] Aviso na limpeza de local/session storage: {storage_e}")
                         try:
                             sb.execute_script("window.indexedDB.databases().then(dbs => dbs.forEach(db => window.indexedDB.deleteDatabase(db.name)))")
-                        except: pass
+                        except Exception as indexeddb_e:
+                            logger.warning(f"[ROBÔ {thread_id} | {setor}] Aviso na limpeza de IndexedDB: {indexeddb_e}")
                         
                         sb.open('https://loginweb.bb.com.br/sso/XUI/?realm=/paj&goto=https://juridico.bb.com.br/wfj#login')
                         sb.sleep(4)
