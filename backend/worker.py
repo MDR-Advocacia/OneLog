@@ -56,6 +56,14 @@ COOKIE_REUSE_MINUTES = int(os.getenv("COOKIE_REUSE_MINUTES", "22"))
 TASK_HEARTBEAT_INTERVAL_SECONDS = int(os.getenv("TASK_HEARTBEAT_INTERVAL_SECONDS", "15"))
 CLOUDFLARE_SECOND_LOOK_SECONDS = int(os.getenv("CLOUDFLARE_SECOND_LOOK_SECONDS", "10"))
 CLOUDFLARE_PASSWORD_WAIT_SECONDS = int(os.getenv("CLOUDFLARE_PASSWORD_WAIT_SECONDS", "35"))
+RESOURCE_GUARD_MIN_AVAILABLE_MB = int(os.getenv("RESOURCE_GUARD_MIN_AVAILABLE_MB", "900"))
+RESOURCE_GUARD_MAX_BROWSER_PROCS = int(os.getenv("RESOURCE_GUARD_MAX_BROWSER_PROCS", str(max(6, MAX_WORKERS * 4))))
+RESOURCE_GUARD_MAX_WAIT_SECONDS = int(os.getenv("RESOURCE_GUARD_MAX_WAIT_SECONDS", "75"))
+RESOURCE_GUARD_COOLDOWN_SECONDS = int(os.getenv("RESOURCE_GUARD_COOLDOWN_SECONDS", "180"))
+AUTO_DISPATCH_REFRESH_MARGIN_MINUTES = int(os.getenv("AUTO_DISPATCH_REFRESH_MARGIN_MINUTES", "4"))
+AUTO_DISPATCH_MAX_ENQUEUE_PER_CYCLE = int(os.getenv("AUTO_DISPATCH_MAX_ENQUEUE_PER_CYCLE", str(max(1, MAX_WORKERS - 1))))
+WORKER_RECYCLE_AFTER_TASKS = int(os.getenv("WORKER_RECYCLE_AFTER_TASKS", "8"))
+WORKER_RECYCLE_AFTER_SECONDS = int(os.getenv("WORKER_RECYCLE_AFTER_SECONDS", "7200"))
 
 # ====================================================================
 # SISTEMA DE ROTAÇÃO DE PROXIES (PREPARAÇÃO PARA O MIKROTIK)
@@ -90,15 +98,35 @@ def touch_heartbeat(thread_id):
     if thread_id:
         get_redis().set(f"heartbeat:{thread_id}", str(int(time.time())), ex=HEARTBEAT_TTL_SECONDS)
 
-def set_worker_state(thread_id, state, setor=None, message=None, account_id=None):
+def set_worker_state(
+    thread_id,
+    state,
+    setor=None,
+    message=None,
+    account_id=None,
+    requester_username=None,
+    requester_display_name=None,
+    request_id=None
+):
     if not thread_id:
         return
+    existing = {}
+    raw_existing = get_redis().get(f"worker:state:{thread_id}")
+    if raw_existing:
+        try:
+            existing = json.loads(raw_existing)
+        except Exception:
+            existing = {}
+    clear_context = state == "idle"
     payload = {
         "thread_id": thread_id,
         "state": state,
-        "setor": setor,
-        "message": message,
-        "account_id": account_id,
+        "setor": setor if setor is not None else existing.get("setor"),
+        "message": message if message is not None else existing.get("message"),
+        "account_id": None if clear_context else (account_id if account_id is not None else existing.get("account_id")),
+        "requester_username": None if clear_context else (requester_username if requester_username is not None else existing.get("requester_username")),
+        "requester_display_name": None if clear_context else (requester_display_name if requester_display_name is not None else existing.get("requester_display_name")),
+        "request_id": None if clear_context else (request_id if request_id is not None else existing.get("request_id")),
         "ts": int(time.time())
     }
     get_redis().set(f"worker:state:{thread_id}", json.dumps(payload), ex=HEARTBEAT_TTL_SECONDS)
@@ -193,6 +221,72 @@ def maybe_run_idle_purge():
         throttle_seconds=IDLE_PURGE_INTERVAL_SECONDS,
     )
 
+def count_browser_processes():
+    total = 0
+    try:
+        for proc in psutil.process_iter(['name', 'cmdline']):
+            try:
+                nome = (proc.info.get('name') or '').lower()
+                cmdline = " ".join(proc.info.get('cmdline') or []).lower()
+                if (
+                    "chrome" in nome
+                    or "chromedriver" in nome
+                    or "xvfb" in nome
+                    or "chromedriver" in cmdline
+                    or "chrome" in cmdline
+                ):
+                    total += 1
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+    except Exception:
+        return 0
+    return total
+
+def get_host_pressure_snapshot():
+    reasons = []
+    available_mb = None
+    browser_procs = count_browser_processes()
+    try:
+        available_mb = int(psutil.virtual_memory().available / (1024 * 1024))
+        if available_mb < RESOURCE_GUARD_MIN_AVAILABLE_MB:
+            reasons.append(f"memória livre baixa ({available_mb}MB)")
+    except Exception:
+        available_mb = None
+    if browser_procs >= RESOURCE_GUARD_MAX_BROWSER_PROCS:
+        reasons.append(f"excesso de processos de navegador ({browser_procs})")
+    return {
+        "available_mb": available_mb,
+        "browser_procs": browser_procs,
+        "reasons": reasons,
+        "under_pressure": bool(reasons),
+    }
+
+def wait_for_host_capacity(thread_id, setor, account_id=None):
+    deadline = time.time() + max(5, RESOURCE_GUARD_MAX_WAIT_SECONDS)
+    last_reason = None
+    purge_attempted = False
+
+    while time.time() < deadline:
+        snapshot = get_host_pressure_snapshot()
+        if not snapshot["under_pressure"]:
+            return None
+
+        reason = ", ".join(snapshot["reasons"])
+        last_reason = reason
+        set_worker_state(thread_id, "resource_guard", setor=setor, message=f"Host sob pressão: {reason}", account_id=account_id)
+        logger.warning(f"[ROBÔ {thread_id} | {setor}] Guardião de recursos segurando nova abertura: {reason}")
+
+        if not purge_attempted and not has_recent_other_heartbeats(exclude_thread_id=thread_id):
+            purge_attempted = True
+            activate_infra_cooldown(f"guardião de recursos: {reason}", seconds=RESOURCE_GUARD_COOLDOWN_SECONDS)
+            faxina_global_de_emergencia()
+            time.sleep(4)
+            continue
+
+        time.sleep(5)
+
+    return last_reason or "host sob pressão"
+
 def update_status(setor, msg, concluido=False, erro=False, imagem=None, thread_id=None):
     touch_heartbeat(thread_id)
     set_worker_state(thread_id, "running", setor=setor, message=msg)
@@ -268,7 +362,7 @@ def faxina_global_de_emergencia():
     except Exception as e:
         logger.error(f"Erro no expurgo global: {e}")
 
-def processar_login(account_id, setor_solicitado, thread_id):
+def processar_login(account_id, setor_solicitado, thread_id, requester_username=None, requester_display_name=None, request_id=None):
     db = SessionLocal()
     hoje = datetime.utcnow().strftime('%Y-%m-%d')
     
@@ -276,6 +370,14 @@ def processar_login(account_id, setor_solicitado, thread_id):
         account = db.query(AccountBB).filter(AccountBB.id == int(account_id)).first()
         if not account: return
         touch_heartbeat(thread_id)
+        if requester_username or request_id:
+            solicitante = requester_display_name or requester_username
+            logger.info(
+                f"[ROBÔ {thread_id} | {setor_solicitado}] Origem da solicitação: "
+                f"{solicitante or 'desconhecida'}"
+                f"{f' ({requester_username})' if requester_display_name and requester_username else ''}"
+                f"{f' | req={request_id}' if request_id else ''}"
+            )
 
         cooldown_restante = get_account_backoff_seconds(account_id)
         if cooldown_restante > 0:
@@ -313,6 +415,10 @@ def processar_login(account_id, setor_solicitado, thread_id):
             startup_lock = False
             
             try:
+                host_pressure_reason = wait_for_host_capacity(thread_id, setor, account_id=account_id)
+                if host_pressure_reason:
+                    raise Exception(f"Host sobrecarregado antes de abrir Chrome: {host_pressure_reason}")
+
                 logger.info(f"[ROBÔ {thread_id} | {setor}] IP/Proxy alocado para esta missão: {proxy_escolhido}")
 
                 while not get_redis().set("lock:chrome_startup", str(thread_id), ex=CHROME_STARTUP_LOCK_TTL, nx=True):
@@ -509,7 +615,19 @@ def processar_login(account_id, setor_solicitado, thread_id):
                 is_cloudflare_trap = False
                 fail_fast = False
                 
-                if "errno 11" in err_msg or "resource temporarily unavailable" in err_msg or "-5" in err_msg or "thread" in err_msg or "not reachable" in err_msg or "recursion" in err_msg:
+                if (
+                    "errno 11" in err_msg
+                    or "resource temporarily unavailable" in err_msg
+                    or "-5" in err_msg
+                    or "failed to start a thread" in err_msg
+                    or "host sobrecarregado" in err_msg
+                    or "cannot connect to chrome" in err_msg
+                    or "session not created" in err_msg
+                    or "not reachable" in err_msg
+                    or "unable to discover open pages" in err_msg
+                    or "recursion" in err_msg
+                    or "chrome not reachable" in err_msg
+                ):
                     motivo_falha = "Esgotamento de Recursos (OS/Docker)"
                     is_infra_error = True
                     fail_fast = True
@@ -553,6 +671,9 @@ def processar_login(account_id, setor_solicitado, thread_id):
                 else: img = None
                 
                 limpar_memoria_residual(sb_instance)
+                if is_infra_error and not has_recent_other_heartbeats(exclude_thread_id=thread_id):
+                    logger.warning(f"[ROBÔ {thread_id} | {setor}] Sem outros robôs ativos. Acionando faxina global automática para evitar reset manual.")
+                    faxina_global_de_emergencia()
 
                 if tentativa == max_tentativas_gerais or fail_fast:
                     logger.error(f"[ROBÔ {thread_id} | {setor}] FALHA DEFINITIVA APÓS {tentativa} TENTATIVA(S).")
@@ -570,6 +691,8 @@ def processar_login(account_id, setor_solicitado, thread_id):
 def worker_loop(thread_id):
     logger.info(f"[ROBÔ {thread_id}] Em posição e aguardando missões...")
     set_worker_state(thread_id, "idle", message="Em posição e aguardando missões...")
+    tarefas_processadas = 0
+    started_at = time.time()
     
     while True:
         try:
@@ -603,16 +726,40 @@ def worker_loop(thread_id):
                 account_id = task_data['id']
                 setor = task_data['setor']
                 is_priority = task_data.get('priority', False)
+                requester_username = task_data.get('requester_username')
+                requester_display_name = task_data.get('requester_display_name')
+                request_id = task_data.get('request_id')
             except Exception:
                 account_id = task_data_str
                 setor = "GERAL"
                 is_priority = False
+                requester_username = None
+                requester_display_name = None
+                request_id = None
 
             if is_priority:
-                logger.info(f"[ROBÔ {thread_id} | {setor}] 🚨 EMERGÊNCIA VIP 🚨 Conta ID: {account_id} (Fura-fila acionado)")
+                logger.info(
+                    f"[ROBÔ {thread_id} | {setor}] 🚨 EMERGÊNCIA VIP 🚨 Conta ID: {account_id} "
+                    f"(Fura-fila acionado)"
+                    f"{f' | solicitante={requester_username}' if requester_username else ''}"
+                    f"{f' | req={request_id}' if request_id else ''}"
+                )
             else:
-                logger.info(f"[ROBÔ {thread_id} | {setor}] Nova tarefa capturada! Conta ID: {account_id}")
-            set_worker_state(thread_id, "running", setor=setor, message="Nova tarefa capturada", account_id=account_id)
+                logger.info(
+                    f"[ROBÔ {thread_id} | {setor}] Nova tarefa capturada! Conta ID: {account_id}"
+                    f"{f' | solicitante={requester_username}' if requester_username else ''}"
+                    f"{f' | req={request_id}' if request_id else ''}"
+                )
+            set_worker_state(
+                thread_id,
+                "running",
+                setor=setor,
+                message="Nova tarefa capturada",
+                account_id=account_id,
+                requester_username=requester_username,
+                requester_display_name=requester_display_name,
+                request_id=request_id
+            )
             mark_system_activity()
                 
             # =========================================================================
@@ -621,12 +768,31 @@ def worker_loop(thread_id):
             touch_heartbeat(thread_id)
             heartbeat_stop = start_task_heartbeat(thread_id)
             try:
-                processar_login(account_id, setor, thread_id)
+                processar_login(
+                    account_id,
+                    setor,
+                    thread_id,
+                    requester_username=requester_username,
+                    requester_display_name=requester_display_name,
+                    request_id=request_id
+                )
             finally:
                 heartbeat_stop.set()
                 # Retira o pulso ao concluir (com sucesso ou falha limpa)
                 get_redis().delete(f"heartbeat:{thread_id}")
                 set_worker_state(thread_id, "idle", message="Aguardando missões...")
+                tarefas_processadas += 1
+                worker_uptime = int(time.time() - started_at)
+                reached_task_limit = WORKER_RECYCLE_AFTER_TASKS > 0 and tarefas_processadas >= WORKER_RECYCLE_AFTER_TASKS
+                reached_time_limit = WORKER_RECYCLE_AFTER_SECONDS > 0 and worker_uptime >= WORKER_RECYCLE_AFTER_SECONDS
+                if reached_task_limit or reached_time_limit:
+                    motivo = (
+                        f"{tarefas_processadas} tarefas concluídas"
+                        if reached_task_limit
+                        else f"uptime de {worker_uptime}s"
+                    )
+                    logger.warning(f"[ROBÔ {thread_id}] Reciclagem automática acionada após {motivo}. Encerrando processo para renascer limpo.")
+                    return
             
         except Exception as e:
             logger.error(f"[ROBÔ {thread_id}] Erro no loop principal: {e}")
@@ -660,22 +826,20 @@ def auto_dispatcher():
                     AccountBB.status.in_(['active', 'ativo', 'provisoria_recebida', 'termo_assinado'])
                 ).order_by(AccountBB.id.asc()).all()
 
-                setores_processados = set() 
                 menor_tempo_para_vencer = float(COOKIE_REUSE_MINUTES)
                 tarefas_enfileiradas = 0
                 
                 for acc in contas:
+                    if AUTO_DISPATCH_MAX_ENQUEUE_PER_CYCLE > 0 and tarefas_enfileiradas >= AUTO_DISPATCH_MAX_ENQUEUE_PER_CYCLE:
+                        break
+
                     setor = "GERAL"
                     if acc.setores:
                         setores_list = [s for s in acc.setores.split('|') if s]
                         if setores_list: setor = setores_list[0]
-                    
-                    if setor in setores_processados:
-                        continue
-                        
-                    setores_processados.add(setor)
 
                     precisa_renovar = False
+                    refresh_threshold = max(1.0, float(COOKIE_REUSE_MINUTES) - float(AUTO_DISPATCH_REFRESH_MARGIN_MINUTES))
                     
                     # Lógica para saber quanto tempo de paz nós temos
                     if acc.cookie_payload and acc.last_login_at:
@@ -685,7 +849,7 @@ def auto_dispatcher():
                         if tempo_restante < menor_tempo_para_vencer:
                             menor_tempo_para_vencer = tempo_restante
                             
-                        if minutos_passados >= COOKIE_REUSE_MINUTES:
+                        if minutos_passados >= refresh_threshold:
                             precisa_renovar = True
                     else:
                         precisa_renovar = True

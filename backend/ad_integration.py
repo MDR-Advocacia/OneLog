@@ -117,7 +117,7 @@ def autenticar_e_obter_setor(usuario, senha):
             search_base=base_dn,
             search_filter=f'(sAMAccountName={usuario})',
             search_scope=SUBTREE,
-            attributes=['distinguishedName', 'userAccountControl', 'accountExpires']
+            attributes=['distinguishedName', 'displayName', 'cn', 'mail', 'sAMAccountName', 'userAccountControl', 'accountExpires']
         )
         
         if conn.entries:
@@ -131,8 +131,17 @@ def autenticar_e_obter_setor(usuario, senha):
             for parte in partes:
                 if parte.startswith('OU=BB_'):
                     setor = parte.replace('OU=', '')
+                    display_name = str(getattr(entry, 'displayName', '') or getattr(entry, 'cn', '') or usuario)
+                    email = str(getattr(entry, 'mail', '') or "")
+                    username = str(getattr(entry, 'sAMAccountName', usuario) or usuario)
                     logger.info(f"Usuário {usuario} pertence ao setor: {setor}")
-                    return {"status": "sucesso", "setor": setor}
+                    return {
+                        "status": "sucesso",
+                        "setor": setor,
+                        "usuario": username,
+                        "display_name": display_name,
+                        "email": email
+                    }
                     
             logger.warning(f"Usuário {usuario} logou, mas não pertence a nenhuma OU BB_.")
             return {"status": "erro", "mensagem": "Acesso negado: Você não está alocado em um setor do Banco do Brasil."}
