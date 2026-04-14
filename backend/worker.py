@@ -70,6 +70,7 @@ WORKER_RECYCLE_AFTER_SECONDS = int(os.getenv("WORKER_RECYCLE_AFTER_SECONDS", "72
 # ====================================================================
 PROXY_ENV = os.getenv("PROXY_LIST", "socks5://189.124.176.141:45123")
 PROXY_LIST = [p.strip() for p in PROXY_ENV.split(',') if p.strip()]
+BROWSER_PROCESS_TERMS = ("chrome", "chromedriver", "chrome_crashpad", "xvfb")
 
 def get_random_proxy():
     if not PROXY_LIST:
@@ -221,20 +222,36 @@ def maybe_run_idle_purge():
         throttle_seconds=IDLE_PURGE_INTERVAL_SECONDS,
     )
 
+def is_browser_process(proc_info):
+    nome = (proc_info.get('name') or '').lower()
+    cmdline = " ".join(proc_info.get('cmdline') or []).lower()
+    status = str(proc_info.get('status') or '').lower()
+    if status == 'zombie' or '<defunct>' in nome or '<defunct>' in cmdline:
+        return False
+    return any(term in nome or term in cmdline for term in BROWSER_PROCESS_TERMS)
+
+def reap_finished_children():
+    reaped = 0
+    while True:
+        try:
+            pid, _ = os.waitpid(-1, os.WNOHANG)
+            if pid == 0:
+                break
+            reaped += 1
+        except ChildProcessError:
+            break
+        except OSError:
+            break
+    if reaped:
+        logger.info(f"🧼 Reaper recolheu {reaped} processo(s) filho(s) finalizado(s).")
+    return reaped
+
 def count_browser_processes():
     total = 0
     try:
-        for proc in psutil.process_iter(['name', 'cmdline']):
+        for proc in psutil.process_iter(['name', 'cmdline', 'status']):
             try:
-                nome = (proc.info.get('name') or '').lower()
-                cmdline = " ".join(proc.info.get('cmdline') or []).lower()
-                if (
-                    "chrome" in nome
-                    or "chromedriver" in nome
-                    or "xvfb" in nome
-                    or "chromedriver" in cmdline
-                    or "chrome" in cmdline
-                ):
+                if is_browser_process(proc.info):
                     total += 1
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 continue
@@ -339,28 +356,34 @@ def limpar_memoria_residual(sb_instance=None):
         proc = psutil.Process(os.getpid())
         for child in proc.children(recursive=True):
             try:
-                nome = child.name().lower()
-                if "chrome" in nome or "chromedriver" in nome or "xvfb" in nome:
+                child_info = {
+                    "name": child.name(),
+                    "cmdline": child.cmdline(),
+                    "status": child.status()
+                }
+                if is_browser_process(child_info):
                     child.kill()
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass
     except Exception:
         pass
+    finally:
+        reap_finished_children()
 
 def faxina_global_de_emergencia():
     """Vassoura nuclear: elimina qualquer Chrome do sistema (incluindo órfãos) para restaurar a RAM."""
     logger.warning("🧹 Iniciando EXPURGO GLOBAL para limpar zombies órfãos do Docker e restaurar a RAM a 100%!")
     try:
-        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'status']):
             try:
-                nome = proc.info.get('name', '').lower()
-                cmdline = " ".join(proc.info.get('cmdline', []) or []).lower()
-                if "chrome" in nome or "chromedriver" in nome or "xvfb" in nome or "chrome" in cmdline:
+                if is_browser_process(proc.info):
                     proc.kill()
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 pass
     except Exception as e:
         logger.error(f"Erro no expurgo global: {e}")
+    finally:
+        reap_finished_children()
 
 def processar_login(account_id, setor_solicitado, thread_id, requester_username=None, requester_display_name=None, request_id=None):
     db = SessionLocal()
@@ -682,6 +705,7 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                     update_status(setor, f"Falha no processo. Nova tentativa automática em {max(1, backoff_seconds // 60)} min.", erro=True, imagem=img, thread_id=thread_id)
                     if is_infra_error:
                         activate_infra_cooldown(f"{setor} em quarentena por falha de infraestrutura", seconds=INFRA_COOLDOWN_SECONDS)
+                    return
                 else:
                     update_status(setor, f"Sessão queimada. Reiniciando navegador do zero (Tentativa {tentativa+1})...", imagem=img, thread_id=thread_id)
                     time.sleep(3)

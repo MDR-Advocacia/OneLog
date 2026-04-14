@@ -1,10 +1,14 @@
-from flask import Flask, jsonify, request, send_from_directory, g
+from flask import Flask, jsonify, request, send_from_directory, g, Response
 from flask_cors import CORS
 import redis
 import json
 import os
 import time
 import secrets
+import logging
+import sys
+import re
+from collections import Counter, deque
 from datetime import datetime, timedelta
 from database import SessionLocal, Sector, AccountBB, init_db, seed_db
 from ad_integration import autenticar_e_obter_setor, autenticar_admin_ad, listar_ous_bb_ad
@@ -14,6 +18,23 @@ from zoneinfo import ZoneInfo
 app = Flask(__name__)
 CORS(app)
 
+APP_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+SHARED_DIR = os.path.join(APP_BASE_DIR, 'shared')
+if not os.path.exists(SHARED_DIR):
+    os.makedirs(SHARED_DIR)
+
+api_logger = logging.getLogger("onelog.api")
+if not api_logger.handlers:
+    api_logger.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(asctime)s - API - %(message)s')
+    file_handler = logging.FileHandler(os.path.join(SHARED_DIR, "api_debug.log"), encoding='utf-8')
+    file_handler.setFormatter(formatter)
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.setFormatter(formatter)
+    api_logger.addHandler(file_handler)
+    api_logger.addHandler(stream_handler)
+    api_logger.propagate = False
+
 ADMIN_BREAKGLASS_TOKEN = os.getenv("ADMIN_BREAKGLASS_TOKEN", "").strip()
 redis_client = redis.Redis.from_url(os.getenv('REDIS_URL', 'redis://localhost:6379/0'), decode_responses=True)
 COOKIE_REUSE_MINUTES = int(os.getenv("COOKIE_REUSE_MINUTES", "22"))
@@ -22,6 +43,8 @@ RECENT_REQUESTS_LIMIT = int(os.getenv("RECENT_REQUESTS_LIMIT", "300"))
 ACTIVE_CLIENT_TTL_SECONDS = int(os.getenv("ACTIVE_CLIENT_TTL_SECONDS", "2700"))
 RECENT_REQUEST_WINDOW_MINUTES = int(os.getenv("RECENT_REQUEST_WINDOW_MINUTES", "30"))
 ADMIN_SESSION_TTL_SECONDS = int(os.getenv("ADMIN_SESSION_TTL_SECONDS", "28800"))
+LOG_TAIL_LIMIT = int(os.getenv("LOG_TAIL_LIMIT", "200"))
+LOG_LINE_RE = re.compile(r'^(?P<raw_ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+\s-\s(?P<channel>[A-Z_]+)\s-\s(?P<message>.*)$')
 
 def get_local_now():
     try:
@@ -101,6 +124,17 @@ def record_request_event(endpoint, setor_nome=None, account=None, outcome=None, 
     if outcome:
         redis_client.hincrby(f"metrics:request_outcome:{today}", outcome, 1)
     push_recent_request(event)
+    api_logger.info(
+        "[REQ] endpoint=%s outcome=%s setor=%s account=%s requester=%s req=%s ip=%s cookie_age=%s",
+        endpoint,
+        outcome or "-",
+        setor_nome or "-",
+        account.login if account else "-",
+        (requester or {}).get("username") or "-",
+        request_id or "-",
+        event["ip"],
+        event.get("cookie_age_minutes", "-"),
+    )
     mark_live_activity(
         setor_nome=setor_nome,
         account=account,
@@ -144,6 +178,198 @@ def parse_json_safe(raw):
         return json.loads(raw)
     except Exception:
         return None
+
+def get_requested_day(day_str=None):
+    if not day_str:
+        return get_local_now().strftime('%Y-%m-%d')
+    try:
+        return datetime.strptime(day_str, '%Y-%m-%d').strftime('%Y-%m-%d')
+    except ValueError:
+        return None
+
+def parse_iso_timestamp(raw_ts):
+    if not raw_ts:
+        return None
+    try:
+        return datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+def get_log_sources(source="combined"):
+    selected = (source or "combined").lower()
+    mapping = {
+        "worker": ("worker", os.path.join(SHARED_DIR, "worker_debug.log")),
+        "api": ("api", os.path.join(SHARED_DIR, "api_debug.log")),
+    }
+    if selected in mapping:
+        return [mapping[selected]]
+    return [mapping["worker"], mapping["api"]]
+
+def iter_log_lines(file_path, source_name, day=None, contains=None):
+    if not os.path.exists(file_path):
+        return
+    contains_filter = (contains or "").lower().strip()
+    with open(file_path, 'r', encoding='utf-8', errors='replace') as handle:
+        for raw_line in handle:
+            line = raw_line.rstrip('\n')
+            match = LOG_LINE_RE.match(line)
+            if not match:
+                continue
+            raw_ts = match.group("raw_ts")
+            if day and raw_ts[:10] != day:
+                continue
+            if contains_filter and contains_filter not in line.lower():
+                continue
+            yield {
+                "source": source_name,
+                "ts": raw_ts,
+                "line": line,
+                "message": match.group("message"),
+            }
+
+def read_log_tail(source="combined", day=None, limit=120, contains=None):
+    max_lines = min(max(int(limit or 120), 1), LOG_TAIL_LIMIT)
+    per_source = max_lines if source in ("api", "worker") else max_lines * 3
+    items = []
+    for source_name, file_path in get_log_sources(source):
+        tail = deque(maxlen=per_source)
+        for item in iter_log_lines(file_path, source_name, day=day, contains=contains):
+            tail.append(item)
+        items.extend(list(tail))
+    items.sort(key=lambda item: item["ts"])
+    return items[-max_lines:]
+
+def stream_log_download(source="combined", day=None, contains=None):
+    for source_name, file_path in get_log_sources(source):
+        for item in iter_log_lines(file_path, source_name, day=day, contains=contains):
+            yield item["line"] + "\n"
+
+def get_queue_entries():
+    items = []
+    for queue_name in ("queue:priority_logins", "queue:login_requests"):
+        for raw in redis_client.lrange(queue_name, 0, -1):
+            payload = parse_json_safe(raw) or {}
+            items.append({
+                "queue": queue_name,
+                "account_id": payload.get("id"),
+                "setor": payload.get("setor"),
+                "request_id": payload.get("request_id"),
+                "requester_username": payload.get("requester_username"),
+                "auto": bool(payload.get("auto")),
+            })
+    return items
+
+def build_sync_pressure_snapshot(window_minutes=30):
+    now = datetime.utcnow()
+    cutoff = now - timedelta(minutes=window_minutes)
+    recent_items = []
+    for raw in redis_client.lrange("admin:recent_requests", 0, RECENT_REQUESTS_LIMIT - 1):
+        data = parse_json_safe(raw)
+        if not data:
+            continue
+        ts = parse_iso_timestamp(data.get("ts"))
+        if not ts or ts < cutoff:
+            continue
+        recent_items.append(data)
+
+    queue_entries = get_queue_entries()
+    queue_by_sector = Counter()
+    auto_queue_by_sector = Counter()
+    lock_count = 0
+    for key in redis_client.scan_iter("lock:queue:*"):
+        if key:
+            lock_count += 1
+    for item in queue_entries:
+        setor = item.get("setor") or "Sem setor"
+        queue_by_sector[setor] += 1
+        if item.get("auto"):
+            auto_queue_by_sector[setor] += 1
+
+    sectors = {}
+    totals = Counter()
+    for item in recent_items:
+        setor = item.get("setor") or "Sem setor"
+        entry = sectors.setdefault(setor, {
+            "setor": setor,
+            "awaiting_sync": 0,
+            "status_events": 0,
+            "queued": 0,
+            "already_queued": 0,
+            "pool_hot": 0,
+            "pool_hit": 0,
+            "cookie_returned": 0,
+            "unique_ips": set(),
+            "unique_requesters": set(),
+            "last_seen": item.get("ts_local") or item.get("ts") or "-",
+        })
+        outcome = (item.get("outcome") or "").lower()
+        endpoint = (item.get("endpoint") or "").lower()
+        if outcome == "awaiting_sync":
+            entry["awaiting_sync"] += 1
+            totals["awaiting_sync"] += 1
+        if outcome == "already_queued":
+            entry["already_queued"] += 1
+            totals["already_queued"] += 1
+        if outcome == "queued":
+            entry["queued"] += 1
+            totals["queued"] += 1
+        if outcome == "pool_hot":
+            entry["pool_hot"] += 1
+            totals["pool_hot"] += 1
+        if outcome == "pool_hit":
+            entry["pool_hit"] += 1
+            totals["pool_hit"] += 1
+        if outcome == "cookie_returned":
+            entry["cookie_returned"] += 1
+            totals["cookie_returned"] += 1
+        if endpoint == "status":
+            entry["status_events"] += 1
+            totals["status_events"] += 1
+        if item.get("ip"):
+            entry["unique_ips"].add(item["ip"])
+        requester_name = item.get("requester_username") or item.get("requester_display_name")
+        if requester_name:
+            entry["unique_requesters"].add(requester_name)
+
+    sector_rows = []
+    for setor, entry in sectors.items():
+        queue_depth = queue_by_sector.get(setor, 0)
+        auto_queue_depth = auto_queue_by_sector.get(setor, 0)
+        sector_rows.append({
+            "setor": setor,
+            "awaiting_sync": entry["awaiting_sync"],
+            "status_events": entry["status_events"],
+            "queued": entry["queued"],
+            "already_queued": entry["already_queued"],
+            "pool_hot": entry["pool_hot"],
+            "pool_hit": entry["pool_hit"],
+            "cookie_returned": entry["cookie_returned"],
+            "unique_ip_count": len(entry["unique_ips"]),
+            "unique_requester_count": len(entry["unique_requesters"]),
+            "queue_depth": queue_depth,
+            "auto_queue_depth": auto_queue_depth,
+            "last_seen": entry["last_seen"],
+            "pressure_score": entry["awaiting_sync"] + entry["already_queued"] + (queue_depth * 3) + (auto_queue_depth * 2),
+        })
+    sector_rows.sort(key=lambda item: (-item["pressure_score"], -item["awaiting_sync"], item["setor"]))
+
+    return {
+        "generated_at": get_local_now().strftime("%d/%m/%Y %H:%M:%S"),
+        "window_minutes": window_minutes,
+        "totals": {
+            "awaiting_sync": totals["awaiting_sync"],
+            "status_events": totals["status_events"],
+            "queued": totals["queued"],
+            "already_queued": totals["already_queued"],
+            "pool_hot": totals["pool_hot"],
+            "pool_hit": totals["pool_hit"],
+            "cookie_returned": totals["cookie_returned"],
+            "queue_entries": len(queue_entries),
+            "auto_queue_entries": sum(1 for item in queue_entries if item.get("auto")),
+            "locked_accounts": lock_count,
+        },
+        "sectors": sector_rows[:20],
+    }
 
 def get_live_entries(prefix):
     items = []
@@ -318,9 +544,7 @@ def serve_privacy():
 
 @app.route('/shared/<path:filename>')
 def serve_shared(filename):
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    shared_dir = os.path.join(base_dir, 'shared')
-    return send_from_directory(shared_dir, filename)
+    return send_from_directory(SHARED_DIR, filename)
 
 # --- ROTAS DE OPERAÇÃO (EXTENSÃO) ---
 @app.route('/api/zerocore/status', methods=['GET'])
@@ -642,22 +866,58 @@ def admin_recent_requests():
             items.append(data)
     return jsonify(items)
 
+@app.route('/api/admin/sync_pressure', methods=['GET'])
+@admin_required
+def admin_sync_pressure():
+    window_minutes = min(max(int(request.args.get('minutes', 30)), 5), 240)
+    return jsonify(build_sync_pressure_snapshot(window_minutes=window_minutes))
+
+@app.route('/api/admin/logs/live', methods=['GET'])
+@admin_required
+def admin_logs_live():
+    source = request.args.get('source', 'combined')
+    day = get_requested_day(request.args.get('day'))
+    if day is None:
+        return jsonify({"erro": "Data inválida. Use YYYY-MM-DD"}), 400
+    limit = min(max(int(request.args.get('limit', 120)), 20), LOG_TAIL_LIMIT)
+    contains = (request.args.get('contains') or '').strip()
+    return jsonify({
+        "generated_at": get_local_now().strftime("%d/%m/%Y %H:%M:%S"),
+        "source": source,
+        "day": day,
+        "limit": limit,
+        "contains": contains,
+        "items": read_log_tail(source=source, day=day, limit=limit, contains=contains)
+    })
+
+@app.route('/api/admin/logs/download', methods=['GET'])
+@admin_required
+def admin_logs_download():
+    source = request.args.get('source', 'combined')
+    day = get_requested_day(request.args.get('day'))
+    if day is None:
+        return jsonify({"erro": "Data inválida. Use YYYY-MM-DD"}), 400
+    contains = (request.args.get('contains') or '').strip()
+    filename = f"onelog_{source}_{day}.log"
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"'
+    }
+    return Response(stream_log_download(source=source, day=day, contains=contains), mimetype='text/plain; charset=utf-8', headers=headers)
+
 @app.route('/api/admin/error_images', methods=['GET'])
 @admin_required
 def admin_error_images():
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    shared_dir = os.path.join(base_dir, 'shared')
-    if not os.path.exists(shared_dir):
+    if not os.path.exists(SHARED_DIR):
         return jsonify([])
 
     images = []
-    for name in os.listdir(shared_dir):
+    for name in os.listdir(SHARED_DIR):
         if not name.lower().endswith('.png'):
             continue
         lower_name = name.lower()
         if 'erro' not in lower_name and 'error' not in lower_name:
             continue
-        path = os.path.join(shared_dir, name)
+        path = os.path.join(SHARED_DIR, name)
         try:
             mtime = datetime.fromtimestamp(os.path.getmtime(path))
         except OSError:

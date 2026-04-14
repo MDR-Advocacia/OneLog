@@ -4,60 +4,22 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>OneLog - Painel de Controle</title>
-    
-    <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
-    
-    <!-- FontAwesome -->
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    
-    <!-- React & ReactDOM -->
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-    
-    <!-- Babel (Compila o JSX no navegador) -->
     <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
-
     <style>
-        .custom-scroll::-webkit-scrollbar { width: 6px; }
-        .custom-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        .custom-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+        .custom-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 999px; }
+        .custom-scroll::-webkit-scrollbar-track { background: #f8fafc; }
     </style>
 </head>
-<body class="bg-gray-50 min-h-screen font-sans text-gray-800">
-    
+<body class="bg-slate-100 min-h-screen text-slate-800">
     <div id="root"></div>
 
     <script type="text/babel">
         const { useState, useEffect, useMemo, useCallback } = React;
-
-        // ============================================================================
-        // MÓDULO 1: COMPONENTES UI COMPARTILHADOS
-        // ============================================================================
-        
-        const KpiCard = ({ title, value, subtitle, icon, colorClass }) => (
-            <div className={`bg-white p-6 rounded-xl shadow-sm border-l-4 ${colorClass}`}>
-                <h3 className="text-gray-500 text-xs font-bold uppercase">{title}</h3>
-                <p className={`text-3xl font-black mt-2 text-gray-800 flex items-center gap-3`}>
-                    {value}
-                    {subtitle && <span className="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded-full">{subtitle}</span>}
-                </p>
-            </div>
-        );
-
-        const StatusBadge = ({ status }) => {
-            const s = (status || 'ativo').toLowerCase();
-            const colors = {
-                'ativo': 'bg-green-700 text-white border-green-800',
-                'bloqueada': 'bg-red-700 text-white border-red-800',
-                'cadastro_inicial': 'bg-teal-100 text-teal-800 border-teal-200',
-                'provisoria_recebida': 'bg-gray-200 text-gray-800 border-gray-300',
-                'termo_assinado': 'bg-green-300 text-green-900 border-green-400'
-            };
-            const color = colors[s] || 'bg-blue-50 text-blue-800 border-blue-200';
-            const label = s.replace(/_/g, ' ').toUpperCase();
-            
-            return <div className={`${color} border px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider inline-block shadow-sm`}>{label}</div>;
-        };
 
         const formatSeconds = (value) => {
             if (value === null || value === undefined || value === '') return '-';
@@ -78,9 +40,115 @@
             return `${num.toFixed(1)} min`;
         };
 
-        // ============================================================================
-        // MÓDULO 2: TELA DE LOGIN (AUTH)
-        // ============================================================================
+        const getTodayInputValue = () => {
+            const now = new Date();
+            const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000);
+            return local.toISOString().split('T')[0];
+        };
+
+        const buildHeaders = (token, extra = {}) => ({
+            ...(token ? { 'X-Admin-Token': token } : {}),
+            ...extra
+        });
+
+        const fetchJson = async (url, token) => {
+            const res = await fetch(url, { headers: buildHeaders(token) });
+            if (!res.ok) {
+                let message = 'Falha na requisição.';
+                try {
+                    const data = await res.json();
+                    message = data.erro || data.message || message;
+                } catch (e) {}
+                throw new Error(message);
+            }
+            return res.json();
+        };
+
+        const toneMap = {
+            green: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+            blue: 'bg-blue-50 text-blue-700 border-blue-200',
+            amber: 'bg-amber-50 text-amber-700 border-amber-200',
+            red: 'bg-red-50 text-red-700 border-red-200',
+            gray: 'bg-slate-100 text-slate-700 border-slate-200',
+            purple: 'bg-violet-50 text-violet-700 border-violet-200',
+        };
+
+        const SectionCard = ({ title, subtitle, icon, action, children, className = '' }) => (
+            <section className={`bg-white border border-slate-200 rounded-3xl shadow-sm overflow-hidden ${className}`}>
+                <div className="px-5 py-4 border-b border-slate-100 flex items-start justify-between gap-4">
+                    <div>
+                        <div className="flex items-center gap-3">
+                            {icon && <span className="w-10 h-10 rounded-2xl bg-slate-100 text-slate-600 flex items-center justify-center"><i className={icon}></i></span>}
+                            <div>
+                                <h3 className="text-lg font-bold text-slate-900">{title}</h3>
+                                {subtitle && <p className="text-sm text-slate-500 mt-0.5">{subtitle}</p>}
+                            </div>
+                        </div>
+                    </div>
+                    {action}
+                </div>
+                <div className="p-5">{children}</div>
+            </section>
+        );
+
+        const KpiCard = ({ title, value, subtitle, accent = 'blue' }) => {
+            const accents = {
+                blue: 'from-blue-500 to-cyan-400',
+                green: 'from-emerald-500 to-green-400',
+                amber: 'from-amber-500 to-yellow-400',
+                purple: 'from-violet-500 to-fuchsia-400',
+                red: 'from-rose-500 to-orange-400',
+                slate: 'from-slate-600 to-slate-400',
+            };
+            return (
+                <div className="bg-white border border-slate-200 rounded-3xl shadow-sm overflow-hidden">
+                    <div className={`h-1.5 bg-gradient-to-r ${accents[accent] || accents.blue}`}></div>
+                    <div className="p-5">
+                        <div className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400">{title}</div>
+                        <div className="mt-4 flex items-end justify-between gap-4">
+                            <div className="text-4xl font-black tracking-tight text-slate-900">{value}</div>
+                            {subtitle ? <div className="text-xs font-semibold text-slate-500 bg-slate-50 px-3 py-1.5 rounded-full border border-slate-200">{subtitle}</div> : null}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const Pill = ({ children, tone = 'gray' }) => (
+            <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-bold border uppercase tracking-wide ${toneMap[tone] || toneMap.gray}`}>
+                {children}
+            </span>
+        );
+
+        const StatusBadge = ({ status }) => {
+            const value = (status || 'desconhecido').toLowerCase();
+            if (['ativo', 'active', 'provisoria_recebida', 'termo_assinado'].includes(value)) return <Pill tone="green">{value.replace(/_/g, ' ')}</Pill>;
+            if (value === 'bloqueada') return <Pill tone="red">{value}</Pill>;
+            if (value === 'cadastro_inicial') return <Pill tone="amber">{value.replace(/_/g, ' ')}</Pill>;
+            return <Pill tone="gray">{value.replace(/_/g, ' ')}</Pill>;
+        };
+
+        const EmptyState = ({ text }) => (
+            <div className="py-10 text-center text-sm text-slate-400">{text}</div>
+        );
+
+        const formatOutcomeTone = (outcome) => {
+            const value = (outcome || '').toLowerCase();
+            if (value.includes('returned') || value.includes('hot') || value.includes('hit')) return 'green';
+            if (value.includes('queued') || value.includes('awaiting')) return 'amber';
+            if (value.includes('denied') || value.includes('error') || value.includes('not_found')) return 'red';
+            return 'gray';
+        };
+
+        const formatWorkerTone = (state) => {
+            const value = (state || '').toLowerCase();
+            if (value === 'idle') return 'gray';
+            if (value === 'running') return 'blue';
+            if (value.includes('cooldown')) return 'amber';
+            if (value === 'error') return 'red';
+            return 'purple';
+        };
+
         const AuthScreen = ({ onLogin }) => {
             const [username, setUsername] = useState("");
             const [password, setPassword] = useState("");
@@ -97,193 +165,260 @@
             };
 
             return (
-                <div className="bg-white p-8 rounded-xl shadow-sm border border-gray-100 max-w-md mx-auto mt-20 text-center">
-                    <div className="w-16 h-16 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-4 text-2xl">
-                        <i className="fas fa-lock"></i>
+                <div className="min-h-screen flex items-center justify-center px-4">
+                    <div className="w-full max-w-md bg-white border border-slate-200 rounded-3xl shadow-xl p-8">
+                        <div className="w-16 h-16 rounded-2xl bg-blue-100 text-blue-700 flex items-center justify-center text-2xl mx-auto">
+                            <i className="fas fa-user-shield"></i>
+                        </div>
+                        <h1 className="text-center text-2xl font-black text-slate-900 mt-5">Painel Administrativo</h1>
+                        <p className="text-center text-sm text-slate-500 mt-2">Acesso restrito a administradores do domínio.</p>
+                        <form onSubmit={handleSubmit} className="mt-8 space-y-4">
+                            <input
+                                type="text"
+                                value={username}
+                                onChange={(e) => setUsername(e.target.value)}
+                                placeholder="Usuário do Windows"
+                                className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500"
+                            />
+                            <input
+                                type="password"
+                                value={password}
+                                onChange={(e) => setPassword(e.target.value)}
+                                placeholder="Senha do Windows"
+                                className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500"
+                            />
+                            {error ? <div className="text-sm font-semibold text-red-600">{error}</div> : null}
+                            <button
+                                type="submit"
+                                disabled={loading}
+                                className="w-full rounded-2xl bg-blue-700 text-white py-3 font-bold hover:bg-blue-800 transition disabled:opacity-60"
+                            >
+                                {loading ? 'Validando acesso...' : 'Entrar com AD'}
+                            </button>
+                        </form>
                     </div>
-                    <h2 className="font-bold text-xl mb-6">Acesso Administrativo</h2>
-                    <form onSubmit={handleSubmit}>
-                        <input 
-                            type="text" 
-                            value={username}
-                            onChange={(e) => setUsername(e.target.value)}
-                            placeholder="Usuário do Windows" 
-                            className="w-full p-3 border rounded mb-3 focus:outline-none focus:border-blue-500 text-center"
-                        />
-                        <input 
-                            type="password" 
-                            value={password}
-                            onChange={(e) => setPassword(e.target.value)}
-                            placeholder="Senha do Windows" 
-                            className="w-full p-3 border rounded mb-4 focus:outline-none focus:border-blue-500 text-center"
-                        />
-                        {error && <div className="mb-4 text-sm text-red-600 font-semibold">{error}</div>}
-                        <button disabled={loading} type="submit" className="bg-blue-600 text-white px-4 py-3 rounded w-full font-bold hover:bg-blue-700 transition disabled:opacity-60">
-                            {loading ? 'Validando acesso...' : 'Entrar com AD'}
-                        </button>
-                    </form>
-                    <p className="text-xs text-gray-500 mt-4">Acesso restrito a membros ativos de Domain Admins.</p>
                 </div>
             );
         };
 
-        // ============================================================================
-        // MÓDULO 3: MODAL DE CONTA (CRIAR/EDITAR)
-        // ============================================================================
         const AccountModal = ({ isOpen, onClose, onSave, accountData, adSectors, token }) => {
-            if (!isOpen) return null;
-
-            const [formData, setFormData] = useState({
-                id: '', login: '', titular: '', senha: '', 
-                status: 'cadastro_inicial', status_custom: '', 
-                data_validade: '', status_updated_at: '', setores: []
-            });
+            const emptyForm = {
+                id: '',
+                login: '',
+                titular: '',
+                senha: '',
+                status: 'cadastro_inicial',
+                status_custom: '',
+                data_validade: '',
+                status_updated_at: '',
+                setores: []
+            };
+            const [formData, setFormData] = useState(emptyForm);
             const [showPassword, setShowPassword] = useState(false);
             const [passwordRevealed, setPasswordRevealed] = useState(false);
             const [revealingPassword, setRevealingPassword] = useState(false);
 
             useEffect(() => {
+                if (!isOpen) return;
                 if (accountData) {
+                    const currentStatus = accountData.status || 'ativo';
+                    const customStatus = ['ativo', 'bloqueada', 'cadastro_inicial'].includes(currentStatus) ? '' : currentStatus;
                     setFormData({
                         id: accountData.id,
                         login: accountData.login,
                         titular: accountData.titular === "Não informado" ? "" : accountData.titular,
                         senha: "",
-                        status: accountData.status || 'ativo',
-                        status_custom: '',
+                        status: currentStatus,
+                        status_custom: customStatus,
                         data_validade: accountData.data_validade || '',
                         status_updated_at: accountData.status_updated_at ? accountData.status_updated_at.split('T')[0] : '',
                         setores: accountData.setores || []
                     });
                 } else {
-                    setFormData({ id: '', login: '', titular: '', senha: '', status: 'cadastro_inicial', status_custom: '', data_validade: '', status_updated_at: '', setores: [] });
+                    setFormData(emptyForm);
                 }
                 setShowPassword(false);
                 setPasswordRevealed(false);
                 setRevealingPassword(false);
-            }, [accountData]);
+            }, [isOpen, accountData]);
+
+            if (!isOpen) return null;
+
+            const isCustomStatus = !['ativo', 'bloqueada', 'cadastro_inicial', '_custom_'].includes(formData.status);
+
+            const handleSectorToggle = (sector) => {
+                setFormData((prev) => ({
+                    ...prev,
+                    setores: prev.setores.includes(sector)
+                        ? prev.setores.filter((item) => item !== sector)
+                        : [...prev.setores, sector]
+                }));
+            };
 
             const handleRevealPassword = async () => {
                 if (!formData.id) return;
                 if (!confirm("Revelar a senha desta conta agora? Esta ação ficará auditada.")) return;
                 setRevealingPassword(true);
                 try {
-                    const res = await fetch(`/api/admin/accounts/${formData.id}/secret`, { headers: { 'X-Admin-Token': token } });
-                    const data = await res.json();
-                    if (!res.ok) {
-                        alert(data.erro || "Não foi possível revelar a senha.");
-                        return;
-                    }
-                    setFormData(prev => ({ ...prev, senha: data.senha || "" }));
+                    const data = await fetchJson(`/api/admin/accounts/${formData.id}/secret`, token);
+                    setFormData((prev) => ({ ...prev, senha: data.senha || "" }));
                     setPasswordRevealed(true);
                     setShowPassword(true);
                 } catch (e) {
-                    alert("Erro ao revelar a senha.");
+                    alert(e.message || "Não foi possível revelar a senha.");
                 } finally {
                     setRevealingPassword(false);
                 }
             };
 
-            const handleSectorToggle = (sector) => {
-                setFormData(prev => ({
-                    ...prev,
-                    setores: prev.setores.includes(sector) 
-                        ? prev.setores.filter(s => s !== sector)
-                        : [...prev.setores, sector]
-                }));
-            };
-
             const handleSubmit = () => {
                 let finalStatus = formData.status;
-                if (finalStatus === "_custom_") {
-                    finalStatus = formData.status_custom.trim().toLowerCase().replace(/ /g, '_');
-                    if (!finalStatus) return alert("Digite o status personalizado.");
+                if (finalStatus === "_custom_" || isCustomStatus) {
+                    finalStatus = (formData.status_custom || formData.status || '').trim().toLowerCase().replace(/ /g, '_');
+                    if (!finalStatus) {
+                        alert("Digite o status personalizado.");
+                        return;
+                    }
                 }
-                if (!formData.login) return alert("O Login é obrigatório.");
-                if (!formData.id && !formData.senha) return alert("A senha é obrigatória para contas novas.");
-
+                if (!formData.login) {
+                    alert("O login é obrigatório.");
+                    return;
+                }
+                if (!formData.id && !formData.senha) {
+                    alert("A senha é obrigatória para contas novas.");
+                    return;
+                }
                 onSave({ ...formData, status: finalStatus });
             };
 
-            const isCustomStatus = !['ativo', 'bloqueada', 'cadastro_inicial'].includes(formData.status) && formData.status !== '_custom_';
-
             return (
-                <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50">
-                    <div className="bg-white w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
-                        <div className="bg-blue-50 border-b border-blue-100 p-5 flex justify-between items-center">
-                            <h3 className="font-bold text-xl text-blue-900">{formData.id ? "Configurar Conta BB" : "Nova Conta BB"}</h3>
-                            <button onClick={onClose} className="text-blue-400 hover:text-blue-700 text-xl">&times;</button>
+                <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+                    <div className="bg-white w-full max-w-3xl rounded-3xl shadow-2xl overflow-hidden border border-slate-200">
+                        <div className="px-6 py-5 border-b border-slate-100 flex items-center justify-between">
+                            <div>
+                                <h3 className="text-xl font-black text-slate-900">{formData.id ? 'Editar Conta BB' : 'Nova Conta BB'}</h3>
+                                <p className="text-sm text-slate-500 mt-1">Gerencie status, senha e setores autorizados.</p>
+                            </div>
+                            <button onClick={onClose} className="w-10 h-10 rounded-2xl bg-slate-100 text-slate-500 hover:bg-slate-200">
+                                <i className="fas fa-times"></i>
+                            </button>
                         </div>
-                        
-                        <div className="p-6 overflow-y-auto custom-scroll">
-                            <div className="grid grid-cols-2 gap-4 mb-4">
+
+                        <div className="p-6 max-h-[75vh] overflow-y-auto custom-scroll space-y-6">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <div>
-                                    <label className="text-xs font-bold text-gray-500 uppercase">Login (Matrícula)</label>
-                                    <input type="text" value={formData.login} onChange={e => setFormData({...formData, login: e.target.value.toUpperCase()})} disabled={!!formData.id} className={`w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500 font-mono uppercase ${formData.id ? 'bg-gray-100' : ''}`} placeholder="Ex: F1234567" />
+                                    <label className="text-xs font-black uppercase tracking-[0.14em] text-slate-400">Login</label>
+                                    <input
+                                        type="text"
+                                        value={formData.login}
+                                        onChange={(e) => setFormData({ ...formData, login: e.target.value.toUpperCase() })}
+                                        disabled={!!formData.id}
+                                        className={`mt-2 w-full rounded-2xl border border-slate-200 px-4 py-3 font-mono outline-none focus:border-blue-500 ${formData.id ? 'bg-slate-50 text-slate-500' : ''}`}
+                                        placeholder="Ex: F1234567"
+                                    />
                                 </div>
                                 <div>
-                                    <label className="text-xs font-bold text-gray-500 uppercase">Titular da Conta</label>
-                                    <input type="text" value={formData.titular} onChange={e => setFormData({...formData, titular: e.target.value})} className="w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500" placeholder="Nome Completo" />
+                                    <label className="text-xs font-black uppercase tracking-[0.14em] text-slate-400">Titular</label>
+                                    <input
+                                        type="text"
+                                        value={formData.titular}
+                                        onChange={(e) => setFormData({ ...formData, titular: e.target.value })}
+                                        className="mt-2 w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500"
+                                        placeholder="Nome completo"
+                                    />
                                 </div>
                             </div>
 
-                            <div className="mb-4 relative">
-                                <label className="text-xs font-bold text-gray-500 uppercase">Senha Banco do Brasil</label>
-                                <input type={showPassword ? "text" : "password"} value={formData.senha} onChange={e => setFormData({...formData, senha: e.target.value})} className="w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500 font-mono pr-20" placeholder={formData.id ? "Deixe em branco para manter a senha atual" : "Digite a senha"} />
-                                <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-[34px] text-gray-500 hover:text-blue-600 focus:outline-none">
-                                    <i className={`fas ${showPassword ? 'fa-eye-slash' : 'fa-eye'}`}></i>
-                                </button>
-                                {formData.id && (
-                                    <button type="button" onClick={handleRevealPassword} disabled={revealingPassword} className="absolute right-10 top-[34px] text-gray-500 hover:text-blue-600 focus:outline-none disabled:opacity-50" title="Revelar senha">
-                                        <i className={`fas ${revealingPassword ? 'fa-spinner fa-spin' : 'fa-key'}`}></i>
-                                    </button>
-                                )}
-                                {formData.id && !passwordRevealed && <div className="mt-1 text-[11px] text-gray-500">Senha não carregada por padrão.</div>}
-                                {passwordRevealed && <div className="mt-1 text-[11px] text-amber-600 font-semibold">Senha revelada sob auditoria.</div>}
+                            <div>
+                                <label className="text-xs font-black uppercase tracking-[0.14em] text-slate-400">Senha do Banco do Brasil</label>
+                                <div className="mt-2 relative">
+                                    <input
+                                        type={showPassword ? "text" : "password"}
+                                        value={formData.senha}
+                                        onChange={(e) => setFormData({ ...formData, senha: e.target.value })}
+                                        className="w-full rounded-2xl border border-slate-200 px-4 py-3 pr-24 font-mono outline-none focus:border-blue-500"
+                                        placeholder={formData.id ? "Deixe em branco para manter a atual" : "Digite a senha"}
+                                    />
+                                    <div className="absolute inset-y-0 right-2 flex items-center gap-1">
+                                        {formData.id ? (
+                                            <button type="button" onClick={handleRevealPassword} disabled={revealingPassword} className="w-10 h-10 rounded-xl text-slate-500 hover:bg-slate-100 disabled:opacity-50" title="Revelar senha">
+                                                <i className={`fas ${revealingPassword ? 'fa-spinner fa-spin' : 'fa-key'}`}></i>
+                                            </button>
+                                        ) : null}
+                                        <button type="button" onClick={() => setShowPassword(!showPassword)} className="w-10 h-10 rounded-xl text-slate-500 hover:bg-slate-100" title="Exibir senha">
+                                            <i className={`fas ${showPassword ? 'fa-eye-slash' : 'fa-eye'}`}></i>
+                                        </button>
+                                    </div>
+                                </div>
+                                {formData.id && !passwordRevealed ? <div className="mt-2 text-xs text-slate-500">A senha não é carregada por padrão.</div> : null}
+                                {passwordRevealed ? <div className="mt-2 text-xs font-semibold text-amber-600">Senha revelada sob auditoria.</div> : null}
                             </div>
 
-                            <div className="grid grid-cols-2 gap-4 mb-4">
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                                 <div>
-                                    <label className="text-xs font-bold text-gray-500 uppercase">Status</label>
-                                    <select value={isCustomStatus ? "_custom_" : formData.status} onChange={e => setFormData({...formData, status: e.target.value})} className="w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500 text-sm font-bold tracking-wide">
-                                        <option value="ativo">ATIVO</option>
-                                        <option value="bloqueada">BLOQUEADA</option>
-                                        <option value="cadastro_inicial">CADASTRO INICIAL</option>
-                                        {isCustomStatus && <option value="_custom_">{formData.status.replace(/_/g, ' ').toUpperCase()}</option>}
-                                        {!isCustomStatus && <option value="_custom_">+ Outro...</option>}
+                                    <label className="text-xs font-black uppercase tracking-[0.14em] text-slate-400">Status</label>
+                                    <select
+                                        value={isCustomStatus ? "_custom_" : formData.status}
+                                        onChange={(e) => setFormData({ ...formData, status: e.target.value })}
+                                        className="mt-2 w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500"
+                                    >
+                                        <option value="ativo">Ativo</option>
+                                        <option value="bloqueada">Bloqueada</option>
+                                        <option value="cadastro_inicial">Cadastro inicial</option>
+                                        <option value="_custom_">Outro...</option>
                                     </select>
-                                    {(formData.status === "_custom_" || isCustomStatus) && (
-                                        <input type="text" value={isCustomStatus ? formData.status : formData.status_custom} onChange={e => setFormData({...formData, status_custom: e.target.value})} className="w-full p-2 border rounded mt-2 text-sm outline-none focus:border-blue-500" placeholder="Novo status..." />
-                                    )}
+                                    {(formData.status === "_custom_" || isCustomStatus) ? (
+                                        <input
+                                            type="text"
+                                            value={formData.status_custom}
+                                            onChange={(e) => setFormData({ ...formData, status_custom: e.target.value })}
+                                            className="mt-2 w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500"
+                                            placeholder="Digite o novo status"
+                                        />
+                                    ) : null}
                                 </div>
                                 <div>
-                                    <label className="text-xs font-bold text-gray-500 uppercase">Vencimento (Opcional)</label>
-                                    <input type="date" value={formData.data_validade} onChange={e => setFormData({...formData, data_validade: e.target.value})} className="w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500 text-sm" />
+                                    <label className="text-xs font-black uppercase tracking-[0.14em] text-slate-400">Vencimento</label>
+                                    <input
+                                        type="date"
+                                        value={formData.data_validade}
+                                        onChange={(e) => setFormData({ ...formData, data_validade: e.target.value })}
+                                        className="mt-2 w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="text-xs font-black uppercase tracking-[0.14em] text-slate-400">Status modificado em</label>
+                                    <input
+                                        type="date"
+                                        value={formData.status_updated_at}
+                                        onChange={(e) => setFormData({ ...formData, status_updated_at: e.target.value })}
+                                        className="mt-2 w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500"
+                                    />
                                 </div>
                             </div>
 
-                            <div className="mb-4">
-                                <label className="text-xs font-bold text-gray-500 uppercase">Modificado em (Retroativo)</label>
-                                <input type="date" value={formData.status_updated_at} onChange={e => setFormData({...formData, status_updated_at: e.target.value})} className="w-full p-2.5 border rounded mt-1 outline-none focus:border-blue-500 text-sm" />
-                            </div>
-
-                            <div className="mb-2">
-                                <label className="text-xs font-bold text-gray-500 uppercase">Setores do AD Autorizados</label>
-                                <div className="border rounded-lg p-3 bg-gray-50 max-h-40 overflow-y-auto custom-scroll grid grid-cols-2 gap-2">
-                                    {adSectors.map(sector => (
-                                        <label key={sector} className="flex items-center space-x-2 text-sm text-gray-700 cursor-pointer hover:bg-gray-200 p-1.5 rounded transition">
-                                            <input type="checkbox" checked={formData.setores.includes(sector)} onChange={() => handleSectorToggle(sector)} className="form-checkbox h-4 w-4 text-blue-600 border-gray-300 rounded" />
-                                            <span className="truncate">{sector}</span>
+                            <div>
+                                <label className="text-xs font-black uppercase tracking-[0.14em] text-slate-400">Setores autorizados</label>
+                                <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-2 max-h-56 overflow-y-auto custom-scroll rounded-3xl border border-slate-200 bg-slate-50 p-3">
+                                    {adSectors.map((sector) => (
+                                        <label key={sector} className="flex items-center gap-3 bg-white rounded-2xl border border-slate-200 px-3 py-2 cursor-pointer hover:border-blue-300">
+                                            <input
+                                                type="checkbox"
+                                                checked={formData.setores.includes(sector)}
+                                                onChange={() => handleSectorToggle(sector)}
+                                                className="h-4 w-4"
+                                            />
+                                            <span className="text-sm text-slate-700 truncate">{sector}</span>
                                         </label>
                                     ))}
                                 </div>
                             </div>
                         </div>
-                        
-                        <div className="p-5 border-t bg-gray-50 flex justify-end gap-3">
-                            <button onClick={onClose} className="px-5 py-2 text-gray-600 font-bold hover:bg-gray-200 rounded transition">Cancelar</button>
-                            <button onClick={handleSubmit} className="px-6 py-2 bg-blue-600 text-white font-bold rounded shadow hover:bg-blue-700 transition flex items-center">
-                                <i className="fas fa-save mr-2"></i> Salvar
+
+                        <div className="px-6 py-4 border-t border-slate-100 bg-slate-50 flex justify-end gap-3">
+                            <button onClick={onClose} className="px-5 py-2.5 rounded-2xl border border-slate-200 font-bold text-slate-600 hover:bg-white">Cancelar</button>
+                            <button onClick={handleSubmit} className="px-6 py-2.5 rounded-2xl bg-blue-700 text-white font-bold hover:bg-blue-800">
+                                <i className="fas fa-save mr-2"></i>Salvar
                             </button>
                         </div>
                     </div>
@@ -291,47 +426,30 @@
             );
         };
 
-        // ============================================================================
-        // MÓDULO 4: TAB VIEW - DASHBOARD (TEMPO REAL)
-        // ============================================================================
-        const DashboardView = ({ token, adSectors }) => {
-            const [stats, setStats] = useState({ logins_solicitados: 0, cookies_injetados: 0, robos_executados: 0, queue_size: 0, economia_pct: 0, active_users_now: 0, hot_pool_accounts: 0, workers_busy: 0, workers_total: 0, avg_cookie_age: 0, avg_session_cycle: 0, queue_snapshot: {} });
-            const [accounts, setAccounts] = useState([]);
+        const OperationView = ({ token }) => {
+            const [stats, setStats] = useState({});
             const [liveOverview, setLiveOverview] = useState({ workers: [], active_users: [], hot_sessions: [], backoff_accounts: [], queue: {} });
             const [recentRequests, setRecentRequests] = useState([]);
-            const [auditEvents, setAuditEvents] = useState([]);
-            
-            // Filtros e Ordenação
-            const [search, setSearch] = useState("");
-            const [statusFilter, setStatusFilter] = useState("");
-            const [sectorFilter, setSectorFilter] = useState("");
-            const [activeSectorFilter, setActiveSectorFilter] = useState("");
-            const [showAllActiveUsers, setShowAllActiveUsers] = useState(false);
-            const [showAllRecentRequests, setShowAllRecentRequests] = useState(false);
-            const [showAllHotSessions, setShowAllHotSessions] = useState(false);
-            const [showAllBackoffAccounts, setShowAllBackoffAccounts] = useState(false);
-            const [showAllAuditEvents, setShowAllAuditEvents] = useState(false);
-            const [sortCol, setSortCol] = useState('default');
-            const [sortAsc, setSortAsc] = useState(true);
-            
-            const [isModalOpen, setIsModalOpen] = useState(false);
-            const [editingAccount, setEditingAccount] = useState(null);
+            const [syncPressure, setSyncPressure] = useState({ totals: {}, sectors: [] });
+            const [loading, setLoading] = useState(true);
 
             const fetchData = useCallback(async () => {
                 try {
-                    const [resStats, resAcc, resLive, resRecent, resAudit] = await Promise.all([
-                        fetch('/api/admin/dashboard_stats', { headers: { 'X-Admin-Token': token } }),
-                        fetch('/api/admin/accounts', { headers: { 'X-Admin-Token': token } }),
-                        fetch('/api/admin/live_overview', { headers: { 'X-Admin-Token': token } }),
-                        fetch('/api/admin/recent_requests?limit=60', { headers: { 'X-Admin-Token': token } }),
-                        fetch('/api/admin/audit?limit=60', { headers: { 'X-Admin-Token': token } })
+                    const [statsData, liveData, recentData, pressureData] = await Promise.all([
+                        fetchJson('/api/admin/dashboard_stats', token),
+                        fetchJson('/api/admin/live_overview', token),
+                        fetchJson('/api/admin/recent_requests?limit=40', token),
+                        fetchJson('/api/admin/sync_pressure?minutes=30', token)
                     ]);
-                    if (resStats.ok) setStats(await resStats.json());
-                    if (resAcc.ok) setAccounts(await resAcc.json());
-                    if (resLive.ok) setLiveOverview(await resLive.json());
-                    if (resRecent.ok) setRecentRequests(await resRecent.json());
-                    if (resAudit.ok) setAuditEvents(await resAudit.json());
-                } catch (e) { console.error("Erro ao buscar dados do dashboard:", e); }
+                    setStats(statsData);
+                    setLiveOverview(liveData);
+                    setRecentRequests(recentData);
+                    setSyncPressure(pressureData);
+                } catch (e) {
+                    console.error("Erro ao carregar operação do dia:", e);
+                } finally {
+                    setLoading(false);
+                }
             }, [token]);
 
             useEffect(() => {
@@ -340,463 +458,461 @@
                 return () => clearInterval(interval);
             }, [fetchData]);
 
-            const handleSaveAccount = async (payload) => {
-                const url = payload.id ? `/api/admin/accounts/${payload.id}` : `/api/admin/accounts`;
-                const method = payload.id ? 'PUT' : 'POST';
-                try {
-                    const res = await fetch(url, { method, headers: { 'X-Admin-Token': token, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-                    if (res.ok) { setIsModalOpen(false); fetchData(); }
-                    else { const err = await res.json(); alert(err.erro); }
-                } catch (e) { alert("Erro de conexão."); }
-            };
+            if (loading) {
+                return <div className="py-20 text-center text-slate-400"><i className="fas fa-spinner fa-spin text-3xl"></i></div>;
+            }
 
-            const handleAction = async (action, id) => {
-                if (action === 'delete' && !confirm("Remover esta conta permanentemente?")) return;
-                if (action === 'clear' && !confirm("Expurgar a sessão (cookies) desta conta? O robô fará login do zero.")) return;
-                
-                const url = action === 'delete' ? `/api/admin/accounts/${id}` : `/api/admin/accounts/${id}/clear`;
-                const method = action === 'delete' ? 'DELETE' : 'POST';
-                
-                try {
-                    const res = await fetch(url, { method, headers: { 'X-Admin-Token': token }});
-                    if (res.ok) fetchData();
-                } catch (e) { console.error(e); }
-            };
-
-            const handleSort = (col) => {
-                if (sortCol === col) setSortAsc(!sortAsc);
-                else { setSortCol(col); setSortAsc(true); }
-            };
-
-            const getStatusWeight = (status) => {
-                const s = (status || '').toLowerCase();
-                if (['ativo', 'provisoria_recebida', 'termo_assinado'].includes(s)) return 1;
-                if (s === 'cadastro_inicial') return 2;
-                if (s === 'bloqueada') return 3;
-                return 4; // Outros/Desconhecido
-            };
-
-            const sortedAndFilteredAccounts = useMemo(() => {
-                let filtered = accounts.filter(acc => {
-                    const safeStatus = (acc.status || 'desconhecido').toLowerCase();
-                    if (statusFilter && safeStatus !== statusFilter) return false;
-                    if (sectorFilter && (!acc.setores || !acc.setores.includes(sectorFilter))) return false;
-                    if (search) {
-                        const q = search.toLowerCase();
-                        return acc.login.toLowerCase().includes(q) || (acc.titular && acc.titular.toLowerCase().includes(q));
-                    }
-                    return true;
-                });
-
-                return filtered.sort((a, b) => {
-                    // Ordenação Padrão: Ativos no topo, depois ordenado por Login
-                    if (sortCol === 'default') {
-                        const wA = getStatusWeight(a.status);
-                        const wB = getStatusWeight(b.status);
-                        if (wA !== wB) return wA - wB;
-                        return a.login.localeCompare(b.login);
-                    }
-                    
-                    // Ordenação Personalizada pelo usuário (Cliques na Tabela)
-                    let valA = a[sortCol] || '';
-                    let valB = b[sortCol] || '';
-                    
-                    if (sortCol === 'status') {
-                        const wA = getStatusWeight(a.status);
-                        const wB = getStatusWeight(b.status);
-                        if (wA !== wB) return sortAsc ? wA - wB : wB - wA;
-                    }
-                    
-                    if (typeof valA === 'string') valA = valA.toLowerCase();
-                    if (typeof valB === 'string') valB = valB.toLowerCase();
-                    
-                    if (valA < valB) return sortAsc ? -1 : 1;
-                    if (valA > valB) return sortAsc ? 1 : -1;
-                    return 0;
-                });
-            }, [accounts, search, statusFilter, sectorFilter, sortCol, sortAsc]);
-
-            const uniqueStatuses = useMemo(() => [...new Set(accounts.map(a => (a.status || '').toLowerCase()))].filter(Boolean).sort(), [accounts]);
-
-            const renderSortIcon = (col) => {
-                if (sortCol !== col && sortCol !== 'default') return <i className="fas fa-sort ml-1 opacity-30"></i>;
-                if (sortCol === 'default') return <i className="fas fa-sort ml-1 opacity-30"></i>;
-                return <i className={`fas fa-sort-${sortAsc ? 'up' : 'down'} ml-1 text-blue-500`}></i>;
-            };
-
-            const activeUsersBySector = useMemo(() => {
-                const groups = {};
-                (liveOverview.active_users || []).forEach(entry => {
-                    const key = entry.setor || 'Sem setor';
-                    if (!groups[key]) groups[key] = { setor: key, count: 0, lastSeen: entry.last_seen_at, users: [] };
-                    groups[key].count += 1;
-                    groups[key].users.push(entry);
-                    if ((entry.last_seen_at || '') > (groups[key].lastSeen || '')) groups[key].lastSeen = entry.last_seen_at;
-                });
-                return Object.values(groups).sort((a, b) => b.count - a.count || a.setor.localeCompare(b.setor));
-            }, [liveOverview.active_users]);
-
-            const visibleActiveUsers = useMemo(() => {
-                const items = activeSectorFilter
-                    ? (liveOverview.active_users || []).filter(entry => (entry.setor || 'Sem setor') === activeSectorFilter)
-                    : (liveOverview.active_users || []);
-                return showAllActiveUsers ? items : items.slice(0, 8);
-            }, [liveOverview.active_users, activeSectorFilter, showAllActiveUsers]);
-
-            const visibleRecentRequests = useMemo(() => (
-                showAllRecentRequests ? recentRequests : recentRequests.slice(0, 12)
-            ), [recentRequests, showAllRecentRequests]);
-
-            const visibleHotSessions = useMemo(() => (
-                showAllHotSessions ? (liveOverview.hot_sessions || []) : (liveOverview.hot_sessions || []).slice(0, 6)
-            ), [liveOverview.hot_sessions, showAllHotSessions]);
-
-            const visibleBackoffAccounts = useMemo(() => (
-                showAllBackoffAccounts ? (liveOverview.backoff_accounts || []) : (liveOverview.backoff_accounts || []).slice(0, 6)
-            ), [liveOverview.backoff_accounts, showAllBackoffAccounts]);
-
-            const visibleAuditEvents = useMemo(() => (
-                showAllAuditEvents ? auditEvents : auditEvents.slice(0, 8)
-            ), [auditEvents, showAllAuditEvents]);
-
-            const outcomeClass = (outcome) => {
-                const value = (outcome || '').toLowerCase();
-                if (value.includes('hit') || value.includes('returned') || value.includes('hot')) return 'bg-green-100 text-green-800';
-                if (value.includes('queued')) return 'bg-yellow-100 text-yellow-800';
-                if (value.includes('denied') || value.includes('error') || value.includes('not_found')) return 'bg-red-100 text-red-800';
-                return 'bg-gray-100 text-gray-700';
-            };
-
-            const workerStateClass = (state) => {
-                const value = (state || '').toLowerCase();
-                if (value === 'idle') return 'bg-gray-100 text-gray-700';
-                if (value.includes('cooldown')) return 'bg-yellow-100 text-yellow-800';
-                if (value === 'error') return 'bg-red-100 text-red-800';
-                if (value === 'running') return 'bg-blue-100 text-blue-800';
-                return 'bg-indigo-100 text-indigo-800';
-            };
+            const queueSnapshot = stats.queue_snapshot || {};
 
             return (
-                <div>
-                    <h2 className="text-xl font-bold text-gray-800 mb-4">Métricas de Hoje</h2>
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6 gap-6 mb-8">
-                        <KpiCard title="Acessos Solicitados" value={stats.logins_solicitados || 0} colorClass="border-l-blue-500" />
-                        <KpiCard title="Cookies Injetados" value={stats.cookies_injetados || 0} colorClass="border-l-green-500" />
-                        <KpiCard title="Usuários Ativos Agora" value={stats.active_users_now || 0} colorClass="border-l-cyan-500" />
-                        <KpiCard title="Sessões Quentes" value={stats.hot_pool_accounts || 0} subtitle={`${stats.queue_size || 0} na fila`} colorClass="border-l-emerald-500" />
-                        <KpiCard title="Workers" value={`${stats.workers_busy || 0}/${stats.workers_total || 0}`} subtitle="ocupados" colorClass="border-l-yellow-500" />
-                        <KpiCard title="Eficiência do Pool" value={`${stats.economia_pct || 0}%`} colorClass="border-l-purple-500" />
-                        <KpiCard title="Idade Média do Cookie" value={formatMinutes(stats.avg_cookie_age)} subtitle={`ciclo ${formatMinutes(stats.avg_session_cycle)}`} colorClass="border-l-pink-500" />
+                <div className="space-y-6">
+                    <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
+                        <div>
+                            <h2 className="text-3xl font-black tracking-tight text-slate-900">Operação de Hoje</h2>
+                            <p className="text-slate-500 mt-1">Resumo vivo do pool, dos workers e da pressão de sincronização.</p>
+                        </div>
+                        <div className="text-sm text-slate-500 bg-white border border-slate-200 rounded-2xl px-4 py-3 shadow-sm">
+                            Atualizado em <strong>{liveOverview.generated_at || '-'}</strong>
+                        </div>
                     </div>
 
-                    <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 mb-8">
-                        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                            <div className="bg-gray-50 border-b border-gray-200 p-4 flex justify-between items-center">
-                                <h3 className="font-bold text-gray-700"><i className="fas fa-heart-pulse mr-2 text-blue-500"></i>Workers em Tempo Real</h3>
-                                <span className="text-xs text-gray-400">{liveOverview.generated_at || ''}</span>
-                            </div>
-                            <div className="p-4 space-y-3">
-                                {liveOverview.workers && liveOverview.workers.length ? liveOverview.workers.map(worker => (
-                                    <div key={worker.thread_id} className="border rounded-lg p-3 bg-gray-50">
-                                        <div className="flex items-center justify-between mb-2">
-                                            <span className="font-black text-gray-800">ROBÔ {worker.thread_id}</span>
-                                            <span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase ${workerStateClass(worker.state)}`}>{worker.state}</span>
-                                        </div>
-                                        <div className="text-sm text-gray-700">{worker.message || 'Sem mensagem'}</div>
-                                        <div className="mt-2 text-xs text-gray-500 flex flex-wrap gap-3">
-                                            <span>Setor: <strong>{worker.setor || '-'}</strong></span>
-                                            <span>Conta: <strong>{worker.account_id || '-'}</strong></span>
-                                            <span>Solicitante: <strong>{worker.requester_display_name || worker.requester_username || '-'}</strong></span>
-                                            <span>Req: <strong>{worker.request_id || '-'}</strong></span>
-                                            <span>Atualização: <strong>{formatSeconds(worker.stale_seconds)}</strong></span>
-                                        </div>
-                                    </div>
-                                )) : <p className="text-gray-400 text-sm">Sem telemetria de worker.</p>}
-                            </div>
-                        </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-4">
+                        <KpiCard title="Acessos Solicitados" value={stats.logins_solicitados || 0} accent="blue" />
+                        <KpiCard title="Cookies Entregues" value={stats.cookies_injetados || 0} accent="green" />
+                        <KpiCard title="Usuários Ativos Agora" value={stats.active_users_now || 0} accent="purple" />
+                        <KpiCard title="Sessões Quentes" value={stats.hot_pool_accounts || 0} subtitle={`${stats.queue_size || 0} na fila`} accent="amber" />
+                        <KpiCard title="Workers" value={`${stats.workers_busy || 0}/${stats.workers_total || 0}`} subtitle="ocupados" accent="red" />
+                        <KpiCard title="Eficiência do Pool" value={`${stats.economia_pct || 0}%`} subtitle={`cookie ${formatMinutes(stats.avg_cookie_age)}`} accent="slate" />
+                    </div>
 
-                        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                            <div className="bg-gray-50 border-b border-gray-200 p-4 flex justify-between items-center">
-                                <h3 className="font-bold text-gray-700"><i className="fas fa-users-viewfinder mr-2 text-emerald-500"></i>Usuários/Setores Ativos</h3>
-                                <button onClick={() => setShowAllActiveUsers(!showAllActiveUsers)} className="text-xs bg-white border border-gray-200 px-3 py-1 rounded font-bold text-gray-600 hover:bg-gray-100">
-                                    {showAllActiveUsers ? 'Ver menos' : 'Ver tudo'}
-                                </button>
-                            </div>
-                            <div className="p-4 border-b border-gray-100">
-                                <div className="flex flex-wrap gap-2">
-                                    <button onClick={() => setActiveSectorFilter("")} className={`px-3 py-1 rounded-full text-xs font-bold border ${activeSectorFilter === "" ? 'bg-emerald-600 text-white border-emerald-700' : 'bg-white text-gray-600 border-gray-200'}`}>
-                                        Todos ({(liveOverview.active_users && liveOverview.active_users.length) || 0})
-                                    </button>
-                                    {activeUsersBySector.slice(0, 8).map(group => (
-                                        <button key={group.setor} onClick={() => setActiveSectorFilter(group.setor)} className={`px-3 py-1 rounded-full text-xs font-bold border ${activeSectorFilter === group.setor ? 'bg-emerald-600 text-white border-emerald-700' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>
-                                            {group.setor} ({group.count})
-                                        </button>
-                                    ))}
-                                </div>
-                            </div>
-                            <div className="max-h-[320px] overflow-y-auto custom-scroll divide-y divide-gray-100">
-                                {visibleActiveUsers.length ? visibleActiveUsers.map((entry, idx) => (
-                                    <div key={`${entry.setor}-${idx}`} className="p-4 hover:bg-gray-50">
-                                        <div className="flex items-center justify-between">
-                                            <span className="font-bold text-gray-800">{entry.setor || '-'}</span>
-                                            <span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase ${outcomeClass(entry.outcome)}`}>{entry.outcome || 'ativo'}</span>
-                                        </div>
-                                        <div className="mt-1 text-sm text-gray-600">{entry.login || 'Conta não resolvida'}</div>
-                                        <div className="mt-1 text-xs text-gray-500">{entry.requester_display_name || entry.requester_username || 'Solicitante não identificado'}</div>
-                                        <div className="mt-2 text-xs text-gray-500 flex flex-wrap gap-3">
-                                            <span>Endpoint: <strong>{entry.endpoint || '-'}</strong></span>
-                                            <span>Req: <strong>{entry.request_id || '-'}</strong></span>
-                                            <span>Há: <strong>{formatSeconds(entry.idle_seconds)}</strong></span>
-                                            <span>IP: <strong>{entry.ip || '-'}</strong></span>
-                                        </div>
-                                    </div>
-                                )) : <p className="p-6 text-gray-400 text-sm">Nenhuma atividade recente.</p>}
-                            </div>
-                        </div>
-
-                        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                            <div className="bg-gray-50 border-b border-gray-200 p-4">
-                                <h3 className="font-bold text-gray-700"><i className="fas fa-cookie-bite mr-2 text-purple-500"></i>Sessões Quentes / Backoff</h3>
-                            </div>
-                            <div className="p-4">
-                                <div className="mb-4">
-                                    <h4 className="text-xs font-bold uppercase text-gray-400 mb-2">Próximas a Renovar</h4>
-                                    <div className="flex justify-end mb-2">
-                                        <button onClick={() => setShowAllHotSessions(!showAllHotSessions)} className="text-xs bg-white border border-gray-200 px-3 py-1 rounded font-bold text-gray-600 hover:bg-gray-100">
-                                            {showAllHotSessions ? 'Ver menos' : 'Ver tudo'}
-                                        </button>
-                                    </div>
-                                    <div className="space-y-2 max-h-[150px] overflow-y-auto custom-scroll">
-                                        {visibleHotSessions.length ? visibleHotSessions.map(session => (
-                                            <div key={session.account_id} className="border rounded-lg p-3 bg-gray-50">
-                                                <div className="flex items-center justify-between">
-                                                    <span className="font-bold text-gray-800">{session.login}</span>
-                                                    <span className="text-xs text-purple-700 font-bold">{formatMinutes(session.minutes_to_refresh)}</span>
-                                                </div>
-                                                <div className="mt-1 text-xs text-gray-500">Idade: {formatMinutes(session.cookie_age_minutes)} | Cookies: {session.cookie_count}</div>
+                    <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
+                        <SectionCard title="Workers em Tempo Real" subtitle="Estado atual de cada robô e contexto da última tarefa." icon="fas fa-robot" className="xl:col-span-5">
+                            <div className="space-y-3">
+                                {(liveOverview.workers || []).length === 0 ? <EmptyState text="Sem telemetria de workers no momento." /> : null}
+                                {(liveOverview.workers || []).map((worker) => (
+                                    <div key={worker.thread_id} className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
+                                        <div className="flex items-start justify-between gap-3">
+                                            <div>
+                                                <div className="text-base font-black text-slate-900">ROBÔ {worker.thread_id}</div>
+                                                <div className="text-sm text-slate-600 mt-1">{worker.message || 'Sem mensagem'}</div>
                                             </div>
-                                        )) : <p className="text-gray-400 text-sm">Nenhuma sessão quente.</p>}
+                                            <Pill tone={formatWorkerTone(worker.state)}>{worker.state || 'idle'}</Pill>
+                                        </div>
+                                        <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-500">
+                                            <div>Setor: <strong>{worker.setor || '-'}</strong></div>
+                                            <div>Conta: <strong>{worker.account_id || '-'}</strong></div>
+                                            <div>Solicitante: <strong>{worker.requester_display_name || worker.requester_username || '-'}</strong></div>
+                                            <div>Req: <strong>{worker.request_id || '-'}</strong></div>
+                                            <div>Atualização: <strong>{formatSeconds(worker.stale_seconds)}</strong></div>
+                                        </div>
                                     </div>
+                                ))}
+                            </div>
+                        </SectionCard>
+
+                        <SectionCard title="Sessões, Fila e Backoff" subtitle="Panorama operacional do pool e das contas em espera." icon="fas fa-layer-group" className="xl:col-span-4">
+                            <div className="grid grid-cols-2 gap-3 mb-5">
+                                <div className="rounded-3xl bg-slate-50 border border-slate-200 p-4">
+                                    <div className="text-xs font-black uppercase tracking-[0.14em] text-slate-400">Fila padrão</div>
+                                    <div className="text-3xl font-black text-slate-900 mt-2">{queueSnapshot.login_requests || 0}</div>
                                 </div>
+                                <div className="rounded-3xl bg-slate-50 border border-slate-200 p-4">
+                                    <div className="text-xs font-black uppercase tracking-[0.14em] text-slate-400">Fila prioritária</div>
+                                    <div className="text-3xl font-black text-slate-900 mt-2">{queueSnapshot.priority_logins || 0}</div>
+                                </div>
+                            </div>
+
+                            <div className="space-y-4">
                                 <div>
-                                    <h4 className="text-xs font-bold uppercase text-gray-400 mb-2">Contas em Backoff</h4>
-                                    <div className="flex justify-end mb-2">
-                                        <button onClick={() => setShowAllBackoffAccounts(!showAllBackoffAccounts)} className="text-xs bg-white border border-gray-200 px-3 py-1 rounded font-bold text-gray-600 hover:bg-gray-100">
-                                            {showAllBackoffAccounts ? 'Ver menos' : 'Ver tudo'}
-                                        </button>
+                                    <div className="flex items-center justify-between mb-2">
+                                        <h4 className="text-sm font-black text-slate-700">Próximas a renovar</h4>
+                                        <Pill tone="green">{(liveOverview.hot_sessions || []).length}</Pill>
                                     </div>
-                                    <div className="space-y-2 max-h-[150px] overflow-y-auto custom-scroll">
-                                        {visibleBackoffAccounts.length ? visibleBackoffAccounts.map(item => (
-                                            <div key={item.account_id} className="border rounded-lg p-3 bg-red-50 border-red-100">
-                                                <div className="flex items-center justify-between">
-                                                    <span className="font-bold text-gray-800">{item.login}</span>
-                                                    <span className="text-xs text-red-700 font-bold">{formatSeconds(item.backoff_seconds)}</span>
+                                    <div className="space-y-2 max-h-48 overflow-y-auto custom-scroll pr-1">
+                                        {(liveOverview.hot_sessions || []).length === 0 ? <EmptyState text="Nenhuma sessão quente agora." /> : null}
+                                        {(liveOverview.hot_sessions || []).slice(0, 6).map((session) => (
+                                            <div key={session.account_id} className="rounded-2xl border border-emerald-100 bg-emerald-50 p-3">
+                                                <div className="flex items-center justify-between gap-3">
+                                                    <div className="font-black text-slate-900">{session.login}</div>
+                                                    <div className="text-sm font-bold text-emerald-700">{formatMinutes(session.minutes_to_refresh)}</div>
                                                 </div>
-                                                <div className="mt-1 text-xs text-gray-500">{(item.setores || []).join(', ') || 'Sem setor'}</div>
+                                                <div className="text-xs text-slate-500 mt-1">{(session.setores || []).join(', ') || 'Sem setor'}</div>
                                             </div>
-                                        )) : <p className="text-gray-400 text-sm">Nenhuma conta em backoff.</p>}
+                                        ))}
                                     </div>
                                 </div>
-                            </div>
-                        </div>
-                    </div>
 
-                    <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden mb-8">
-                        <div className="bg-gray-50 border-b border-gray-200 p-4 flex justify-between items-center">
-                            <h3 className="font-bold text-gray-700"><i className="fas fa-stream mr-2 text-orange-500"></i>Últimas Solicitações</h3>
-                            <div className="text-xs text-gray-500 flex gap-4 items-center">
-                                <span>Fila normal: <strong>{(liveOverview.queue && liveOverview.queue.login_requests) || 0}</strong></span>
-                                <span>Prioridade: <strong>{(liveOverview.queue && liveOverview.queue.priority_logins) || 0}</strong></span>
-                                <span>Cooldown: <strong>{liveOverview.queue && liveOverview.queue.cooldown_active ? 'sim' : 'não'}</strong></span>
-                                <span>Infra-cooldown: <strong>{liveOverview.queue && liveOverview.queue.infra_cooldown_active ? 'sim' : 'não'}</strong></span>
-                                <button onClick={() => setShowAllRecentRequests(!showAllRecentRequests)} className="text-xs bg-white border border-gray-200 px-3 py-1 rounded font-bold text-gray-600 hover:bg-gray-100">
-                                    {showAllRecentRequests ? 'Ver menos' : 'Ver tudo'}
-                                </button>
-                            </div>
-                        </div>
-                        <div className="overflow-x-auto max-h-[360px] custom-scroll">
-                            <table className="w-full text-left min-w-[1160px]">
-                                <thead className="bg-gray-100 text-gray-600 text-xs uppercase tracking-wider border-b border-gray-200">
-                                    <tr>
-                                        <th className="p-3 font-semibold">Quando</th>
-                                        <th className="p-3 font-semibold">Endpoint</th>
-                                        <th className="p-3 font-semibold">Setor</th>
-                                        <th className="p-3 font-semibold">Solicitante</th>
-                                        <th className="p-3 font-semibold">Conta</th>
-                                        <th className="p-3 font-semibold">Resultado</th>
-                                        <th className="p-3 font-semibold">Idade Cookie</th>
-                                        <th className="p-3 font-semibold">IP</th>
-                                        <th className="p-3 font-semibold">User-Agent</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y divide-gray-100 text-sm">
-                                    {visibleRecentRequests.length ? visibleRecentRequests.map((item, idx) => (
-                                        <tr key={`${item.ts}-${idx}`} className="hover:bg-gray-50">
-                                            <td className="p-3 font-mono text-xs text-gray-600 whitespace-nowrap">{item.ts_local || item.ts || '-'}</td>
-                                            <td className="p-3"><span className="bg-blue-50 text-blue-700 px-2 py-1 rounded text-xs font-bold">{item.endpoint || '-'}</span></td>
-                                            <td className="p-3 font-semibold text-gray-700">{item.setor || '-'}</td>
-                                            <td className="p-3 text-gray-700">
-                                                <div>{item.requester_display_name || item.requester_username || '-'}</div>
-                                                <div className="text-[11px] font-mono text-gray-400">{item.request_id || '-'}</div>
-                                            </td>
-                                            <td className="p-3 font-mono text-gray-700">{item.login || '-'}</td>
-                                            <td className="p-3"><span className={`px-2 py-1 rounded text-xs font-bold uppercase ${outcomeClass(item.outcome)}`}>{item.outcome || '-'}</span></td>
-                                            <td className="p-3 text-gray-600">{item.cookie_age_minutes !== undefined ? formatMinutes(item.cookie_age_minutes) : '-'}</td>
-                                            <td className="p-3 font-mono text-xs text-gray-600">{item.ip || '-'}</td>
-                                            <td className="p-3 text-xs text-gray-500 max-w-[280px] truncate" title={item.user_agent || ''}>{item.user_agent || '-'}</td>
-                                        </tr>
-                                    )) : <tr><td colSpan="9" className="p-8 text-center text-gray-500">Sem eventos recentes.</td></tr>}
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-
-                    <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden mb-8">
-                        <div className="bg-gray-50 border-b border-gray-200 p-4 flex justify-between items-center">
-                            <h3 className="font-bold text-gray-700"><i className="fas fa-user-shield mr-2 text-slate-600"></i>Auditoria Administrativa</h3>
-                            <button onClick={() => setShowAllAuditEvents(!showAllAuditEvents)} className="text-xs bg-white border border-gray-200 px-3 py-1 rounded font-bold text-gray-600 hover:bg-gray-100">
-                                {showAllAuditEvents ? 'Ver menos' : 'Ver tudo'}
-                            </button>
-                        </div>
-                        <div className="divide-y divide-gray-100 max-h-[280px] overflow-y-auto custom-scroll">
-                            {visibleAuditEvents.length ? visibleAuditEvents.map((item, idx) => (
-                                <div key={`${item.ts}-${idx}`} className="p-4 hover:bg-gray-50">
-                                    <div className="flex items-center justify-between gap-4">
-                                        <div>
-                                            <div className="font-bold text-gray-800">{item.action}</div>
-                                            <div className="text-sm text-gray-600">{item.actor} {item.target ? `• ${item.target}` : ''}</div>
-                                        </div>
-                                        <div className="text-right text-xs text-gray-500">
-                                            <div>{item.ts_local || '-'}</div>
-                                            <div>{item.ip || '-'}</div>
-                                        </div>
+                                <div>
+                                    <div className="flex items-center justify-between mb-2">
+                                        <h4 className="text-sm font-black text-slate-700">Contas em backoff</h4>
+                                        <Pill tone="red">{(liveOverview.backoff_accounts || []).length}</Pill>
                                     </div>
-                                </div>
-                            )) : <div className="p-6 text-gray-400 text-sm">Sem eventos de auditoria.</div>}
-                        </div>
-                    </div>
-
-                    <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-4 gap-4">
-                        <h2 className="text-2xl font-bold text-gray-800"><i className="fas fa-users-cog mr-2 text-gray-400"></i>Pool de Contas BB</h2>
-                        <button onClick={() => { setEditingAccount(null); setIsModalOpen(true); }} className="bg-blue-600 text-white px-5 py-2.5 rounded-lg font-bold hover:bg-blue-700 shadow transition flex items-center">
-                            <i className="fas fa-user-plus mr-2"></i> Nova Conta BB
-                        </button>
-                    </div>
-
-                    <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 mb-4 flex flex-col md:flex-row gap-4">
-                        <div className="flex-1 relative">
-                            <i className="fas fa-search absolute left-3 top-3 text-gray-400"></i>
-                            <input type="text" value={search} onChange={e => setSearch(e.target.value)} placeholder="Pesquisar matrícula, nome..." className="w-full pl-10 p-2 border rounded outline-none focus:border-blue-500" />
-                        </div>
-                        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="w-full md:w-56 p-2 border rounded outline-none focus:border-blue-500">
-                            <option value="">Todos os Status</option>
-                            {uniqueStatuses.map(s => <option key={s} value={s}>{s.replace(/_/g, ' ').toUpperCase()}</option>)}
-                        </select>
-                        <select value={sectorFilter} onChange={e => setSectorFilter(e.target.value)} className="w-full md:w-56 p-2 border rounded outline-none focus:border-blue-500">
-                            <option value="">Todos os Setores</option>
-                            {adSectors.map(s => <option key={s} value={s}>{s}</option>)}
-                        </select>
-                    </div>
-
-                    <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                        <div className="overflow-x-auto">
-                            <table className="w-full text-left border-collapse min-w-[900px]">
-                                <thead className="bg-gray-100 text-gray-600 text-xs uppercase tracking-wider border-b border-gray-200">
-                                    <tr>
-                                        <th className="p-4 font-semibold cursor-pointer hover:bg-gray-200 transition" onClick={() => handleSort('login')}>
-                                            Conta (Login) {renderSortIcon('login')}
-                                        </th>
-                                        <th className="p-4 font-semibold cursor-pointer hover:bg-gray-200 transition" onClick={() => handleSort('titular')}>
-                                            Titular {renderSortIcon('titular')}
-                                        </th>
-                                        <th className="p-4 font-semibold">Setores Vinculados</th>
-                                        <th className="p-4 font-semibold text-center cursor-pointer hover:bg-gray-200 transition" onClick={() => handleSort('status')}>
-                                            Status / Validade {renderSortIcon('status')}
-                                        </th>
-                                        <th className="p-4 font-semibold text-center">Sessão</th>
-                                        <th className="p-4 font-semibold text-center">Ações</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="text-sm divide-y divide-gray-100">
-                                    {sortedAndFilteredAccounts.map(acc => (
-                                        <tr key={acc.id} className="hover:bg-gray-50 transition border-b border-gray-100">
-                                            <td className="p-4 font-mono font-bold text-gray-800"><i className="fas fa-fingerprint text-gray-400 mr-2"></i>{acc.login}</td>
-                                            <td className="p-4 font-semibold text-gray-700">{acc.titular || '-'}</td>
-                                            <td className="p-4 flex flex-wrap gap-1 max-w-[250px]">
-                                                {acc.setores && acc.setores.length > 0 
-                                                    ? acc.setores.map(s => <span key={s} className="bg-blue-100 text-blue-800 text-[10px] px-2 py-0.5 rounded border border-blue-200">{s}</span>)
-                                                    : <span className="text-gray-400 text-xs italic">Nenhum setor</span>}
-                                            </td>
-                                            <td className="p-4 text-center">
-                                                <StatusBadge status={acc.status} />
-                                                <div className="mt-1.5 text-[10px] text-gray-400 font-bold">{acc.data_validade ? `Validade: ${acc.data_validade}` : 'Sem vencimento'}</div>
-                                            </td>
-                                            <td className="p-4 text-center">
-                                                <div className={`inline-block px-3 py-1 rounded-full text-[10px] font-bold uppercase ${acc.cookie_hot ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600'}`}>
-                                                    {acc.cookie_hot ? 'quente' : 'fria'}
+                                    <div className="space-y-2 max-h-48 overflow-y-auto custom-scroll pr-1">
+                                        {(liveOverview.backoff_accounts || []).length === 0 ? <EmptyState text="Nenhuma conta em backoff." /> : null}
+                                        {(liveOverview.backoff_accounts || []).slice(0, 6).map((account) => (
+                                            <div key={account.account_id} className="rounded-2xl border border-rose-100 bg-rose-50 p-3">
+                                                <div className="flex items-center justify-between gap-3">
+                                                    <div className="font-black text-slate-900">{account.login}</div>
+                                                    <div className="text-sm font-bold text-rose-700">{formatSeconds(account.backoff_seconds)}</div>
                                                 </div>
-                                                <div className="mt-2 text-[11px] text-gray-500">{acc.last_login}</div>
-                                                <div className="text-[11px] text-gray-500">Idade: {formatMinutes(acc.cookie_age_minutes)}</div>
-                                                <div className="text-[11px] text-gray-500">Restam: {formatMinutes(acc.minutes_to_refresh)}</div>
-                                                {acc.backoff_seconds > 0 && <div className="text-[11px] text-red-600 font-bold">Backoff: {formatSeconds(acc.backoff_seconds)}</div>}
-                                            </td>
-                                            <td className="p-4 text-center whitespace-nowrap">
-                                                <button onClick={() => handleAction('clear', acc.id)} className="text-orange-500 hover:text-orange-700 bg-orange-50 p-2 rounded transition mr-1" title="Limpar Cookies"><i className="fas fa-eraser"></i></button>
-                                                <button onClick={() => { setEditingAccount(acc); setIsModalOpen(true); }} className="text-blue-500 hover:text-blue-700 bg-blue-50 p-2 rounded transition mr-1" title="Editar"><i className="fas fa-cog"></i></button>
-                                                <button onClick={() => handleAction('delete', acc.id)} className="text-red-500 hover:text-red-700 bg-red-50 p-2 rounded transition" title="Excluir"><i className="fas fa-trash-alt"></i></button>
-                                            </td>
-                                        </tr>
-                                    ))}
-                                    {sortedAndFilteredAccounts.length === 0 && <tr><td colSpan="6" className="p-8 text-center text-gray-500">Nenhum resultado encontrado.</td></tr>}
-                                </tbody>
-                            </table>
-                        </div>
+                                                <div className="text-xs text-slate-500 mt-1">{(account.setores || []).join(', ') || 'Sem setor'}</div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+                        </SectionCard>
+
+                        <SectionCard title="Pressão de Sincronização" subtitle={`Janela de ${syncPressure.window_minutes || 30} minutos para entender o peso do awaiting_sync.`} icon="fas fa-wave-square" className="xl:col-span-3">
+                            <div className="grid grid-cols-2 gap-3 mb-4">
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                                    <div className="text-xs font-black uppercase tracking-[0.14em] text-slate-400">Awaiting Sync</div>
+                                    <div className="text-2xl font-black text-slate-900 mt-2">{syncPressure.totals?.awaiting_sync || 0}</div>
+                                </div>
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                                    <div className="text-xs font-black uppercase tracking-[0.14em] text-slate-400">Status Polling</div>
+                                    <div className="text-2xl font-black text-slate-900 mt-2">{syncPressure.totals?.status_events || 0}</div>
+                                </div>
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                                    <div className="text-xs font-black uppercase tracking-[0.14em] text-slate-400">Na fila</div>
+                                    <div className="text-2xl font-black text-slate-900 mt-2">{syncPressure.totals?.queue_entries || 0}</div>
+                                </div>
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                                    <div className="text-xs font-black uppercase tracking-[0.14em] text-slate-400">Locks ativos</div>
+                                    <div className="text-2xl font-black text-slate-900 mt-2">{syncPressure.totals?.locked_accounts || 0}</div>
+                                </div>
+                            </div>
+                            <div className="space-y-2 max-h-[420px] overflow-y-auto custom-scroll pr-1">
+                                {(syncPressure.sectors || []).length === 0 ? <EmptyState text="Nenhum setor com pressão destacada." /> : null}
+                                {(syncPressure.sectors || []).slice(0, 10).map((sector) => (
+                                    <div key={sector.setor} className="rounded-2xl border border-slate-200 p-3">
+                                        <div className="flex items-center justify-between gap-3">
+                                            <div className="font-black text-slate-900">{sector.setor}</div>
+                                            <Pill tone={sector.pressure_score > 10 ? 'red' : sector.pressure_score > 4 ? 'amber' : 'gray'}>
+                                                score {sector.pressure_score}
+                                            </Pill>
+                                        </div>
+                                        <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-slate-500">
+                                            <div>Awaiting: <strong>{sector.awaiting_sync}</strong></div>
+                                            <div>Status: <strong>{sector.status_events}</strong></div>
+                                            <div>Fila: <strong>{sector.queue_depth}</strong></div>
+                                            <div>Auto fila: <strong>{sector.auto_queue_depth}</strong></div>
+                                            <div>Usuários: <strong>{sector.unique_requester_count}</strong></div>
+                                            <div>IPs: <strong>{sector.unique_ip_count}</strong></div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </SectionCard>
                     </div>
 
-                    <AccountModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} onSave={handleSaveAccount} accountData={editingAccount} adSectors={adSectors} token={token} />
+                    <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
+                        <SectionCard title="Usuários/Setores Ativos" subtitle="Últimas chamadas vistas na API com solicitante e endpoint." icon="fas fa-users" className="xl:col-span-5">
+                            <div className="space-y-3 max-h-[520px] overflow-y-auto custom-scroll pr-1">
+                                {(liveOverview.active_users || []).length === 0 ? <EmptyState text="Nenhum usuário ativo agora." /> : null}
+                                {(liveOverview.active_users || []).slice(0, 12).map((entry, index) => (
+                                    <div key={`${entry.setor}-${entry.request_id || index}`} className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
+                                        <div className="flex items-start justify-between gap-3">
+                                            <div>
+                                                <div className="text-base font-black text-slate-900">{entry.setor || 'Sem setor'}</div>
+                                                <div className="text-sm text-slate-600 mt-1">{entry.requester_display_name || entry.requester_username || 'Solicitante não identificado'}</div>
+                                            </div>
+                                            <Pill tone={formatOutcomeTone(entry.outcome)}>{entry.outcome || 'ativo'}</Pill>
+                                        </div>
+                                        <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-500">
+                                            <div>Endpoint: <strong>{entry.endpoint || '-'}</strong></div>
+                                            <div>Req: <strong>{entry.request_id || '-'}</strong></div>
+                                            <div>Conta: <strong>{entry.login || 'não resolvida'}</strong></div>
+                                            <div>Há: <strong>{formatSeconds(entry.idle_seconds)}</strong></div>
+                                            <div className="col-span-2">IP: <strong>{entry.ip || '-'}</strong></div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </SectionCard>
+
+                        <SectionCard title="Últimas Requisições" subtitle="Eventos mais recentes gravados pela API para fechar o ciclo entre status, pool e entrega de cookies." icon="fas fa-stream" className="xl:col-span-7">
+                            <div className="overflow-x-auto">
+                                <table className="min-w-full text-sm">
+                                    <thead>
+                                        <tr className="text-left text-xs uppercase tracking-[0.14em] text-slate-400 border-b border-slate-100">
+                                            <th className="pb-3 pr-4">Hora</th>
+                                            <th className="pb-3 pr-4">Setor</th>
+                                            <th className="pb-3 pr-4">Endpoint</th>
+                                            <th className="pb-3 pr-4">Resultado</th>
+                                            <th className="pb-3 pr-4">Solicitante</th>
+                                            <th className="pb-3 pr-4">Req</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-100">
+                                        {recentRequests.length === 0 ? (
+                                            <tr><td colSpan="6"><EmptyState text="Nenhuma requisição recente." /></td></tr>
+                                        ) : null}
+                                        {recentRequests.slice(0, 16).map((item, index) => (
+                                            <tr key={`${item.ts || index}-${item.request_id || index}`} className="align-top">
+                                                <td className="py-3 pr-4 text-slate-500 whitespace-nowrap">{item.ts_local || item.ts || '-'}</td>
+                                                <td className="py-3 pr-4 font-bold text-slate-800">{item.setor || '-'}</td>
+                                                <td className="py-3 pr-4 text-slate-600">{item.endpoint || '-'}</td>
+                                                <td className="py-3 pr-4"><Pill tone={formatOutcomeTone(item.outcome)}>{item.outcome || '-'}</Pill></td>
+                                                <td className="py-3 pr-4 text-slate-600">{item.requester_display_name || item.requester_username || '-'}</td>
+                                                <td className="py-3 pr-4 font-mono text-xs text-slate-500">{item.request_id || '-'}</td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </SectionCard>
+                    </div>
                 </div>
             );
         };
 
-        // ============================================================================
-        // MÓDULO 5: TAB VIEW - ANALYTICS (PROTEGIDO CONTRA VERSÕES DE API)
-        // ============================================================================
-        const AnalyticsView = ({ token }) => {
+        const AccountsView = ({ token, adSectors }) => {
+            const [accounts, setAccounts] = useState([]);
+            const [loading, setLoading] = useState(true);
+            const [search, setSearch] = useState("");
+            const [statusFilter, setStatusFilter] = useState("");
+            const [sectorFilter, setSectorFilter] = useState("");
+            const [isModalOpen, setIsModalOpen] = useState(false);
+            const [editingAccount, setEditingAccount] = useState(null);
+
+            const fetchAccounts = useCallback(async () => {
+                try {
+                    const data = await fetchJson('/api/admin/accounts', token);
+                    setAccounts(data);
+                } catch (e) {
+                    console.error("Erro ao carregar contas:", e);
+                } finally {
+                    setLoading(false);
+                }
+            }, [token]);
+
+            useEffect(() => {
+                fetchAccounts();
+                const interval = setInterval(fetchAccounts, 12000);
+                return () => clearInterval(interval);
+            }, [fetchAccounts]);
+
+            const handleSaveAccount = async (payload) => {
+                const url = payload.id ? `/api/admin/accounts/${payload.id}` : `/api/admin/accounts`;
+                const method = payload.id ? 'PUT' : 'POST';
+                try {
+                    const res = await fetch(url, {
+                        method,
+                        headers: buildHeaders(token, { 'Content-Type': 'application/json' }),
+                        body: JSON.stringify(payload)
+                    });
+                    const data = await res.json();
+                    if (!res.ok) {
+                        throw new Error(data.erro || "Falha ao salvar conta.");
+                    }
+                    setIsModalOpen(false);
+                    setEditingAccount(null);
+                    fetchAccounts();
+                } catch (e) {
+                    alert(e.message || "Erro ao salvar conta.");
+                }
+            };
+
+            const handleAction = async (action, id) => {
+                if (action === 'delete' && !confirm("Remover esta conta permanentemente?")) return;
+                if (action === 'clear' && !confirm("Expurgar a sessão desta conta?")) return;
+
+                const url = action === 'delete' ? `/api/admin/accounts/${id}` : `/api/admin/accounts/${id}/clear`;
+                const method = action === 'delete' ? 'DELETE' : 'POST';
+
+                try {
+                    const res = await fetch(url, { method, headers: buildHeaders(token) });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.erro || "Falha ao executar ação.");
+                    fetchAccounts();
+                } catch (e) {
+                    alert(e.message || "Erro ao executar ação.");
+                }
+            };
+
+            const statuses = useMemo(() => [...new Set(accounts.map((item) => (item.status || '').toLowerCase()).filter(Boolean))].sort(), [accounts]);
+
+            const filteredAccounts = useMemo(() => {
+                return accounts.filter((acc) => {
+                    const safeStatus = (acc.status || '').toLowerCase();
+                    const q = search.trim().toLowerCase();
+                    if (statusFilter && safeStatus !== statusFilter) return false;
+                    if (sectorFilter && !(acc.setores || []).includes(sectorFilter)) return false;
+                    if (!q) return true;
+                    return (
+                        (acc.login || '').toLowerCase().includes(q) ||
+                        (acc.titular || '').toLowerCase().includes(q)
+                    );
+                }).sort((a, b) => (a.login || '').localeCompare(b.login || ''));
+            }, [accounts, search, statusFilter, sectorFilter]);
+
+            const summary = useMemo(() => {
+                const total = accounts.length;
+                const active = accounts.filter((item) => ['ativo', 'active', 'provisoria_recebida', 'termo_assinado'].includes((item.status || '').toLowerCase())).length;
+                const hot = accounts.filter((item) => item.cookie_hot).length;
+                const backoff = accounts.filter((item) => Number(item.backoff_seconds) > 0).length;
+                const shared = accounts.filter((item) => (item.setores || []).length > 1).length;
+                return { total, active, hot, backoff, shared };
+            }, [accounts]);
+
+            return (
+                <div className="space-y-6">
+                    <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
+                        <div>
+                            <h2 className="text-3xl font-black tracking-tight text-slate-900">Gerenciamento de Contas</h2>
+                            <p className="text-slate-500 mt-1">Base de contas, status operacionais e saúde do pool por credencial.</p>
+                        </div>
+                        <button
+                            onClick={() => { setEditingAccount(null); setIsModalOpen(true); }}
+                            className="inline-flex items-center justify-center gap-2 rounded-2xl bg-blue-700 text-white px-5 py-3 font-bold hover:bg-blue-800"
+                        >
+                            <i className="fas fa-plus"></i> Nova conta
+                        </button>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4">
+                        <KpiCard title="Total de Contas" value={summary.total} accent="blue" />
+                        <KpiCard title="Contas Ativas" value={summary.active} accent="green" />
+                        <KpiCard title="Sessões Quentes" value={summary.hot} accent="amber" />
+                        <KpiCard title="Em Backoff" value={summary.backoff} accent="red" />
+                        <KpiCard title="Compartilhadas" value={summary.shared} accent="purple" />
+                    </div>
+
+                    <SectionCard title="Filtros e Base de Contas" subtitle="Visualização limpa para operar sem misturar métricas do dia com cadastro." icon="fas fa-id-card">
+                        <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-5">
+                            <input
+                                type="text"
+                                value={search}
+                                onChange={(e) => setSearch(e.target.value)}
+                                placeholder="Buscar por login ou titular"
+                                className="rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500"
+                            />
+                            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500">
+                                <option value="">Todos os status</option>
+                                {statuses.map((status) => <option key={status} value={status}>{status.replace(/_/g, ' ')}</option>)}
+                            </select>
+                            <select value={sectorFilter} onChange={(e) => setSectorFilter(e.target.value)} className="rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500">
+                                <option value="">Todos os setores</option>
+                                {adSectors.map((sector) => <option key={sector} value={sector}>{sector}</option>)}
+                            </select>
+                            <button onClick={fetchAccounts} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 font-bold text-slate-600 hover:bg-slate-100">
+                                <i className="fas fa-rotate-right mr-2"></i>Atualizar
+                            </button>
+                        </div>
+
+                        {loading ? <div className="py-16 text-center text-slate-400"><i className="fas fa-spinner fa-spin text-2xl"></i></div> : null}
+
+                        {!loading ? (
+                            <div className="overflow-x-auto">
+                                <table className="min-w-full text-sm">
+                                    <thead>
+                                        <tr className="text-left text-xs uppercase tracking-[0.14em] text-slate-400 border-b border-slate-100">
+                                            <th className="pb-3 pr-4">Conta</th>
+                                            <th className="pb-3 pr-4">Setores</th>
+                                            <th className="pb-3 pr-4">Status</th>
+                                            <th className="pb-3 pr-4">Runtime</th>
+                                            <th className="pb-3 pr-4">Último login</th>
+                                            <th className="pb-3 pr-4 text-right">Ações</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-100">
+                                        {filteredAccounts.length === 0 ? (
+                                            <tr><td colSpan="6"><EmptyState text="Nenhuma conta encontrada com os filtros atuais." /></td></tr>
+                                        ) : null}
+                                        {filteredAccounts.map((acc) => (
+                                            <tr key={acc.id} className="align-top">
+                                                <td className="py-4 pr-4">
+                                                    <div className="font-black text-slate-900">{acc.login}</div>
+                                                    <div className="text-slate-500 mt-1">{acc.titular || 'Não informado'}</div>
+                                                </td>
+                                                <td className="py-4 pr-4">
+                                                    <div className="flex flex-wrap gap-2 max-w-sm">
+                                                        {(acc.setores || []).map((sector) => <Pill key={`${acc.id}-${sector}`} tone="blue">{sector}</Pill>)}
+                                                    </div>
+                                                </td>
+                                                <td className="py-4 pr-4"><StatusBadge status={acc.status} /></td>
+                                                <td className="py-4 pr-4">
+                                                    <div className="space-y-2">
+                                                        {acc.cookie_hot ? <Pill tone="green">quente por {formatMinutes(acc.cookie_age_minutes)}</Pill> : <Pill tone="gray">sem sessão quente</Pill>}
+                                                        {Number(acc.backoff_seconds) > 0 ? <Pill tone="red">backoff {formatSeconds(acc.backoff_seconds)}</Pill> : null}
+                                                        <div className="text-xs text-slate-500">{acc.cookie_count || 0} cookies salvos</div>
+                                                    </div>
+                                                </td>
+                                                <td className="py-4 pr-4">
+                                                    <div className="text-slate-700 font-semibold">{acc.last_login || 'Nunca conectou'}</div>
+                                                    <div className="text-xs text-slate-500 mt-1 truncate max-w-[240px]">{acc.user_agent_used || 'Sem user-agent registrado'}</div>
+                                                </td>
+                                                <td className="py-4 text-right">
+                                                    <div className="inline-flex items-center gap-2">
+                                                        <button onClick={() => handleAction('clear', acc.id)} className="w-10 h-10 rounded-2xl bg-amber-50 text-amber-700 hover:bg-amber-100" title="Limpar sessão">
+                                                            <i className="fas fa-eraser"></i>
+                                                        </button>
+                                                        <button onClick={() => { setEditingAccount(acc); setIsModalOpen(true); }} className="w-10 h-10 rounded-2xl bg-blue-50 text-blue-700 hover:bg-blue-100" title="Editar conta">
+                                                            <i className="fas fa-pen"></i>
+                                                        </button>
+                                                        <button onClick={() => handleAction('delete', acc.id)} className="w-10 h-10 rounded-2xl bg-rose-50 text-rose-700 hover:bg-rose-100" title="Excluir conta">
+                                                            <i className="fas fa-trash"></i>
+                                                        </button>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        ) : null}
+                    </SectionCard>
+
+                    <AccountModal
+                        isOpen={isModalOpen}
+                        onClose={() => { setIsModalOpen(false); setEditingAccount(null); }}
+                        onSave={handleSaveAccount}
+                        accountData={editingAccount}
+                        adSectors={adSectors}
+                        token={token}
+                    />
+                </div>
+            );
+        };
+
+        const HistoryView = ({ token }) => {
             const [dates, setDates] = useState({
                 start: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
                 end: new Date().toISOString().split('T')[0]
             });
             const [data, setData] = useState(null);
             const [errorImages, setErrorImages] = useState([]);
+            const [auditEvents, setAuditEvents] = useState([]);
+            const [loading, setLoading] = useState(true);
 
-            const fetchAnalytics = async () => {
+            const fetchPageData = useCallback(async () => {
+                setLoading(true);
                 try {
-                    const res = await fetch(`/api/admin/analytics?start=${dates.start}&end=${dates.end}`, { headers: { 'X-Admin-Token': token } });
-                    if (res.ok) setData(await res.json());
-                } catch (e) { alert("Erro ao buscar histórico."); }
-            };
+                    const [analyticsData, imagesData, auditData] = await Promise.all([
+                        fetchJson(`/api/admin/analytics?start=${dates.start}&end=${dates.end}`, token),
+                        fetchJson('/api/admin/error_images', token),
+                        fetchJson('/api/admin/audit?limit=80', token)
+                    ]);
+                    setData(analyticsData);
+                    setErrorImages(imagesData);
+                    setAuditEvents(auditData);
+                } catch (e) {
+                    console.error("Erro ao carregar histórico:", e);
+                } finally {
+                    setLoading(false);
+                }
+            }, [token, dates.start, dates.end]);
 
-            const fetchErrorImages = async () => {
-                try {
-                    const res = await fetch('/api/admin/error_images', { headers: { 'X-Admin-Token': token } });
-                    if (res.ok) setErrorImages(await res.json());
-                } catch (e) { console.error("Erro ao buscar galeria", e); }
-            };
+            useEffect(() => {
+                fetchPageData();
+            }, [fetchPageData]);
 
-            useEffect(() => { 
-                fetchAnalytics(); 
-                fetchErrorImages();
-            }, []);
+            if (loading || !data) {
+                return <div className="py-20 text-center text-slate-400"><i className="fas fa-spinner fa-spin text-3xl"></i></div>;
+            }
 
-            if (!data) return <div className="text-center p-10"><i className="fas fa-spinner fa-spin text-3xl text-blue-500"></i></div>;
-
-            // --- PROTEÇÃO ANTI-CRASH (Suporta tanto a API antiga quanto a Nova) ---
-            const totalLogins = data.efficiency ? data.efficiency.total_logins_requested : (data.total_logins || 0);
-            const totalCookies = data.efficiency ? data.efficiency.total_cookies_injected : (data.total_cookies || 0);
-            const economiaPct = data.efficiency ? data.efficiency.economia_pct : (data.economia_pct || 0);
-            const avgCookieAge = data.efficiency ? data.efficiency.avg_cookie_age_minutes : 0;
-            const avgSessionCycle = data.efficiency ? data.efficiency.avg_session_cycle_minutes : 0;
-            const maxSessionCycle = data.efficiency ? data.efficiency.max_session_cycle_minutes : 0;
+            const efficiency = data.efficiency || {};
             const robotsPerformance = data.robots_performance || [];
             const errorDiagnostics = data.error_diagnostics || [];
             const sectorsData = data.sectors || [];
@@ -805,184 +921,316 @@
             const requestOutcomes = data.request_outcomes || [];
 
             return (
-                <div>
-                    <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-200 mb-6 flex flex-col md:flex-row items-end md:items-center gap-4">
+                <div className="space-y-6">
+                    <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
                         <div>
-                            <label className="text-xs font-bold text-gray-500 uppercase block mb-1">Data Início</label>
-                            <input type="date" value={dates.start} onChange={e => setDates({...dates, start: e.target.value})} className="p-2 border rounded outline-none focus:border-blue-500 text-sm" />
+                            <h2 className="text-3xl font-black tracking-tight text-slate-900">Histórico e Analytics</h2>
+                            <p className="text-slate-500 mt-1">Leitura consolidada do período, auditoria administrativa e galeria de erros.</p>
                         </div>
-                        <div>
-                            <label className="text-xs font-bold text-gray-500 uppercase block mb-1">Data Fim</label>
-                            <input type="date" value={dates.end} onChange={e => setDates({...dates, end: e.target.value})} className="p-2 border rounded outline-none focus:border-blue-500 text-sm" />
-                        </div>
-                        <button onClick={fetchAnalytics} className="bg-blue-800 text-white px-6 py-2 rounded font-bold hover:bg-blue-700 transition h-[38px] flex items-center">
-                            <i className="fas fa-search mr-2"></i> Filtrar Histórico
-                        </button>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-6 mb-6">
-                        <div className="bg-gradient-to-br from-blue-500 to-blue-700 p-6 rounded-xl shadow-sm text-white">
-                            <h3 className="text-blue-100 text-xs font-bold uppercase">Total de Acessos no Período</h3>
-                            <p className="text-4xl font-black mt-2">{totalLogins}</p>
-                        </div>
-                        <div className="bg-gradient-to-br from-green-500 to-green-700 p-6 rounded-xl shadow-sm text-white">
-                            <h3 className="text-green-100 text-xs font-bold uppercase">Cookies Fornecidos</h3>
-                            <p className="text-4xl font-black mt-2">{totalCookies}</p>
-                        </div>
-                        <div className="bg-gradient-to-br from-purple-500 to-purple-700 p-6 rounded-xl shadow-sm text-white">
-                            <h3 className="text-purple-100 text-xs font-bold uppercase">Economia no Período</h3>
-                            <p className="text-4xl font-black mt-2">{economiaPct}%</p>
-                        </div>
-                        <div className="bg-gradient-to-br from-pink-500 to-pink-700 p-6 rounded-xl shadow-sm text-white">
-                            <h3 className="text-pink-100 text-xs font-bold uppercase">Idade Média do Cookie</h3>
-                            <p className="text-4xl font-black mt-2">{avgCookieAge}m</p>
-                        </div>
-                        <div className="bg-gradient-to-br from-indigo-500 to-indigo-700 p-6 rounded-xl shadow-sm text-white">
-                            <h3 className="text-indigo-100 text-xs font-bold uppercase">Ciclo Médio / Máximo</h3>
-                            <p className="text-3xl font-black mt-2">{avgSessionCycle}m</p>
-                            <p className="text-indigo-100 text-xs mt-1">pico {maxSessionCycle}m</p>
+                        <div className="bg-white border border-slate-200 rounded-3xl shadow-sm p-4 flex flex-col md:flex-row gap-3">
+                            <div>
+                                <label className="text-xs font-black uppercase tracking-[0.14em] text-slate-400">Início</label>
+                                <input type="date" value={dates.start} onChange={(e) => setDates({ ...dates, start: e.target.value })} className="mt-2 rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500" />
+                            </div>
+                            <div>
+                                <label className="text-xs font-black uppercase tracking-[0.14em] text-slate-400">Fim</label>
+                                <input type="date" value={dates.end} onChange={(e) => setDates({ ...dates, end: e.target.value })} className="mt-2 rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500" />
+                            </div>
+                            <button onClick={fetchPageData} className="self-end rounded-2xl bg-blue-700 text-white px-5 py-3 font-bold hover:bg-blue-800">
+                                <i className="fas fa-magnifying-glass-chart mr-2"></i>Filtrar
+                            </button>
                         </div>
                     </div>
 
-                    {/* PAINÉIS DE TELEMETRIA DOS ROBÔS */}
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-                        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                            <div className="bg-gray-50 border-b border-gray-200 p-4"><h3 className="font-bold text-gray-700"><i className="fas fa-robot mr-2 text-indigo-500"></i>Saúde da Frota (Robôs)</h3></div>
-                            <ul className="divide-y divide-gray-100 max-h-[300px] overflow-y-auto custom-scroll">
-                                {robotsPerformance.length === 0 && <li className="p-8 text-center text-gray-400">Sem dados operacionais. (Atualize a API)</li>}
-                                {robotsPerformance.map(r => (
-                                    <li key={r.name} className="p-4 flex items-center justify-between hover:bg-gray-50">
-                                        <span className="font-bold text-gray-700">{r.name}</span>
-                                        <div className="text-sm flex gap-4">
-                                            <span className="text-green-600 font-bold"><i className="fas fa-check-circle mr-1"></i>{r.success}</span>
-                                            <span className="text-red-500 font-bold"><i className="fas fa-times-circle mr-1"></i>{r.error}</span>
+                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4">
+                        <KpiCard title="Acessos no Período" value={efficiency.total_logins_requested || 0} accent="blue" />
+                        <KpiCard title="Cookies Fornecidos" value={efficiency.total_cookies_injected || 0} accent="green" />
+                        <KpiCard title="Economia do Pool" value={`${efficiency.economia_pct || 0}%`} accent="purple" />
+                        <KpiCard title="Idade Média do Cookie" value={formatMinutes(efficiency.avg_cookie_age_minutes)} accent="amber" />
+                        <KpiCard title="Ciclo Médio / Pico" value={formatMinutes(efficiency.avg_session_cycle_minutes)} subtitle={`pico ${formatMinutes(efficiency.max_session_cycle_minutes)}`} accent="red" />
+                    </div>
+
+                    <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
+                        <SectionCard title="Saúde da Frota" subtitle="Sucessos e falhas por robô no período selecionado." icon="fas fa-robot" className="xl:col-span-4">
+                            <div className="space-y-3">
+                                {robotsPerformance.length === 0 ? <EmptyState text="Sem dados de robôs no período." /> : null}
+                                {robotsPerformance.map((robot) => (
+                                    <div key={robot.name} className="rounded-2xl border border-slate-200 bg-slate-50 p-4 flex items-center justify-between gap-4">
+                                        <div>
+                                            <div className="font-black text-slate-900">{robot.name}</div>
+                                            <div className="text-sm text-slate-500 mt-1">{robot.success} sucessos / {robot.error} falhas</div>
                                         </div>
-                                        <span className="font-black text-indigo-600 bg-indigo-50 px-2 py-1 rounded">{r.success_rate}% Taxa</span>
-                                    </li>
+                                        <Pill tone={robot.success_rate >= 80 ? 'green' : robot.success_rate >= 50 ? 'amber' : 'red'}>
+                                            {robot.success_rate}%
+                                        </Pill>
+                                    </div>
                                 ))}
-                            </ul>
-                        </div>
+                            </div>
+                        </SectionCard>
 
-                        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                            <div className="bg-gray-50 border-b border-gray-200 p-4"><h3 className="font-bold text-gray-700"><i className="fas fa-bug mr-2 text-red-500"></i>Diagnóstico de Falhas</h3></div>
-                            <ul className="divide-y divide-gray-100 max-h-[300px] overflow-y-auto custom-scroll">
-                                {errorDiagnostics.length === 0 && <li className="p-8 text-center text-gray-400">Nenhum erro registrado ou API desatualizada.</li>}
-                                {errorDiagnostics.map(e => (
-                                    <li key={e.reason} className="p-4 flex items-center justify-between hover:bg-gray-50">
-                                        <span className="text-sm font-medium text-gray-600 w-3/4 truncate pr-4" title={e.reason}>{e.reason}</span>
-                                        <span className="font-bold text-red-500 bg-red-50 px-3 py-1 rounded-full">{e.count} ocorrências</span>
-                                    </li>
+                        <SectionCard title="Diagnóstico de Falhas" subtitle="Motivos mais frequentes registrados pelo backend." icon="fas fa-triangle-exclamation" className="xl:col-span-4">
+                            <div className="space-y-3">
+                                {errorDiagnostics.length === 0 ? <EmptyState text="Nenhum erro registrado no período." /> : null}
+                                {errorDiagnostics.map((item) => (
+                                    <div key={item.reason} className="rounded-2xl border border-slate-200 p-4 flex items-center justify-between gap-4">
+                                        <div className="text-sm text-slate-700">{item.reason}</div>
+                                        <Pill tone="red">{item.count}</Pill>
+                                    </div>
                                 ))}
-                            </ul>
-                        </div>
+                            </div>
+                        </SectionCard>
+
+                        <SectionCard title="Auditoria Admin" subtitle="Últimas ações administrativas no painel." icon="fas fa-user-check" className="xl:col-span-4">
+                            <div className="space-y-3 max-h-[420px] overflow-y-auto custom-scroll pr-1">
+                                {auditEvents.length === 0 ? <EmptyState text="Nenhum evento de auditoria encontrado." /> : null}
+                                {auditEvents.map((item, index) => (
+                                    <div key={`${item.ts || index}-${item.action || index}`} className="rounded-2xl border border-slate-200 p-4">
+                                        <div className="flex items-center justify-between gap-4">
+                                            <div className="font-black text-slate-900">{item.action || 'ação'}</div>
+                                            <div className="text-xs text-slate-400">{item.ts_local || item.ts || '-'}</div>
+                                        </div>
+                                        <div className="text-sm text-slate-600 mt-2">Ator: <strong>{item.actor || '-'}</strong></div>
+                                        <div className="text-sm text-slate-600">Alvo: <strong>{item.target || '-'}</strong></div>
+                                        <div className="text-xs text-slate-500 mt-2">IP: {item.ip || '-'}</div>
+                                    </div>
+                                ))}
+                            </div>
+                        </SectionCard>
                     </div>
 
-                    {/* GALERIA DE PRINTS DOS ERROS */}
-                    <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden mb-6">
-                        <div className="bg-gray-50 border-b border-gray-200 p-4 flex justify-between items-center">
-                            <h3 className="font-bold text-gray-700"><i className="fas fa-camera mr-2 text-red-500"></i>Galeria de Erros Recentes (Debug)</h3>
-                            <button onClick={fetchErrorImages} className="text-sm bg-gray-200 hover:bg-gray-300 px-3 py-1 rounded transition"><i className="fas fa-sync-alt"></i> Atualizar</button>
-                        </div>
-                        <div className="p-6">
-                            {errorImages.length === 0 ? (
-                                <p className="text-gray-400 text-center py-4">Nenhuma imagem de erro encontrada ou aguardando atualização da API.</p>
-                            ) : (
-                                <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4">
-                                    {errorImages.map(img => (
-                                        <a key={img.name} href={img.url} target="_blank" rel="noreferrer" className="block border rounded-lg overflow-hidden shadow-sm hover:shadow-md transition group relative">
-                                            <img src={img.url} alt={img.name} className="w-full h-24 object-cover border-b" />
-                                            <div className="p-2 bg-gray-800 w-full text-center">
-                                                <p className="text-[10px] text-white truncate font-bold" title={img.name}>{img.name.split('_T')[0]}</p>
-                                                <p className="text-[9px] text-gray-300 mt-1"><i className="fas fa-clock mr-1"></i>{img.date_str}</p>
-                                            </div>
-                                            <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 transition flex items-center justify-center">
-                                                <i className="fas fa-search-plus text-white opacity-0 group-hover:opacity-100 text-2xl transition"></i>
+                    <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
+                        <SectionCard title="Endpoints Mais Chamados" subtitle="Distribuição por rota para entender onde a API foi mais acionada." icon="fas fa-route" className="xl:col-span-4">
+                            <div className="space-y-3">
+                                {requestEndpoints.length === 0 ? <EmptyState text="Sem dados de endpoint." /> : null}
+                                {requestEndpoints.map((item) => (
+                                    <div key={item.name} className="rounded-2xl border border-slate-200 p-4 flex items-center justify-between gap-4">
+                                        <div className="font-bold text-slate-800">{item.name}</div>
+                                        <Pill tone="blue">{item.count}</Pill>
+                                    </div>
+                                ))}
+                            </div>
+                        </SectionCard>
+
+                        <SectionCard title="Resultados das Requisições" subtitle="O que as chamadas retornaram ao longo do período." icon="fas fa-filter-circle-dollar" className="xl:col-span-4">
+                            <div className="space-y-3">
+                                {requestOutcomes.length === 0 ? <EmptyState text="Sem dados de resultado." /> : null}
+                                {requestOutcomes.map((item) => (
+                                    <div key={item.name} className="rounded-2xl border border-slate-200 p-4 flex items-center justify-between gap-4">
+                                        <div className="font-bold text-slate-800">{item.name}</div>
+                                        <Pill tone={formatOutcomeTone(item.name)}>{item.count}</Pill>
+                                    </div>
+                                ))}
+                            </div>
+                        </SectionCard>
+
+                        <SectionCard title="Galeria de Erros" subtitle="Snapshots recentes salvos pelo modo debug." icon="fas fa-camera" className="xl:col-span-4" action={
+                            <button onClick={fetchPageData} className="rounded-2xl border border-slate-200 px-4 py-2 text-sm font-bold text-slate-600 hover:bg-slate-50">
+                                <i className="fas fa-rotate-right mr-2"></i>Atualizar
+                            </button>
+                        }>
+                            {errorImages.length === 0 ? <EmptyState text="Nenhuma imagem de erro encontrada." /> : null}
+                            {errorImages.length > 0 ? (
+                                <div className="grid grid-cols-2 gap-3">
+                                    {errorImages.slice(0, 8).map((img) => (
+                                        <a key={img.name} href={img.url} target="_blank" rel="noreferrer" className="block rounded-2xl overflow-hidden border border-slate-200 bg-slate-50 hover:shadow-md transition">
+                                            <img src={img.url} alt={img.name} className="w-full h-28 object-cover" />
+                                            <div className="p-3">
+                                                <div className="text-xs font-black text-slate-800 truncate">{img.name}</div>
+                                                <div className="text-[11px] text-slate-500 mt-1">{img.date_str}</div>
                                             </div>
                                         </a>
                                     ))}
                                 </div>
-                            )}
-                        </div>
+                            ) : null}
+                        </SectionCard>
                     </div>
 
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-                        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                            <div className="bg-gray-50 border-b border-gray-200 p-4"><h3 className="font-bold text-gray-700"><i className="fas fa-route mr-2 text-sky-500"></i>Endpoints Mais Chamados</h3></div>
-                            <ul className="divide-y divide-gray-100 max-h-[260px] overflow-y-auto custom-scroll">
-                                {requestEndpoints.length === 0 && <li className="p-8 text-center text-gray-400">Sem dados.</li>}
-                                {requestEndpoints.map(item => (
-                                    <li key={item.name} className="p-4 flex items-center justify-between hover:bg-gray-50">
-                                        <span className="font-bold text-gray-700">{item.name}</span>
-                                        <span className="text-sm font-bold text-sky-600 bg-sky-50 px-3 py-1 rounded-full">{item.count}</span>
-                                    </li>
+                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                        <SectionCard title="Ranking de Uso por Setor" subtitle="Setores mais demandantes no período selecionado." icon="fas fa-chart-column">
+                            <div className="space-y-3">
+                                {sectorsData.length === 0 ? <EmptyState text="Sem ranking de setores." /> : null}
+                                {sectorsData.map((item) => (
+                                    <div key={item.name} className="rounded-2xl border border-slate-200 p-4">
+                                        <div className="flex items-center justify-between gap-4">
+                                            <div className="font-bold text-slate-800 truncate">{item.name}</div>
+                                            <div className="text-sm font-black text-blue-700">{item.count}</div>
+                                        </div>
+                                        <div className="mt-3 h-2 rounded-full bg-slate-100 overflow-hidden">
+                                            <div className="h-full bg-blue-500 rounded-full" style={{ width: `${Math.min(100, ((item.count || 0) / Math.max(1, sectorsData[0]?.count || 1)) * 100)}%` }}></div>
+                                        </div>
+                                    </div>
                                 ))}
-                            </ul>
-                        </div>
+                            </div>
+                        </SectionCard>
 
-                        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                            <div className="bg-gray-50 border-b border-gray-200 p-4"><h3 className="font-bold text-gray-700"><i className="fas fa-filter-circle-dollar mr-2 text-amber-500"></i>Resultados das Requisições</h3></div>
-                            <ul className="divide-y divide-gray-100 max-h-[260px] overflow-y-auto custom-scroll">
-                                {requestOutcomes.length === 0 && <li className="p-8 text-center text-gray-400">Sem dados.</li>}
-                                {requestOutcomes.map(item => (
-                                    <li key={item.name} className="p-4 flex items-center justify-between hover:bg-gray-50">
-                                        <span className="font-bold text-gray-700">{item.name}</span>
-                                        <span className="text-sm font-bold text-amber-600 bg-amber-50 px-3 py-1 rounded-full">{item.count}</span>
-                                    </li>
+                        <SectionCard title="Ranking de Uso por Conta" subtitle="Credenciais mais acionadas no período selecionado." icon="fas fa-key">
+                            <div className="space-y-3">
+                                {accountsData.length === 0 ? <EmptyState text="Sem ranking de contas." /> : null}
+                                {accountsData.map((item) => (
+                                    <div key={item.name} className="rounded-2xl border border-slate-200 p-4">
+                                        <div className="flex items-center justify-between gap-4">
+                                            <div className="font-bold text-slate-800 truncate">{item.name}</div>
+                                            <div className="text-sm font-black text-emerald-700">{item.count}</div>
+                                        </div>
+                                        <div className="mt-3 h-2 rounded-full bg-slate-100 overflow-hidden">
+                                            <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${Math.min(100, ((item.count || 0) / Math.max(1, accountsData[0]?.count || 1)) * 100)}%` }}></div>
+                                        </div>
+                                    </div>
                                 ))}
-                            </ul>
-                        </div>
-                    </div>
-
-                    {/* RANKING ORIGINAL DE SETORES E CONTAS */}
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                            <div className="bg-gray-50 border-b border-gray-200 p-4"><h3 className="font-bold text-gray-700"><i className="fas fa-chart-bar mr-2 text-blue-500"></i>Ranking de Uso por Setor</h3></div>
-                            <ul className="divide-y divide-gray-100 max-h-[400px] overflow-y-auto custom-scroll">
-                                {sectorsData.length === 0 && <li className="p-8 text-center text-gray-400">Sem dados.</li>}
-                                {sectorsData.map(s => {
-                                    let maxVal = totalLogins > 0 ? totalLogins : 1;
-                                    let w = Math.min((s.count / maxVal) * 100, 100);
-                                    return (
-                                        <li key={s.name} className="p-4 hover:bg-gray-50 flex items-center justify-between">
-                                            <span className="font-bold text-gray-700 w-1/3 truncate">{s.name}</span>
-                                            <div className="flex-1 mx-4 bg-gray-200 rounded-full h-2.5"><div className="bg-blue-500 h-2.5 rounded-full" style={{width: `${w}%`}}></div></div>
-                                            <span className="text-sm font-bold text-blue-600 w-24 text-right">{s.count} acessos</span>
-                                        </li>
-                                    );
-                                })}
-                            </ul>
-                        </div>
-
-                        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                            <div className="bg-gray-50 border-b border-gray-200 p-4"><h3 className="font-bold text-gray-700"><i className="fas fa-id-card mr-2 text-green-500"></i>Ranking de Acessos por Conta</h3></div>
-                            <ul className="divide-y divide-gray-100 max-h-[400px] overflow-y-auto custom-scroll">
-                                {accountsData.length === 0 && <li className="p-8 text-center text-gray-400">Sem dados.</li>}
-                                {accountsData.map(a => {
-                                    let maxVal = totalLogins > 0 ? totalLogins : 1;
-                                    let w = Math.min((a.count / maxVal) * 100, 100);
-                                    return (
-                                        <li key={a.name} className="p-4 hover:bg-gray-50 flex items-center justify-between">
-                                            <span className="font-mono font-bold text-gray-600 w-1/4 truncate">{a.name}</span>
-                                            <div className="flex-1 mx-4 bg-gray-200 rounded-full h-2.5"><div className="bg-green-500 h-2.5 rounded-full" style={{width: `${w}%`}}></div></div>
-                                            <span className="text-sm font-bold text-green-600 w-24 text-right">{a.count} acessos</span>
-                                        </li>
-                                    );
-                                })}
-                            </ul>
-                        </div>
+                            </div>
+                        </SectionCard>
                     </div>
                 </div>
             );
         };
 
-        // ============================================================================
-        // MÓDULO PRINCIPAL: APP CONTAINER
-        // ============================================================================
+        const LogsView = ({ token }) => {
+            const [source, setSource] = useState('combined');
+            const [day, setDay] = useState(getTodayInputValue());
+            const [contains, setContains] = useState('');
+            const [limit, setLimit] = useState(180);
+            const [autoRefresh, setAutoRefresh] = useState(true);
+            const [data, setData] = useState({ generated_at: '', items: [] });
+            const [loading, setLoading] = useState(true);
+
+            const fetchLogs = useCallback(async () => {
+                setLoading(true);
+                try {
+                    const params = new URLSearchParams({
+                        source,
+                        day,
+                        limit: String(limit),
+                    });
+                    if (contains.trim()) params.set('contains', contains.trim());
+                    const result = await fetchJson(`/api/admin/logs/live?${params.toString()}`, token);
+                    setData(result);
+                } catch (e) {
+                    console.error("Erro ao carregar logs:", e);
+                } finally {
+                    setLoading(false);
+                }
+            }, [token, source, day, contains, limit]);
+
+            useEffect(() => {
+                fetchLogs();
+            }, [fetchLogs]);
+
+            useEffect(() => {
+                if (!autoRefresh) return undefined;
+                const interval = setInterval(fetchLogs, 4000);
+                return () => clearInterval(interval);
+            }, [autoRefresh, fetchLogs]);
+
+            const handleDownload = async () => {
+                try {
+                    const params = new URLSearchParams({
+                        source,
+                        day,
+                    });
+                    if (contains.trim()) params.set('contains', contains.trim());
+                    const res = await fetch(`/api/admin/logs/download?${params.toString()}`, {
+                        headers: buildHeaders(token)
+                    });
+                    if (!res.ok) throw new Error('Falha ao baixar logs.');
+                    const blob = await res.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const anchor = document.createElement('a');
+                    anchor.href = url;
+                    anchor.download = `onelog_${source}_${day}.log`;
+                    document.body.appendChild(anchor);
+                    anchor.click();
+                    anchor.remove();
+                    window.URL.revokeObjectURL(url);
+                } catch (e) {
+                    alert(e.message || "Não foi possível baixar o log.");
+                }
+            };
+
+            const sourceTone = (itemSource) => itemSource === 'worker' ? 'amber' : itemSource === 'api' ? 'blue' : 'gray';
+
+            return (
+                <div className="space-y-6">
+                    <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
+                        <div>
+                            <h2 className="text-3xl font-black tracking-tight text-slate-900">Logs</h2>
+                            <p className="text-slate-500 mt-1">Leitura em tempo real e download fragmentado por dia, juntando worker e API.</p>
+                        </div>
+                        <div className="text-sm text-slate-500 bg-white border border-slate-200 rounded-2xl px-4 py-3 shadow-sm">
+                            Última leitura em <strong>{data.generated_at || '-'}</strong>
+                        </div>
+                    </div>
+
+                    <SectionCard title="Leitor de Logs" subtitle="Use filtros simples para focar no dia, origem e palavras-chave do incidente." icon="fas fa-terminal" action={
+                        <div className="flex items-center gap-2">
+                            <button onClick={fetchLogs} className="rounded-2xl border border-slate-200 px-4 py-2 text-sm font-bold text-slate-600 hover:bg-slate-50">
+                                <i className="fas fa-rotate-right mr-2"></i>Atualizar
+                            </button>
+                            <button onClick={handleDownload} className="rounded-2xl bg-blue-700 text-white px-4 py-2 text-sm font-bold hover:bg-blue-800">
+                                <i className="fas fa-download mr-2"></i>Baixar
+                            </button>
+                        </div>
+                    }>
+                        <div className="grid grid-cols-1 md:grid-cols-5 gap-3 mb-5">
+                            <select value={source} onChange={(e) => setSource(e.target.value)} className="rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500">
+                                <option value="combined">Worker + API</option>
+                                <option value="worker">Apenas worker</option>
+                                <option value="api">Apenas API</option>
+                            </select>
+                            <input type="date" value={day} onChange={(e) => setDay(e.target.value)} className="rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500" />
+                            <input
+                                type="text"
+                                value={contains}
+                                onChange={(e) => setContains(e.target.value)}
+                                placeholder="Filtrar por texto"
+                                className="rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500 md:col-span-2"
+                            />
+                            <select value={limit} onChange={(e) => setLimit(Number(e.target.value))} className="rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500">
+                                {[80, 120, 180, 300, 500].map((item) => <option key={item} value={item}>{item} linhas</option>)}
+                            </select>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-3 mb-5">
+                            <label className="inline-flex items-center gap-2 text-sm text-slate-600">
+                                <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />
+                                Atualização automática
+                            </label>
+                            <Pill tone="gray">{(data.items || []).length} linhas exibidas</Pill>
+                            <Pill tone="blue">{source === 'combined' ? 'fontes combinadas' : source}</Pill>
+                            <Pill tone="amber">{day}</Pill>
+                        </div>
+
+                        <div className="rounded-3xl border border-slate-200 bg-slate-950 text-slate-200 p-4 h-[620px] overflow-auto custom-scroll">
+                            {loading ? <div className="text-sm text-slate-400"><i className="fas fa-spinner fa-spin mr-2"></i>Atualizando logs...</div> : null}
+                            {!loading && (!data.items || data.items.length === 0) ? <div className="text-sm text-slate-400">Nenhuma linha encontrada para o filtro atual.</div> : null}
+                            <div className="space-y-2">
+                                {(data.items || []).map((item, index) => (
+                                    <div key={`${item.ts || index}-${index}`} className="font-mono text-[12px] leading-6 border-b border-slate-800 pb-2">
+                                        <div className="flex flex-wrap items-center gap-2 mb-1">
+                                            <Pill tone={sourceTone(item.source)}>{item.source}</Pill>
+                                            <span className="text-slate-500">{item.ts}</span>
+                                        </div>
+                                        <div className="break-all text-slate-100">{item.message || item.line}</div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    </SectionCard>
+                </div>
+            );
+        };
+
         const App = () => {
             const [token, setToken] = useState("");
             const [adminUser, setAdminUser] = useState(null);
-            const [activeTab, setActiveTab] = useState("dashboard");
+            const [activeTab, setActiveTab] = useState("operations");
             const [adSectors, setAdSectors] = useState([]);
+
+            const tabs = [
+                { id: 'operations', label: 'Operação Hoje', icon: 'fas fa-satellite-dish', description: 'métricas do dia e tempo real' },
+                { id: 'accounts', label: 'Contas', icon: 'fas fa-id-card', description: 'gerenciamento e runtime' },
+                { id: 'history', label: 'Histórico', icon: 'fas fa-chart-line', description: 'analytics e auditoria' },
+                { id: 'logs', label: 'Logs', icon: 'fas fa-terminal', description: 'tempo real e download' },
+            ];
 
             const handleLogin = async ({ username, password }) => {
                 try {
@@ -995,15 +1243,12 @@
                     if (!loginRes.ok) {
                         return { ok: false, message: loginData.erro || "Acesso negado." };
                     }
-                    const adminToken = loginData.token;
-                    const res = await fetch('/api/admin/ad_sectors', { headers: { 'X-Admin-Token': adminToken } });
-                    if (res.ok) {
-                        setAdSectors(await res.json());
-                        setToken(adminToken);
-                        setAdminUser(loginData.user || null);
-                        return { ok: true };
-                    }
-                    return { ok: false, message: "Falha ao carregar painel." };
+                    const sectors = await fetchJson('/api/admin/ad_sectors', loginData.token);
+                    setToken(loginData.token);
+                    setAdminUser(loginData.user || null);
+                    setAdSectors(sectors);
+                    setActiveTab('operations');
+                    return { ok: true };
                 } catch (e) {
                     return { ok: false, message: "Erro ao conectar com o servidor." };
                 }
@@ -1012,49 +1257,74 @@
             const handleLogout = async () => {
                 try {
                     if (token) {
-                        await fetch('/api/admin/logout', { method: 'POST', headers: { 'X-Admin-Token': token } });
+                        await fetch('/api/admin/logout', { method: 'POST', headers: buildHeaders(token) });
                     }
                 } catch (e) {
-                    console.error("Erro ao encerrar sessão administrativa:", e);
+                    console.error("Erro ao encerrar sessão:", e);
                 } finally {
                     setToken("");
                     setAdminUser(null);
+                    setAdSectors([]);
+                    setActiveTab('operations');
                 }
             };
 
             if (!token) return <AuthScreen onLogin={handleLogin} />;
 
             return (
-                <div>
-                    <nav className="bg-blue-900 text-white p-4 shadow-md">
-                        <div className="container mx-auto flex justify-between items-center">
-                            <h1 className="text-xl font-bold flex items-center">
-                                <i className="fas fa-robot text-blue-300 mr-3 text-2xl"></i> OneLog Enterprise
-                            </h1>
-                            <div className="flex items-center gap-4">
+                <div className="min-h-screen">
+                    <header className="bg-slate-950 text-white border-b border-slate-800">
+                        <div className="max-w-[1600px] mx-auto px-6 py-5 flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4">
+                            <div>
+                                <div className="flex items-center gap-3">
+                                    <div className="w-12 h-12 rounded-2xl bg-blue-600/20 text-blue-300 flex items-center justify-center text-xl">
+                                        <i className="fas fa-robot"></i>
+                                    </div>
+                                    <div>
+                                        <h1 className="text-2xl font-black tracking-tight">OneLog Control Center</h1>
+                                        <p className="text-sm text-slate-400 mt-1">Operação, contas, histórico e logs em superfícies separadas.</p>
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-3">
                                 <div className="text-right">
                                     <div className="text-sm font-bold">{(adminUser && adminUser.display_name) || (adminUser && adminUser.username) || 'Administrador'}</div>
-                                    <div className="text-[11px] text-blue-200">{(adminUser && adminUser.username) || ''}</div>
+                                    <div className="text-xs text-slate-400">{(adminUser && adminUser.username) || ''}</div>
                                 </div>
-                                <button onClick={handleLogout} className="text-sm bg-blue-800 hover:bg-blue-700 px-4 py-2 rounded font-bold transition">Sair do Painel</button>
+                                <button onClick={handleLogout} className="rounded-2xl bg-slate-800 hover:bg-slate-700 px-4 py-2.5 text-sm font-bold">
+                                    Sair do painel
+                                </button>
                             </div>
                         </div>
-                    </nav>
+                    </header>
 
-                    <main className="container mx-auto p-6 mt-4">
-                        <div className="mb-6 border-b border-gray-200">
-                            <nav className="-mb-px flex space-x-8">
-                                <button onClick={() => setActiveTab('dashboard')} className={`whitespace-nowrap py-4 px-1 border-b-2 font-bold text-sm flex items-center gap-2 ${activeTab === 'dashboard' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}>
-                                    <i className="fas fa-satellite-dish"></i> Pool em Tempo Real
-                                </button>
-                                <button onClick={() => setActiveTab('analytics')} className={`whitespace-nowrap py-4 px-1 border-b-2 font-bold text-sm flex items-center gap-2 ${activeTab === 'analytics' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}>
-                                    <i className="fas fa-chart-pie"></i> Histórico & Analytics
-                                </button>
-                            </nav>
+                    <main className="max-w-[1600px] mx-auto px-6 py-6">
+                        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 mb-6">
+                            {tabs.map((tab) => {
+                                const active = activeTab === tab.id;
+                                return (
+                                    <button
+                                        key={tab.id}
+                                        onClick={() => setActiveTab(tab.id)}
+                                        className={`text-left rounded-3xl border p-4 transition ${active ? 'bg-slate-900 text-white border-slate-900 shadow-lg' : 'bg-white text-slate-700 border-slate-200 hover:border-slate-300 hover:shadow-sm'}`}
+                                    >
+                                        <div className="flex items-center justify-between gap-3">
+                                            <div className={`w-11 h-11 rounded-2xl flex items-center justify-center ${active ? 'bg-white/10 text-blue-200' : 'bg-slate-100 text-slate-500'}`}>
+                                                <i className={tab.icon}></i>
+                                            </div>
+                                            {active ? <Pill tone="blue">ativa</Pill> : null}
+                                        </div>
+                                        <div className={`mt-4 font-black text-lg ${active ? 'text-white' : 'text-slate-900'}`}>{tab.label}</div>
+                                        <div className={`text-sm mt-1 ${active ? 'text-slate-300' : 'text-slate-500'}`}>{tab.description}</div>
+                                    </button>
+                                );
+                            })}
                         </div>
 
-                        {activeTab === 'dashboard' && <DashboardView token={token} adSectors={adSectors} />}
-                        {activeTab === 'analytics' && <AnalyticsView token={token} />}
+                        {activeTab === 'operations' ? <OperationView token={token} /> : null}
+                        {activeTab === 'accounts' ? <AccountsView token={token} adSectors={adSectors} /> : null}
+                        {activeTab === 'history' ? <HistoryView token={token} /> : null}
+                        {activeTab === 'logs' ? <LogsView token={token} /> : null}
                     </main>
                 </div>
             );
