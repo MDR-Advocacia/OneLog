@@ -567,19 +567,19 @@
                             <div className="grid grid-cols-2 gap-3 mb-4">
                                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
                                     <div className="text-xs font-black uppercase tracking-[0.14em] text-slate-400">Awaiting Sync</div>
-                                    <div className="text-2xl font-black text-slate-900 mt-2">{syncPressure.totals?.awaiting_sync || 0}</div>
+                                    <div className="text-2xl font-black text-slate-900 mt-2">{(syncPressure.totals && syncPressure.totals.awaiting_sync) || 0}</div>
                                 </div>
                                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
                                     <div className="text-xs font-black uppercase tracking-[0.14em] text-slate-400">Status Polling</div>
-                                    <div className="text-2xl font-black text-slate-900 mt-2">{syncPressure.totals?.status_events || 0}</div>
+                                    <div className="text-2xl font-black text-slate-900 mt-2">{(syncPressure.totals && syncPressure.totals.status_events) || 0}</div>
                                 </div>
                                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
                                     <div className="text-xs font-black uppercase tracking-[0.14em] text-slate-400">Na fila</div>
-                                    <div className="text-2xl font-black text-slate-900 mt-2">{syncPressure.totals?.queue_entries || 0}</div>
+                                    <div className="text-2xl font-black text-slate-900 mt-2">{(syncPressure.totals && syncPressure.totals.queue_entries) || 0}</div>
                                 </div>
                                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
                                     <div className="text-xs font-black uppercase tracking-[0.14em] text-slate-400">Locks ativos</div>
-                                    <div className="text-2xl font-black text-slate-900 mt-2">{syncPressure.totals?.locked_accounts || 0}</div>
+                                    <div className="text-2xl font-black text-slate-900 mt-2">{(syncPressure.totals && syncPressure.totals.locked_accounts) || 0}</div>
                                 </div>
                             </div>
                             <div className="space-y-2 max-h-[420px] overflow-y-auto custom-scroll pr-1">
@@ -1056,7 +1056,7 @@
                                             <div className="text-sm font-black text-blue-700">{item.count}</div>
                                         </div>
                                         <div className="mt-3 h-2 rounded-full bg-slate-100 overflow-hidden">
-                                            <div className="h-full bg-blue-500 rounded-full" style={{ width: `${Math.min(100, ((item.count || 0) / Math.max(1, sectorsData[0]?.count || 1)) * 100)}%` }}></div>
+                                            <div className="h-full bg-blue-500 rounded-full" style={{ width: `${Math.min(100, ((item.count || 0) / Math.max(1, ((sectorsData[0] && sectorsData[0].count) || 1))) * 100)}%` }}></div>
                                         </div>
                                     </div>
                                 ))}
@@ -1073,7 +1073,7 @@
                                             <div className="text-sm font-black text-emerald-700">{item.count}</div>
                                         </div>
                                         <div className="mt-3 h-2 rounded-full bg-slate-100 overflow-hidden">
-                                            <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${Math.min(100, ((item.count || 0) / Math.max(1, accountsData[0]?.count || 1)) * 100)}%` }}></div>
+                                            <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${Math.min(100, ((item.count || 0) / Math.max(1, ((accountsData[0] && accountsData[0].count) || 1))) * 100)}%` }}></div>
                                         </div>
                                     </div>
                                 ))}

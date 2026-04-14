@@ -57,7 +57,9 @@ TASK_HEARTBEAT_INTERVAL_SECONDS = int(os.getenv("TASK_HEARTBEAT_INTERVAL_SECONDS
 CLOUDFLARE_SECOND_LOOK_SECONDS = int(os.getenv("CLOUDFLARE_SECOND_LOOK_SECONDS", "10"))
 CLOUDFLARE_PASSWORD_WAIT_SECONDS = int(os.getenv("CLOUDFLARE_PASSWORD_WAIT_SECONDS", "35"))
 RESOURCE_GUARD_MIN_AVAILABLE_MB = int(os.getenv("RESOURCE_GUARD_MIN_AVAILABLE_MB", "900"))
-RESOURCE_GUARD_MAX_BROWSER_PROCS = int(os.getenv("RESOURCE_GUARD_MAX_BROWSER_PROCS", str(max(6, MAX_WORKERS * 4))))
+RESOURCE_GUARD_MAX_BROWSER_PROCS = int(os.getenv("RESOURCE_GUARD_MAX_BROWSER_PROCS", str(max(18, MAX_WORKERS * 10))))
+RESOURCE_GUARD_HARD_BROWSER_PROCS = int(os.getenv("RESOURCE_GUARD_HARD_BROWSER_PROCS", str(max(24, MAX_WORKERS * 14))))
+RESOURCE_GUARD_BROWSER_PRESSURE_MB = int(os.getenv("RESOURCE_GUARD_BROWSER_PRESSURE_MB", str(max(1400, RESOURCE_GUARD_MIN_AVAILABLE_MB + 350))))
 RESOURCE_GUARD_MAX_WAIT_SECONDS = int(os.getenv("RESOURCE_GUARD_MAX_WAIT_SECONDS", "75"))
 RESOURCE_GUARD_COOLDOWN_SECONDS = int(os.getenv("RESOURCE_GUARD_COOLDOWN_SECONDS", "180"))
 AUTO_DISPATCH_REFRESH_MARGIN_MINUTES = int(os.getenv("AUTO_DISPATCH_REFRESH_MARGIN_MINUTES", "4"))
@@ -269,8 +271,14 @@ def get_host_pressure_snapshot():
             reasons.append(f"memória livre baixa ({available_mb}MB)")
     except Exception:
         available_mb = None
-    if browser_procs >= RESOURCE_GUARD_MAX_BROWSER_PROCS:
-        reasons.append(f"excesso de processos de navegador ({browser_procs})")
+    if browser_procs >= RESOURCE_GUARD_HARD_BROWSER_PROCS:
+        reasons.append(f"excesso crítico de processos de navegador ({browser_procs})")
+    elif browser_procs >= RESOURCE_GUARD_MAX_BROWSER_PROCS and (
+        available_mb is None or available_mb < RESOURCE_GUARD_BROWSER_PRESSURE_MB
+    ):
+        reasons.append(
+            f"muitos processos de navegador ({browser_procs}) com pouca folga de RAM ({available_mb if available_mb is not None else '?'}MB)"
+        )
     return {
         "available_mb": available_mb,
         "browser_procs": browser_procs,
