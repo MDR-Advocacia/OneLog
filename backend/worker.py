@@ -42,7 +42,7 @@ AUTO_DISPATCH_WEEKDAYS = {
     for day in os.getenv("AUTO_DISPATCH_WEEKDAYS", "0,1,2,3,4").split(",")
     if day.strip()
 }
-AUTO_DISPATCH_RESPECT_WINDOW = os.getenv("AUTO_DISPATCH_RESPECT_WINDOW", "false").lower() == "true"
+AUTO_DISPATCH_RESPECT_WINDOW = os.getenv("AUTO_DISPATCH_RESPECT_WINDOW", "true").lower() == "true"
 WATCHDOG_STALE_SECONDS = int(os.getenv("WATCHDOG_STALE_SECONDS", "420"))
 INFRA_COOLDOWN_SECONDS = int(os.getenv("INFRA_COOLDOWN_SECONDS", "600"))
 ACCOUNT_RETRY_BACKOFF_SECONDS = int(os.getenv("ACCOUNT_RETRY_BACKOFF_SECONDS", "900"))
@@ -56,6 +56,8 @@ IDLE_PURGE_INTERVAL_SECONDS = int(os.getenv("IDLE_PURGE_INTERVAL_SECONDS", "5400
 COOKIE_REUSE_MINUTES = int(os.getenv("COOKIE_REUSE_MINUTES", "22"))
 COOKIE_SOFT_REFRESH_MINUTES = int(os.getenv("COOKIE_SOFT_REFRESH_MINUTES", str(COOKIE_REUSE_MINUTES)))
 TASK_HEARTBEAT_INTERVAL_SECONDS = int(os.getenv("TASK_HEARTBEAT_INTERVAL_SECONDS", "15"))
+CLOUDFLARE_PASSIVE_WAIT_SECONDS = int(os.getenv("CLOUDFLARE_PASSIVE_WAIT_SECONDS", "18"))
+CLOUDFLARE_POST_CLICK_WAIT_SECONDS = int(os.getenv("CLOUDFLARE_POST_CLICK_WAIT_SECONDS", "8"))
 CLOUDFLARE_SECOND_LOOK_SECONDS = int(os.getenv("CLOUDFLARE_SECOND_LOOK_SECONDS", "10"))
 CLOUDFLARE_PASSWORD_WAIT_SECONDS = int(os.getenv("CLOUDFLARE_PASSWORD_WAIT_SECONDS", "35"))
 RESOURCE_GUARD_MIN_AVAILABLE_MB = int(os.getenv("RESOURCE_GUARD_MIN_AVAILABLE_MB", "900"))
@@ -77,11 +79,85 @@ WORKER_RECYCLE_AFTER_SECONDS = int(os.getenv("WORKER_RECYCLE_AFTER_SECONDS", "72
 PROXY_ENV = os.getenv("PROXY_LIST", "socks5://189.124.176.141:45123")
 PROXY_LIST = [p.strip() for p in PROXY_ENV.split(',') if p.strip()]
 BROWSER_PROCESS_TERMS = ("chrome", "chromedriver", "chrome_crashpad", "xvfb")
+BROWSER_PROFILE_BASE_DIR = os.getenv("BROWSER_PROFILE_BASE_DIR", "/tmp/onelog_browser_profiles")
+BOT_COOKIE_NAMES = (
+    "cf_clearance",
+    "__cf_bm",
+    "__cfseq",
+    "cf_ob_info",
+    "cf_use_ob",
+)
+BOT_COOKIE_PREFIXES = ("cf_", "__cf", "cf_chl", "cf-chl")
+BOT_COOKIE_DOMAIN_MARKERS = ("bb.com.br", "loginweb.bb.com.br", "juridico.bb.com.br")
 
 def get_random_proxy():
     if not PROXY_LIST:
         return None
     return random.choice(PROXY_LIST)
+
+def get_account_profile_dir(account_id):
+    profile_dir = os.path.join(BROWSER_PROFILE_BASE_DIR, f"account_{account_id}")
+    os.makedirs(profile_dir, exist_ok=True)
+    return profile_dir
+
+def _is_bot_cookie(cookie):
+    name = (cookie.get("name") or "").lower()
+    domain = (cookie.get("domain") or "").lower()
+    if name in BOT_COOKIE_NAMES:
+        return True
+    if any(name.startswith(prefix) for prefix in BOT_COOKIE_PREFIXES):
+        return any(marker in domain for marker in BOT_COOKIE_DOMAIN_MARKERS)
+    return False
+
+def clear_cloudflare_artifacts(sb, thread_id, setor, reason):
+    removed = []
+    try:
+        sb.driver.execute_cdp_cmd("Network.enable", {})
+    except Exception:
+        pass
+
+    try:
+        all_cookies = sb.driver.execute_cdp_cmd("Network.getAllCookies", {}).get("cookies", [])
+        for cookie in all_cookies:
+            if not _is_bot_cookie(cookie):
+                continue
+            params = {
+                "name": cookie.get("name"),
+                "domain": cookie.get("domain"),
+                "path": cookie.get("path") or "/",
+            }
+            if cookie.get("secure") is not None:
+                params["secure"] = cookie.get("secure")
+            if cookie.get("httpOnly") is not None:
+                params["httpOnly"] = cookie.get("httpOnly")
+            if cookie.get("sameSite"):
+                params["sameSite"] = cookie.get("sameSite")
+            try:
+                sb.driver.execute_cdp_cmd("Network.deleteCookies", params)
+                removed.append(f"{cookie.get('name')}@{cookie.get('domain')}")
+            except Exception as delete_error:
+                logger.warning(
+                    f"[ROBÔ {thread_id} | {setor}] Falha ao remover cookie de bot "
+                    f"{cookie.get('name')}@{cookie.get('domain')}: {delete_error}"
+                )
+    except Exception as cookie_error:
+        logger.warning(f"[ROBÔ {thread_id} | {setor}] Não foi possível inspecionar cookies do Cloudflare: {cookie_error}")
+
+    try:
+        sb.execute_script(
+            """
+            try { window.localStorage.removeItem("cf_chl_prog"); } catch (e) {}
+            try { window.sessionStorage.removeItem("cf_chl_prog"); } catch (e) {}
+            """
+        )
+    except Exception as storage_error:
+        logger.warning(f"[ROBÔ {thread_id} | {setor}] Falha ao limpar storage do Cloudflare: {storage_error}")
+
+    logger.info(
+        f"[ROBÔ {thread_id} | {setor}] Faxina cirúrgica do Cloudflare ({reason}) "
+        f"removeu {len(removed)} cookie(s): {', '.join(removed) if removed else 'nenhum'}"
+    )
+    return removed
 
 redis_client = None
 
@@ -461,7 +537,17 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                     time.sleep(2)
                 startup_lock = True
 
-                with SB(uc=True, test=True, headless=False, xvfb=True, proxy=proxy_escolhido, page_load_strategy="eager") as sb:
+                profile_dir = get_account_profile_dir(account_id)
+                with SB(
+                    uc=True,
+                    test=True,
+                    headless=False,
+                    xvfb=True,
+                    proxy=proxy_escolhido,
+                    page_load_strategy="normal",
+                    locale="pt-BR",
+                    user_data_dir=profile_dir,
+                ) as sb:
                     sb_instance = sb 
                     if startup_lock:
                         get_redis().delete("lock:chrome_startup")
@@ -476,54 +562,51 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                     try:
                         update_status(setor, f"Catraca liberada! Abrindo navegador (Tentativa {tentativa}/{max_tentativas_gerais})...", thread_id=thread_id)
                         
-                        sb.open('https://loginweb.bb.com.br/favicon.ico')
-                        sb.sleep(1)
-                        
-                        logger.info(f"[ROBÔ {thread_id} | {setor}] Executando Faxina Nuclear de Cookies e Cache...")
-                        try:
-                            sb.driver.execute_cdp_cmd('Network.clearBrowserCache', {})
-                            sb.driver.execute_cdp_cmd('Network.clearBrowserCookies', {})
-                        except Exception as cdp_e:
-                            logger.warning(f"[ROBÔ {thread_id} | {setor}] Aviso na faxina CDP: {cdp_e}")
-                            
-                        sb.delete_all_cookies()
-                        try:
-                            sb.execute_script("window.localStorage.clear(); window.sessionStorage.clear();")
-                        except Exception as storage_e:
-                            logger.warning(f"[ROBÔ {thread_id} | {setor}] Aviso na limpeza de local/session storage: {storage_e}")
-                        try:
-                            sb.execute_script("window.indexedDB.databases().then(dbs => dbs.forEach(db => window.indexedDB.deleteDatabase(db.name)))")
-                        except Exception as indexeddb_e:
-                            logger.warning(f"[ROBÔ {thread_id} | {setor}] Aviso na limpeza de IndexedDB: {indexeddb_e}")
-                        
-                        sb.open('https://loginweb.bb.com.br/sso/XUI/?realm=/paj&goto=https://juridico.bb.com.br/wfj#login')
-                        sb.sleep(4)
+                        logger.info(f"[ROBÔ {thread_id} | {setor}] Reaproveitando perfil persistente em {profile_dir}")
+                        clear_cloudflare_artifacts(
+                            sb,
+                            thread_id,
+                            setor,
+                            reason="higiene leve antes de abrir o login",
+                        )
+                        sb.uc_open_with_reconnect(
+                            'https://loginweb.bb.com.br/sso/XUI/?realm=/paj&goto=https://juridico.bb.com.br/wfj#login',
+                            reconnect_time=3,
+                        )
+                        sb.sleep(5)
                         
                         img = snapshot(sb, setor, f"01_inicio_T{tentativa}", thread_id=thread_id)
                         
                         update_status(setor, "Digitando usuário...", imagem=img, thread_id=thread_id)
                         sb.type("#idToken1", usuario)
                         sb.sleep(1)
-                        sb.click("#loginButton_0")
+                        sb.uc_click("#loginButton_0")
                         
-                        update_status(setor, "Analisando Captcha...", imagem=img, thread_id=thread_id)
-                        sb.sleep(6)
+                        update_status(setor, "Aguardando validação passiva do Cloudflare...", imagem=img, thread_id=thread_id)
+                        password_ready = False
+                        try:
+                            sb.wait_for_element("#idToken3", timeout=CLOUDFLARE_PASSIVE_WAIT_SECONDS)
+                            password_ready = True
+                            logger.info(f"[ROBÔ {thread_id} | {setor}] >>> Campo de senha apareceu sem clique no captcha.")
+                        except Exception:
+                            password_ready = False
+
                         img = snapshot(sb, setor, f"02_antes_captcha_T{tentativa}", thread_id=thread_id)
                         
                         captcha_container = "div.cf-turnstile"
                         
-                        if sb.is_element_visible(captcha_container):
-                            update_status(setor, "Cloudflare detectado. Aguardando estabilização...", imagem=img, thread_id=thread_id)
-                            sb.sleep(4) 
+                        if not password_ready and sb.is_element_visible(captcha_container):
+                            update_status(setor, "Cloudflare detectado. Tentando validação stealth...", imagem=img, thread_id=thread_id)
+                            sb.sleep(3)
                             
                             try:
-                                sb.click(captcha_container) 
-                                logger.info(f"[ROBÔ {thread_id} | {setor}] >>> Clique bruto no captcha realizado.")
+                                sb.uc_gui_click_captcha()
+                                logger.info(f"[ROBÔ {thread_id} | {setor}] >>> Clique stealth no captcha realizado.")
                             except Exception as e:
-                                logger.warning(f"[ROBÔ {thread_id} | {setor}] Aviso no clique bruto: {e}")
+                                logger.warning(f"[ROBÔ {thread_id} | {setor}] Aviso no clique stealth: {e}")
                             
                             update_status(setor, "Aguardando validação do clique...", thread_id=thread_id)
-                            sb.sleep(5) 
+                            sb.sleep(CLOUDFLARE_POST_CLICK_WAIT_SECONDS)
                                 
                             img = snapshot(sb, setor, f"03_pos_clique_T{tentativa}", thread_id=thread_id)
                         
@@ -697,6 +780,16 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
 
                 if is_cloudflare_trap:
                     logger.warning(f"[ROBÔ {thread_id} | {setor}] Cloudflare explícito detectado após dupla checagem. Mantendo retry normal, sem cooldown pesado imediato.")
+                    if sb_instance:
+                        try:
+                            clear_cloudflare_artifacts(
+                                sb_instance,
+                                thread_id,
+                                setor,
+                                reason="trap explícita antes da próxima tentativa",
+                            )
+                        except Exception as cleanup_error:
+                            logger.warning(f"[ROBÔ {thread_id} | {setor}] Falha na faxina cirúrgica pós-trap: {cleanup_error}")
                 elif is_infra_error:
                     logger.warning(f"[ROBÔ {thread_id} | {setor}] Infraestrutura do host degradada. Abortando novas tentativas imediatas para poupar RAM/threads.")
                 
