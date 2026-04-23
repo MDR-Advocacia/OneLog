@@ -40,7 +40,7 @@ redis_client = redis.Redis.from_url(os.getenv('REDIS_URL', 'redis://localhost:63
 COOKIE_REUSE_MINUTES = int(os.getenv("COOKIE_REUSE_MINUTES", "20"))
 COOKIE_SOFT_REFRESH_MINUTES = int(os.getenv("COOKIE_SOFT_REFRESH_MINUTES", str(COOKIE_REUSE_MINUTES)))
 COOKIE_HARD_DELIVERY_MINUTES = int(os.getenv("COOKIE_HARD_DELIVERY_MINUTES", "20"))
-COOKIE_LOGIN_HARD_DELIVERY_MINUTES = int(os.getenv("COOKIE_LOGIN_HARD_DELIVERY_MINUTES", "20"))
+COOKIE_LOGIN_HARD_DELIVERY_MINUTES = int(os.getenv("COOKIE_LOGIN_HARD_DELIVERY_MINUTES", "2"))
 APP_TIMEZONE = os.getenv("APP_TIMEZONE", "America/Fortaleza")
 RECENT_REQUESTS_LIMIT = int(os.getenv("RECENT_REQUESTS_LIMIT", "300"))
 ACTIVE_CLIENT_TTL_SECONDS = int(os.getenv("ACTIVE_CLIENT_TTL_SECONDS", "2700"))
@@ -237,7 +237,7 @@ def should_background_refresh_cookie(account, soft_limit_minutes=COOKIE_SOFT_REF
         return False
     return cookie_age >= float(soft_limit_minutes)
 
-def enqueue_login_refresh(account, setor_nome, user_agent=None, request_id=None, requester=None, status_message=None, auto=False):
+def enqueue_login_refresh(account, setor_nome, user_agent=None, request_id=None, requester=None, status_message=None, auto=False, force_fresh=False):
     if not account:
         return False
 
@@ -258,6 +258,7 @@ def enqueue_login_refresh(account, setor_nome, user_agent=None, request_id=None,
         "user_agent": user_agent,
         "request_id": request_id,
         "auto": bool(auto),
+        "force_fresh": bool(force_fresh),
     }
     if requester:
         payload["requester_username"] = requester.get("username")
@@ -813,6 +814,7 @@ def request_login():
                     request_id=request_id,
                     requester=requester,
                     auto=True,
+                    force_fresh=False,
                 )
             redis_client.incr(f'metrics:cookies_injetados:{hoje}')
             redis_client.hincrby(f'metrics:account_logins:{hoje}', str(account.login), 1)
@@ -857,6 +859,7 @@ def request_login():
             request_id=request_id,
             requester=requester,
             status_message="Solicitando login novo no portal..." if (force_fresh or requires_fresh_reentry) else "Iniciando robô...",
+            force_fresh=True,
         )
         if not queued_now:
             record_request_event("login", setor_nome=setor_nome, account=account, outcome="already_queued", user_agent=user_agent, requester=requester, request_id=request_id)
@@ -931,6 +934,7 @@ def renew_session():
                         requester=requester,
                         status_message="Sessão reaproveitada do Pool. Renovação discreta em andamento.",
                         auto=True,
+                        force_fresh=False,
                     )
                     if background_refresh_started:
                         status_message = "Sessão reaproveitada do Pool. Renovação discreta em andamento."
@@ -973,6 +977,7 @@ def renew_session():
                 request_id=request_id,
                 requester=requester,
                 status_message="Solicitando login novo após saída do portal..." if force_fresh else "Renovação de Marcapasso...",
+                force_fresh=force_fresh,
             )
             if not queued_now:
                 record_request_event("renew", setor_nome=setor_nome, account=account, outcome="already_queued", user_agent=user_agent, requester=requester, request_id=request_id)

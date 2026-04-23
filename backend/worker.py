@@ -397,7 +397,7 @@ def faxina_global_de_emergencia():
     finally:
         reap_finished_children()
 
-def processar_login(account_id, setor_solicitado, thread_id, requester_username=None, requester_display_name=None, request_id=None):
+def processar_login(account_id, setor_solicitado, thread_id, requester_username=None, requester_display_name=None, request_id=None, force_fresh=False):
     db = SessionLocal()
     hoje = datetime.utcnow().strftime('%Y-%m-%d')
     
@@ -423,13 +423,15 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
         # =======================================================================
         # 🛑 BLINDAGEM CONTRA TRABALHO DUPLICADO (Otimização de Servidor)
         # =======================================================================
-        if account.cookie_payload and account.last_login_at:
+        if not force_fresh and account.cookie_payload and account.last_login_at:
             minutos_passados = (datetime.utcnow() - account.last_login_at).total_seconds() / 60
             if minutos_passados < COOKIE_SOFT_REFRESH_MINUTES:
                 logger.info(f"[ROBÔ {thread_id} | {setor_solicitado}] ♻️ Tarefa duplicada detectada! A conta {account_id} já tem cookies frescos ({minutos_passados:.1f}m). Abortando para poupar servidor.")
                 get_redis().delete(f"lock:queue:{account_id}")
                 update_status(setor_solicitado, "Sessão renovada e salva no Pool!", concluido=True, thread_id=thread_id)
                 return
+        elif force_fresh:
+            logger.info(f"[ROBÔ {thread_id} | {setor_solicitado}] 🔁 Login explícito com force_fresh ativo. Ignorando bloqueio de cookie fresco para renovar de verdade.")
         # =======================================================================
 
         logger.info(f"[ROBÔ {thread_id} | {setor_solicitado}] Aplicando Jitter aleatório para despistar balanceadores do BB...")
@@ -767,6 +769,7 @@ def worker_loop(thread_id):
                 requester_username = task_data.get('requester_username')
                 requester_display_name = task_data.get('requester_display_name')
                 request_id = task_data.get('request_id')
+                force_fresh = bool(task_data.get('force_fresh'))
             except Exception:
                 account_id = task_data_str
                 setor = "GERAL"
@@ -774,6 +777,7 @@ def worker_loop(thread_id):
                 requester_username = None
                 requester_display_name = None
                 request_id = None
+                force_fresh = False
 
             if is_priority:
                 logger.info(
@@ -812,7 +816,8 @@ def worker_loop(thread_id):
                     thread_id,
                     requester_username=requester_username,
                     requester_display_name=requester_display_name,
-                    request_id=request_id
+                    request_id=request_id,
+                    force_fresh=force_fresh,
                 )
             finally:
                 heartbeat_stop.set()
