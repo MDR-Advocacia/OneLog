@@ -10,6 +10,8 @@ import threading
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from seleniumbase import SB
+from selenium.webdriver import ActionChains
+from selenium.webdriver.common.by import By
 import logging
 import sys
 from database import SessionLocal, AccountBB
@@ -158,6 +160,87 @@ def clear_cloudflare_artifacts(sb, thread_id, setor, reason):
         f"removeu {len(removed)} cookie(s): {', '.join(removed) if removed else 'nenhum'}"
     )
     return removed
+
+def click_cloudflare_checkbox(sb, thread_id, setor):
+    driver = sb.driver
+    iframe_candidates = []
+    try:
+        for frame in driver.find_elements(By.CSS_SELECTOR, "iframe"):
+            frame_signature = " ".join(
+                filter(
+                    None,
+                    [
+                        frame.get_attribute("title"),
+                        frame.get_attribute("name"),
+                        frame.get_attribute("id"),
+                        frame.get_attribute("src"),
+                    ],
+                )
+            ).lower()
+            if any(marker in frame_signature for marker in ("cloudflare", "turnstile", "challenge", "widget")):
+                iframe_candidates.append(frame)
+    except Exception as frame_error:
+        logger.warning(f"[ROBÔ {thread_id} | {setor}] Não foi possível enumerar iframes do Cloudflare: {frame_error}")
+        return False
+
+    if not iframe_candidates:
+        logger.info(f"[ROBÔ {thread_id} | {setor}] Nenhum iframe candidato do Cloudflare foi encontrado.")
+        return False
+
+    checkbox_selectors = [
+        "input[type='checkbox']",
+        "[role='checkbox']",
+        "label.ctp-checkbox-label",
+        ".ctp-checkbox-label",
+        ".mark",
+        "label",
+    ]
+
+    for index, frame in enumerate(iframe_candidates, start=1):
+        try:
+            driver.switch_to.default_content()
+            driver.uc_switch_to_frame(frame)
+            sb.sleep(0.5)
+
+            for selector in checkbox_selectors:
+                elements = driver.find_elements(By.CSS_SELECTOR, selector)
+                visible_elements = [element for element in elements if element.is_displayed() and element.size.get("width", 0) > 0 and element.size.get("height", 0) > 0]
+                if not visible_elements:
+                    continue
+
+                target = visible_elements[0]
+                try:
+                    ActionChains(driver).move_to_element(target).pause(0.35).click(target).perform()
+                    logger.info(
+                        f"[ROBÔ {thread_id} | {setor}] >>> Clique real no checkbox do Cloudflare "
+                        f"(iframe #{index}, seletor {selector})"
+                    )
+                    return True
+                except Exception as action_error:
+                    logger.warning(
+                        f"[ROBÔ {thread_id} | {setor}] Falha no ActionChains para {selector}: {action_error}"
+                    )
+                    try:
+                        target.click()
+                        logger.info(
+                            f"[ROBÔ {thread_id} | {setor}] >>> Clique fallback no checkbox do Cloudflare "
+                            f"(iframe #{index}, seletor {selector})"
+                        )
+                        return True
+                    except Exception as click_error:
+                        logger.warning(
+                            f"[ROBÔ {thread_id} | {setor}] Falha no clique fallback para {selector}: {click_error}"
+                        )
+        except Exception as frame_click_error:
+            logger.warning(f"[ROBÔ {thread_id} | {setor}] Falha ao operar iframe #{index} do Cloudflare: {frame_click_error}")
+        finally:
+            try:
+                driver.switch_to.default_content()
+            except Exception:
+                pass
+
+    logger.info(f"[ROBÔ {thread_id} | {setor}] Nenhum alvo clicável foi encontrado dentro dos iframes do Cloudflare.")
+    return False
 
 redis_client = None
 
@@ -598,11 +681,19 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                             update_status(setor, "Cloudflare detectado. Tentando validação stealth...", imagem=img, thread_id=thread_id)
                             sb.sleep(3)
                             
+                            clicked = False
                             try:
-                                sb.driver.uc_click(captcha_container, reconnect_time=2)
-                                logger.info(f"[ROBÔ {thread_id} | {setor}] >>> Clique UC no captcha realizado.")
+                                clicked = click_cloudflare_checkbox(sb, thread_id, setor)
                             except Exception as e:
-                                logger.warning(f"[ROBÔ {thread_id} | {setor}] Aviso no clique UC: {e}")
+                                logger.warning(f"[ROBÔ {thread_id} | {setor}] Aviso no clique dentro do iframe: {e}")
+
+                            if not clicked:
+                                try:
+                                    sb.driver.uc_click(captcha_container, reconnect_time=2)
+                                    clicked = True
+                                    logger.info(f"[ROBÔ {thread_id} | {setor}] >>> Clique UC de fallback no container do captcha.")
+                                except Exception as e:
+                                    logger.warning(f"[ROBÔ {thread_id} | {setor}] Aviso no clique UC de fallback: {e}")
                             
                             update_status(setor, "Aguardando validação do clique...", thread_id=thread_id)
                             sb.sleep(CLOUDFLARE_POST_CLICK_WAIT_SECONDS)
