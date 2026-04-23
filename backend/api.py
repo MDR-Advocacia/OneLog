@@ -67,6 +67,14 @@ def trim_user_agent(user_agent, max_len=120):
     user_agent = str(user_agent)
     return user_agent if len(user_agent) <= max_len else user_agent[:max_len - 1] + "…"
 
+def make_requester_cache_key(requester):
+    if not requester:
+        return None
+    base = requester.get("username") or requester.get("display_name")
+    if not base:
+        return None
+    return re.sub(r'[^a-zA-Z0-9_.-]+', '_', str(base).strip().lower())[:120] or None
+
 def push_recent_request(event):
     redis_client.lpush("admin:recent_requests", json.dumps(event, ensure_ascii=False))
     redis_client.ltrim("admin:recent_requests", 0, RECENT_REQUESTS_LIMIT - 1)
@@ -94,6 +102,9 @@ def mark_live_activity(setor_nome=None, account=None, endpoint=None, outcome=Non
         redis_client.setex(f"live:setor:{setor_nome}", ACTIVE_CLIENT_TTL_SECONDS, json.dumps(payload, ensure_ascii=False))
     if account:
         redis_client.setex(f"live:account:{account.id}", ACTIVE_CLIENT_TTL_SECONDS, json.dumps(payload, ensure_ascii=False))
+    requester_key = make_requester_cache_key(requester)
+    if requester_key:
+        redis_client.setex(f"live:requester:{requester_key}", ACTIVE_CLIENT_TTL_SECONDS, json.dumps(payload, ensure_ascii=False))
 
 def record_request_event(endpoint, setor_nome=None, account=None, outcome=None, user_agent=None, cookie_age_minutes=None, extra=None, requester=None, request_id=None):
     now_utc = datetime.utcnow()
@@ -434,6 +445,79 @@ def get_live_entries(prefix):
         items.append(data)
     items.sort(key=lambda x: x.get("last_seen_at", ""), reverse=True)
     return items
+
+def build_live_requesters():
+    grouped = {}
+    for entry in get_live_entries("live:setor:*"):
+        requester_key = entry.get("requester_username") or entry.get("requester_display_name")
+        if not requester_key:
+            continue
+        group = grouped.setdefault(requester_key, {
+            "requester_username": entry.get("requester_username"),
+            "requester_display_name": entry.get("requester_display_name"),
+            "idle_seconds": entry.get("idle_seconds"),
+            "last_seen_at": entry.get("last_seen_at"),
+            "last_seen_local": entry.get("last_seen_local"),
+            "last_endpoint": entry.get("endpoint"),
+            "last_outcome": entry.get("outcome"),
+            "request_id": entry.get("request_id"),
+            "sectors": set(),
+            "accounts": set(),
+            "ips": set(),
+        })
+        if entry.get("setor"):
+            group["sectors"].add(entry["setor"])
+        if entry.get("login"):
+            group["accounts"].add(entry["login"])
+        if entry.get("ip"):
+            group["ips"].add(entry["ip"])
+        idle_seconds = entry.get("idle_seconds")
+        if idle_seconds is not None and (group["idle_seconds"] is None or idle_seconds < group["idle_seconds"]):
+            group["idle_seconds"] = idle_seconds
+            group["last_endpoint"] = entry.get("endpoint")
+            group["last_outcome"] = entry.get("outcome")
+            group["request_id"] = entry.get("request_id")
+            group["last_seen_at"] = entry.get("last_seen_at")
+            group["last_seen_local"] = entry.get("last_seen_local")
+
+    rows = []
+    for _, item in grouped.items():
+        rows.append({
+            "requester_username": item["requester_username"],
+            "requester_display_name": item["requester_display_name"],
+            "idle_seconds": item["idle_seconds"],
+            "last_seen_at": item["last_seen_at"],
+            "last_seen_local": item["last_seen_local"],
+            "last_endpoint": item["last_endpoint"],
+            "last_outcome": item["last_outcome"],
+            "request_id": item["request_id"],
+            "sector_count": len(item["sectors"]),
+            "account_count": len(item["accounts"]),
+            "ip_count": len(item["ips"]),
+            "sectors": sorted(item["sectors"]),
+            "accounts": sorted(item["accounts"]),
+        })
+    rows.sort(key=lambda x: x.get("last_seen_at", ""), reverse=True)
+    return rows
+
+def get_session_totals(accounts):
+    totals = {
+        "fresh": 0,
+        "deliverable": 0,
+        "expired": 0,
+        "backoff": 0,
+    }
+    for acc in accounts:
+        runtime = get_account_runtime(acc)
+        if runtime["cookie_fresh"]:
+            totals["fresh"] += 1
+        if runtime["cookie_hot"]:
+            totals["deliverable"] += 1
+        elif acc.cookie_payload:
+            totals["expired"] += 1
+        if runtime["backoff_seconds"] > 0:
+            totals["backoff"] += 1
+    return totals
 
 def get_worker_states():
     items = []
@@ -870,6 +954,8 @@ def admin_dashboard_stats():
     db = SessionLocal()
     hoje = datetime.utcnow().strftime('%Y-%m-%d')
     try:
+        live_requesters = build_live_requesters()
+        live_sectors = get_live_entries("live:setor:*")
         total_accounts = db.query(AccountBB).count()
         active_accounts = db.query(AccountBB).filter(AccountBB.status.in_(['active', 'ativo', 'provisoria_recebida', 'termo_assinado'])).count()
         queue_size = redis_client.llen("queue:login_requests") + redis_client.llen("queue:priority_logins")
@@ -885,9 +971,11 @@ def admin_dashboard_stats():
         cycle_count = int(redis_client.get(f'metrics:session_cycle_count:{hoje}') or 0)
         avg_session_cycle = round(cycle_sum / cycle_count, 1) if cycle_count > 0 else 0
         hot_pool_accounts = 0
-        for acc in db.query(AccountBB).filter(AccountBB.last_login_at.isnot(None), AccountBB.cookie_payload.isnot(None)).all():
+        cookie_accounts = db.query(AccountBB).filter(AccountBB.last_login_at.isnot(None), AccountBB.cookie_payload.isnot(None)).all()
+        for acc in cookie_accounts:
             if can_deliver_cached_cookie(acc):
                 hot_pool_accounts += 1
+        session_totals = get_session_totals(cookie_accounts)
 
         return jsonify({
             "active_accounts": active_accounts,
@@ -900,10 +988,12 @@ def admin_dashboard_stats():
             "avg_cookie_age": avg_cookie_age,
             "avg_session_cycle": avg_session_cycle,
             "hot_pool_accounts": hot_pool_accounts,
-            "active_users_now": len(get_live_entries("live:setor:*")),
+            "active_users_now": len(live_requesters),
+            "active_sectors_now": len(live_sectors),
             "workers_busy": len([w for w in get_worker_states() if w.get("state") not in ("idle", "starting")]),
             "workers_total": len(get_worker_states()),
-            "queue_snapshot": get_queue_snapshot()
+            "queue_snapshot": get_queue_snapshot(),
+            "session_totals": session_totals
         })
     finally:
         db.close()
@@ -914,6 +1004,7 @@ def admin_live_overview():
     db = SessionLocal()
     try:
         accounts = db.query(AccountBB).all()
+        session_totals = get_session_totals(accounts)
         hot_sessions = []
         backoff_accounts = []
         for acc in accounts:
@@ -926,6 +1017,8 @@ def admin_live_overview():
                     "setores": [s for s in (acc.setores or "").split("|") if s],
                     "cookie_age_minutes": runtime["cookie_age_minutes"],
                     "minutes_to_refresh": runtime["minutes_to_refresh"],
+                    "minutes_to_hard_expiry": runtime["minutes_to_hard_expiry"],
+                    "cookie_fresh": runtime["cookie_fresh"],
                     "cookie_count": runtime["cookie_count"],
                     "last_login_at": acc.last_login_at.isoformat() if acc.last_login_at else None
                 })
@@ -947,10 +1040,13 @@ def admin_live_overview():
             "cookie_hard_delivery_minutes": COOKIE_HARD_DELIVERY_MINUTES,
             "queue": get_queue_snapshot(),
             "workers": get_worker_states(),
-            "active_users": get_live_entries("live:setor:*"),
+            "active_requesters": build_live_requesters(),
+            "active_users": build_live_requesters(),
+            "active_sectors": get_live_entries("live:setor:*"),
             "active_accounts": get_live_entries("live:account:*"),
             "hot_sessions": hot_sessions[:20],
-            "backoff_accounts": backoff_accounts[:20]
+            "backoff_accounts": backoff_accounts[:20],
+            "session_totals": session_totals
         })
     finally:
         db.close()

@@ -42,6 +42,7 @@ AUTO_DISPATCH_WEEKDAYS = {
     for day in os.getenv("AUTO_DISPATCH_WEEKDAYS", "0,1,2,3,4").split(",")
     if day.strip()
 }
+AUTO_DISPATCH_RESPECT_WINDOW = os.getenv("AUTO_DISPATCH_RESPECT_WINDOW", "false").lower() == "true"
 WATCHDOG_STALE_SECONDS = int(os.getenv("WATCHDOG_STALE_SECONDS", "420"))
 INFRA_COOLDOWN_SECONDS = int(os.getenv("INFRA_COOLDOWN_SECONDS", "600"))
 ACCOUNT_RETRY_BACKOFF_SECONDS = int(os.getenv("ACCOUNT_RETRY_BACKOFF_SECONDS", "900"))
@@ -835,7 +836,8 @@ def worker_loop(thread_id):
             time.sleep(5)
 
 def auto_dispatcher():
-    logger.info("🤖 [DISPATCHER] Ativado! Pré-aquecimento restrito aos dias úteis dentro da janela configurada.")
+    mode = "janela útil configurada" if AUTO_DISPATCH_RESPECT_WINDOW else "modo contínuo e preguiçoso"
+    logger.info(f"🤖 [DISPATCHER] Ativado! Manutenção automática em {mode}.")
     time.sleep(10) 
     
     while True:
@@ -851,7 +853,7 @@ def auto_dispatcher():
 
             agora_utc = datetime.utcnow()
 
-            if not is_auto_dispatch_window(agora_local):
+            if AUTO_DISPATCH_RESPECT_WINDOW and not is_auto_dispatch_window(agora_local):
                 time.sleep(60)
                 continue
 
