@@ -545,7 +545,6 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                     xvfb=True,
                     proxy=proxy_escolhido,
                     page_load_strategy="normal",
-                    locale="pt-BR",
                     user_data_dir=profile_dir,
                 ) as sb:
                     sb_instance = sb 
@@ -747,6 +746,7 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                     or "unable to discover open pages" in err_msg
                     or "recursion" in err_msg
                     or "chrome not reachable" in err_msg
+                    or "unexpected keyword argument" in err_msg
                 ):
                     motivo_falha = "Esgotamento de Recursos (OS/Docker)"
                     is_infra_error = True
