@@ -628,6 +628,8 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                         get_redis().delete("lock:infra_cooldown")
                         get_redis().delete(f"cooldown:account:{account_id}")
                         get_redis().delete(f"lock:queue:{account_id}")
+                        for guard_key in list(get_redis().scan_iter(f"guard:recent_cache_login:{account_id}:*")):
+                            get_redis().delete(guard_key)
                         
                         limpar_memoria_residual(sb_instance)
                         return 
