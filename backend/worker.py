@@ -242,6 +242,81 @@ def click_cloudflare_checkbox(sb, thread_id, setor):
     logger.info(f"[ROBÔ {thread_id} | {setor}] Nenhum alvo clicável foi encontrado dentro dos iframes do Cloudflare.")
     return False
 
+def log_cloudflare_diagnostics(sb, thread_id, setor):
+    driver = sb.driver
+
+    try:
+        iframe_data = driver.execute_script(
+            """
+            return Array.from(document.querySelectorAll("iframe")).map((frame, index) => ({
+                index,
+                id: frame.id || "",
+                name: frame.name || "",
+                title: frame.title || "",
+                src: frame.src || "",
+                width: frame.offsetWidth || 0,
+                height: frame.offsetHeight || 0,
+                visible: !!(frame.offsetWidth || frame.offsetHeight || frame.getClientRects().length),
+            }));
+            """
+        )
+    except Exception as iframe_error:
+        iframe_data = [{"error": str(iframe_error)}]
+
+    try:
+        container_data = driver.execute_script(
+            """
+            const selectors = [
+              "div.cf-turnstile",
+              "[data-sitekey]",
+              "[data-callback]",
+              "[class*='turnstile']",
+              "[class*='cf-']"
+            ];
+            return selectors.map((selector) => {
+              const el = document.querySelector(selector);
+              if (!el) return { selector, found: false };
+              return {
+                selector,
+                found: true,
+                tag: el.tagName,
+                id: el.id || "",
+                className: el.className || "",
+                shadowRoot: !!el.shadowRoot,
+                html: (el.outerHTML || "").slice(0, 1200),
+              };
+            });
+            """
+        )
+    except Exception as container_error:
+        container_data = [{"error": str(container_error)}]
+
+    try:
+        shadow_data = driver.execute_script(
+            """
+            const all = Array.from(document.querySelectorAll("*"));
+            return all
+              .filter((el) => el.shadowRoot)
+              .slice(0, 20)
+              .map((el, index) => ({
+                index,
+                tag: el.tagName,
+                id: el.id || "",
+                className: el.className || "",
+                inner: (el.shadowRoot.innerHTML || "").slice(0, 800),
+              }));
+            """
+        )
+    except Exception as shadow_error:
+        shadow_data = [{"error": str(shadow_error)}]
+
+    logger.info(
+        f"[ROBÔ {thread_id} | {setor}] Diagnóstico Cloudflare | "
+        f"iframes={json.dumps(iframe_data, ensure_ascii=False)} | "
+        f"containers={json.dumps(container_data, ensure_ascii=False)} | "
+        f"shadows={json.dumps(shadow_data, ensure_ascii=False)}"
+    )
+
 redis_client = None
 
 def get_redis():
@@ -679,6 +754,7 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                         
                         if not password_ready and sb.is_element_visible(captcha_container):
                             update_status(setor, "Cloudflare detectado. Tentando validação stealth...", imagem=img, thread_id=thread_id)
+                            log_cloudflare_diagnostics(sb, thread_id, setor)
                             sb.sleep(3)
                             
                             clicked = False
