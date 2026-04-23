@@ -568,7 +568,7 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                             setor,
                             reason="higiene leve antes de abrir o login",
                         )
-                        sb.uc_open_with_reconnect(
+                        sb.driver.uc_open_with_reconnect(
                             'https://loginweb.bb.com.br/sso/XUI/?realm=/paj&goto=https://juridico.bb.com.br/wfj#login',
                             reconnect_time=3,
                         )
@@ -579,7 +579,7 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                         update_status(setor, "Digitando usuário...", imagem=img, thread_id=thread_id)
                         sb.type("#idToken1", usuario)
                         sb.sleep(1)
-                        sb.uc_click("#loginButton_0")
+                        sb.driver.uc_click("#loginButton_0", reconnect_time=1.5)
                         
                         update_status(setor, "Aguardando validação passiva do Cloudflare...", imagem=img, thread_id=thread_id)
                         password_ready = False
@@ -599,10 +599,10 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                             sb.sleep(3)
                             
                             try:
-                                sb.uc_gui_click_captcha()
-                                logger.info(f"[ROBÔ {thread_id} | {setor}] >>> Clique stealth no captcha realizado.")
+                                sb.driver.uc_click(captcha_container, reconnect_time=2)
+                                logger.info(f"[ROBÔ {thread_id} | {setor}] >>> Clique UC no captcha realizado.")
                             except Exception as e:
-                                logger.warning(f"[ROBÔ {thread_id} | {setor}] Aviso no clique stealth: {e}")
+                                logger.warning(f"[ROBÔ {thread_id} | {setor}] Aviso no clique UC: {e}")
                             
                             update_status(setor, "Aguardando validação do clique...", thread_id=thread_id)
                             sb.sleep(CLOUDFLARE_POST_CLICK_WAIT_SECONDS)
