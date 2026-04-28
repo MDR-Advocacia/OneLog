@@ -37,7 +37,7 @@ if not api_logger.handlers:
 
 ADMIN_BREAKGLASS_TOKEN = os.getenv("ADMIN_BREAKGLASS_TOKEN", "").strip()
 redis_client = redis.Redis.from_url(os.getenv('REDIS_URL', 'redis://localhost:6379/0'), decode_responses=True)
-COOKIE_REUSE_MINUTES = int(os.getenv("COOKIE_REUSE_MINUTES", "20"))
+COOKIE_REUSE_MINUTES = int(os.getenv("COOKIE_REUSE_MINUTES", "22"))
 COOKIE_SOFT_REFRESH_MINUTES = int(os.getenv("COOKIE_SOFT_REFRESH_MINUTES", str(COOKIE_REUSE_MINUTES)))
 COOKIE_HARD_DELIVERY_MINUTES = int(os.getenv("COOKIE_HARD_DELIVERY_MINUTES", "20"))
 COOKIE_LOGIN_HARD_DELIVERY_MINUTES = int(os.getenv("COOKIE_LOGIN_HARD_DELIVERY_MINUTES", "2"))
@@ -222,11 +222,9 @@ def can_deliver_cached_cookie(account, hard_limit_minutes=None, login_flow=False
     cookie_age = get_cookie_age_minutes(account)
     if cookie_age is None:
         return False
-    limit_minutes = (
-        float(hard_limit_minutes)
-        if hard_limit_minutes is not None
-        else get_cookie_hard_delivery_limit_minutes(login_flow=login_flow)
-    )
+    # Rollback cirúrgico para a lógica estável: o legado só reaproveita
+    # sessão dentro da janela clássica de 22 minutos.
+    limit_minutes = float(hard_limit_minutes) if hard_limit_minutes is not None else float(COOKIE_REUSE_MINUTES)
     return cookie_age <= limit_minutes
 
 def should_background_refresh_cookie(account, soft_limit_minutes=COOKIE_SOFT_REFRESH_MINUTES):
@@ -237,7 +235,7 @@ def should_background_refresh_cookie(account, soft_limit_minutes=COOKIE_SOFT_REF
         return False
     return cookie_age >= float(soft_limit_minutes)
 
-def enqueue_login_refresh(account, setor_nome, user_agent=None, request_id=None, requester=None, status_message=None, auto=False, force_fresh=False):
+def enqueue_login_refresh(account, setor_nome, user_agent=None, request_id=None, requester=None, status_message=None, auto=False):
     if not account:
         return False
 
@@ -258,7 +256,6 @@ def enqueue_login_refresh(account, setor_nome, user_agent=None, request_id=None,
         "user_agent": user_agent,
         "request_id": request_id,
         "auto": bool(auto),
-        "force_fresh": bool(force_fresh),
     }
     if requester:
         payload["requester_username"] = requester.get("username")
@@ -589,9 +586,9 @@ def get_account_runtime(account):
     return {
         "cookie_age_minutes": round(cookie_age_minutes, 1) if cookie_age_minutes is not None else None,
         "cookie_hot": can_deliver_cached_cookie(account),
-        "cookie_fresh": cookie_age_minutes is not None and cookie_age_minutes < COOKIE_SOFT_REFRESH_MINUTES,
-        "minutes_to_refresh": round(max(0, COOKIE_SOFT_REFRESH_MINUTES - cookie_age_minutes), 1) if cookie_age_minutes is not None else None,
-        "minutes_to_hard_expiry": round(max(0, COOKIE_HARD_DELIVERY_MINUTES - cookie_age_minutes), 1) if cookie_age_minutes is not None else None,
+        "cookie_fresh": cookie_age_minutes is not None and cookie_age_minutes < COOKIE_REUSE_MINUTES,
+        "minutes_to_refresh": round(max(0, COOKIE_REUSE_MINUTES - cookie_age_minutes), 1) if cookie_age_minutes is not None else None,
+        "minutes_to_hard_expiry": round(max(0, COOKIE_REUSE_MINUTES - cookie_age_minutes), 1) if cookie_age_minutes is not None else None,
         "backoff_seconds": backoff_seconds if backoff_seconds and backoff_seconds > 0 else 0,
         "cookie_count": cookie_count
     }
@@ -736,15 +733,13 @@ def get_status():
         account = buscar_conta_para_setor(db, setor_nome)
         if can_deliver_cached_cookie(account):
             cookie_age = get_cookie_age_minutes(account)
-            hard_delivery_minutes = get_cookie_hard_delivery_limit_minutes(account=account)
-            outcome = "pool_hot" if cookie_age is not None and cookie_age < COOKIE_SOFT_REFRESH_MINUTES else "pool_warm"
             record_request_event(
                 "status",
                 setor_nome=setor_nome,
                 account=account,
-                outcome=outcome,
+                outcome="pool_hot",
                 cookie_age_minutes=cookie_age,
-                extra={"hard_delivery_minutes": round(hard_delivery_minutes, 1)},
+                extra={"delivery_rule_minutes": COOKIE_REUSE_MINUTES},
             )
             return jsonify({"concluido": True, "mensagem": "Conexão segura estabelecida!"})
     finally:
@@ -759,7 +754,6 @@ def request_login():
     data = request.get_json(silent=True) or {}
     username, password = data.get('username'), data.get('password')
     user_agent = data.get('user_agent')
-    force_fresh = bool(data.get('force_fresh'))
     
     if not username or not password:
         record_request_event("login", outcome="missing_credentials", user_agent=user_agent)
@@ -794,28 +788,8 @@ def request_login():
             record_request_event("login", setor_nome=setor_nome, outcome="no_account", user_agent=user_agent, requester=requester, request_id=request_id)
             return jsonify({"status": "erro", "mensagem": f"Setor {setor_nome} sem conta válida/ativa vinculada."}), 403
 
-        recent_cache_age_seconds = get_recent_cache_delivery_age_seconds(account=account, requester=requester)
-        settling_duplicate_click = recent_cache_age_seconds is not None and recent_cache_age_seconds <= CACHE_SETTLE_GRACE_SECONDS
-        requires_fresh_reentry = (
-            recent_cache_age_seconds is not None
-            and recent_cache_age_seconds > CACHE_SETTLE_GRACE_SECONDS
-            and recent_cache_age_seconds <= CACHE_REENTRY_FORCE_FRESH_SECONDS
-        )
-
-        if can_deliver_cached_cookie(account, login_flow=True) and not force_fresh and not requires_fresh_reentry:
+        if can_deliver_cached_cookie(account):
             cookie_age = get_cookie_age_minutes(account)
-            hard_delivery_minutes = get_cookie_hard_delivery_limit_minutes(account=account, login_flow=True)
-            background_refresh_started = False
-            if should_background_refresh_cookie(account):
-                background_refresh_started = enqueue_login_refresh(
-                    account,
-                    setor_nome,
-                    user_agent=user_agent,
-                    request_id=request_id,
-                    requester=requester,
-                    auto=True,
-                    force_fresh=False,
-                )
             redis_client.incr(f'metrics:cookies_injetados:{hoje}')
             redis_client.hincrby(f'metrics:account_logins:{hoje}', str(account.login), 1)
             record_request_event(
@@ -827,16 +801,8 @@ def request_login():
                 cookie_age_minutes=cookie_age,
                 requester=requester,
                 request_id=request_id,
-                extra={
-                    "refresh_due": bool(cookie_age is not None and cookie_age >= COOKIE_SOFT_REFRESH_MINUTES),
-                    "background_refresh_started": background_refresh_started,
-                    "hard_delivery_minutes": round(hard_delivery_minutes, 1),
-                    "force_fresh": force_fresh,
-                    "recent_cache_age_seconds": recent_cache_age_seconds,
-                    "settling_duplicate_click": settling_duplicate_click,
-                },
+                extra={"delivery_rule_minutes": COOKIE_REUSE_MINUTES},
             )
-            mark_recent_cache_delivery(account=account, requester=requester)
             return jsonify({
                 "status": "sucesso", "setor": setor_nome,
                 "cookies": json.loads(account.cookie_payload),
@@ -858,8 +824,7 @@ def request_login():
             user_agent=user_agent,
             request_id=request_id,
             requester=requester,
-            status_message="Solicitando login novo no portal..." if (force_fresh or requires_fresh_reentry) else "Iniciando robô...",
-            force_fresh=True,
+            status_message="Iniciando robô...",
         )
         if not queued_now:
             record_request_event("login", setor_nome=setor_nome, account=account, outcome="already_queued", user_agent=user_agent, requester=requester, request_id=request_id)
@@ -875,12 +840,6 @@ def request_login():
             user_agent=user_agent,
             requester=requester,
             request_id=request_id,
-            extra={
-                "force_fresh": force_fresh,
-                "recent_cache_age_seconds": recent_cache_age_seconds,
-                "settling_duplicate_click": settling_duplicate_click,
-                "requires_fresh_reentry": requires_fresh_reentry,
-            },
         )
         
         return jsonify({"status": "queued", "setor": setor_nome})
@@ -896,7 +855,6 @@ def renew_session():
     username, password = data.get('username'), data.get('password')
     setor_nome = data.get('setor') or request.args.get('setor')
     user_agent = data.get('user_agent')
-    force_fresh = bool(data.get('force_fresh'))
     requester = None
     request_id = secrets.token_hex(8)
 
@@ -919,28 +877,9 @@ def renew_session():
         if account:
             redis_client.hincrby(f'metrics:sector_logins:{hoje}', setor_nome, 1)
             
-            if can_deliver_cached_cookie(account) and not force_fresh:
+            if can_deliver_cached_cookie(account):
                 cookie_age = get_cookie_age_minutes(account)
-                hard_delivery_minutes = get_cookie_hard_delivery_limit_minutes(account=account)
-                refresh_due = should_background_refresh_cookie(account)
-                background_refresh_started = False
                 status_message = "Sessão quente retornada do Pool."
-                if refresh_due:
-                    background_refresh_started = enqueue_login_refresh(
-                        account,
-                        setor_nome,
-                        user_agent=user_agent,
-                        request_id=request_id,
-                        requester=requester,
-                        status_message="Sessão reaproveitada do Pool. Renovação discreta em andamento.",
-                        auto=True,
-                        force_fresh=False,
-                    )
-                    if background_refresh_started:
-                        status_message = "Sessão reaproveitada do Pool. Renovação discreta em andamento."
-                    elif redis_client.exists(f"lock:queue:{account.id}"):
-                        status_message = "Sessão reaproveitada do Pool. Já existe uma renovação em andamento."
-
                 redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": status_message, "concluido": True, "erro": False}))
                 redis_client.hincrby(f'metrics:account_logins:{hoje}', str(account.login), 1)
                 record_request_event(
@@ -952,12 +891,7 @@ def renew_session():
                     cookie_age_minutes=cookie_age,
                     requester=requester,
                     request_id=request_id,
-                    extra={
-                        "refresh_due": refresh_due,
-                        "background_refresh_started": background_refresh_started,
-                        "hard_delivery_minutes": round(hard_delivery_minutes, 1),
-                        "force_fresh": force_fresh,
-                    },
+                    extra={"delivery_rule_minutes": COOKIE_REUSE_MINUTES},
                 )
                 return jsonify({"status": "queued"})
             
@@ -976,8 +910,7 @@ def renew_session():
                 user_agent=user_agent,
                 request_id=request_id,
                 requester=requester,
-                status_message="Solicitando login novo após saída do portal..." if force_fresh else "Renovação de Marcapasso...",
-                force_fresh=force_fresh,
+                status_message="Renovação de Marcapasso...",
             )
             if not queued_now:
                 record_request_event("renew", setor_nome=setor_nome, account=account, outcome="already_queued", user_agent=user_agent, requester=requester, request_id=request_id)
@@ -993,7 +926,6 @@ def renew_session():
                 user_agent=user_agent,
                 requester=requester,
                 request_id=request_id,
-                extra={"force_fresh": force_fresh},
             )
             return jsonify({"status": "queued"})
     finally:
@@ -1024,8 +956,7 @@ def get_session():
     db = SessionLocal()
     try:
         account = buscar_conta_para_setor(db, setor_nome)
-        if can_deliver_cached_cookie(account):
-            hard_delivery_minutes = get_cookie_hard_delivery_limit_minutes(account=account)
+        if account and account.cookie_payload:
             record_request_event(
                 "session",
                 setor_nome=setor_nome,
@@ -1034,21 +965,9 @@ def get_session():
                 cookie_age_minutes=get_cookie_age_minutes(account),
                 requester=requester,
                 request_id=request_id,
-                extra={"hard_delivery_minutes": round(hard_delivery_minutes, 1)},
+                extra={"delivery_rule_minutes": COOKIE_REUSE_MINUTES},
             )
             return jsonify({"status": "sucesso", "cookies": json.loads(account.cookie_payload)})
-        if account and account.cookie_payload:
-            hard_delivery_minutes = get_cookie_hard_delivery_limit_minutes(account=account)
-            record_request_event(
-                "session",
-                setor_nome=setor_nome,
-                account=account,
-                outcome="stale_unavailable",
-                cookie_age_minutes=get_cookie_age_minutes(account),
-                requester=requester,
-                request_id=request_id,
-                extra={"hard_delivery_minutes": round(hard_delivery_minutes, 1)},
-            )
     finally:
         db.close()
     record_request_event("session", setor_nome=setor_nome, outcome="not_found", requester=requester, request_id=request_id)
@@ -1155,8 +1074,8 @@ def admin_live_overview():
 
         return jsonify({
             "generated_at": get_local_now().strftime("%d/%m/%Y %H:%M:%S"),
-            "cookie_reuse_minutes": COOKIE_SOFT_REFRESH_MINUTES,
-            "cookie_hard_delivery_minutes": COOKIE_HARD_DELIVERY_MINUTES,
+            "cookie_reuse_minutes": COOKIE_REUSE_MINUTES,
+            "cookie_hard_delivery_minutes": COOKIE_REUSE_MINUTES,
             "queue": get_queue_snapshot(),
             "workers": get_worker_states(),
             "active_requesters": build_live_requesters(),

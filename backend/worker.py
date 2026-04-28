@@ -42,7 +42,6 @@ AUTO_DISPATCH_WEEKDAYS = {
     for day in os.getenv("AUTO_DISPATCH_WEEKDAYS", "0,1,2,3,4").split(",")
     if day.strip()
 }
-AUTO_DISPATCH_RESPECT_WINDOW = os.getenv("AUTO_DISPATCH_RESPECT_WINDOW", "false").lower() == "true"
 WATCHDOG_STALE_SECONDS = int(os.getenv("WATCHDOG_STALE_SECONDS", "420"))
 INFRA_COOLDOWN_SECONDS = int(os.getenv("INFRA_COOLDOWN_SECONDS", "600"))
 ACCOUNT_RETRY_BACKOFF_SECONDS = int(os.getenv("ACCOUNT_RETRY_BACKOFF_SECONDS", "900"))
@@ -53,7 +52,7 @@ PRE_DISPATCH_PURGE_LEAD_MINUTES = int(os.getenv("PRE_DISPATCH_PURGE_LEAD_MINUTES
 PURGE_INFRA_COOLDOWN_SECONDS = int(os.getenv("PURGE_INFRA_COOLDOWN_SECONDS", "90"))
 IDLE_PURGE_MIN_IDLE_SECONDS = int(os.getenv("IDLE_PURGE_MIN_IDLE_SECONDS", "1200"))
 IDLE_PURGE_INTERVAL_SECONDS = int(os.getenv("IDLE_PURGE_INTERVAL_SECONDS", "5400"))
-COOKIE_REUSE_MINUTES = int(os.getenv("COOKIE_REUSE_MINUTES", "20"))
+COOKIE_REUSE_MINUTES = int(os.getenv("COOKIE_REUSE_MINUTES", "22"))
 COOKIE_SOFT_REFRESH_MINUTES = int(os.getenv("COOKIE_SOFT_REFRESH_MINUTES", str(COOKIE_REUSE_MINUTES)))
 TASK_HEARTBEAT_INTERVAL_SECONDS = int(os.getenv("TASK_HEARTBEAT_INTERVAL_SECONDS", "15"))
 CLOUDFLARE_SECOND_LOOK_SECONDS = int(os.getenv("CLOUDFLARE_SECOND_LOOK_SECONDS", "10"))
@@ -64,10 +63,10 @@ RESOURCE_GUARD_HARD_BROWSER_PROCS = int(os.getenv("RESOURCE_GUARD_HARD_BROWSER_P
 RESOURCE_GUARD_BROWSER_PRESSURE_MB = int(os.getenv("RESOURCE_GUARD_BROWSER_PRESSURE_MB", str(max(1400, RESOURCE_GUARD_MIN_AVAILABLE_MB + 350))))
 RESOURCE_GUARD_MAX_WAIT_SECONDS = int(os.getenv("RESOURCE_GUARD_MAX_WAIT_SECONDS", "75"))
 RESOURCE_GUARD_COOLDOWN_SECONDS = int(os.getenv("RESOURCE_GUARD_COOLDOWN_SECONDS", "180"))
-AUTO_DISPATCH_TARGET_AGE_MINUTES = int(os.getenv("AUTO_DISPATCH_TARGET_AGE_MINUTES", "480"))
-AUTO_DISPATCH_REFRESH_MARGIN_MINUTES = int(os.getenv("AUTO_DISPATCH_REFRESH_MARGIN_MINUTES", "30"))
-AUTO_DISPATCH_MAX_ENQUEUE_PER_CYCLE = int(os.getenv("AUTO_DISPATCH_MAX_ENQUEUE_PER_CYCLE", "1"))
-AUTO_DISPATCH_INCLUDE_EMPTY = os.getenv("AUTO_DISPATCH_INCLUDE_EMPTY", "false").lower() == "true"
+AUTO_DISPATCH_TARGET_AGE_MINUTES = int(os.getenv("AUTO_DISPATCH_TARGET_AGE_MINUTES", str(COOKIE_REUSE_MINUTES)))
+AUTO_DISPATCH_REFRESH_MARGIN_MINUTES = int(os.getenv("AUTO_DISPATCH_REFRESH_MARGIN_MINUTES", "4"))
+AUTO_DISPATCH_MAX_ENQUEUE_PER_CYCLE = int(os.getenv("AUTO_DISPATCH_MAX_ENQUEUE_PER_CYCLE", str(max(1, MAX_WORKERS - 1))))
+AUTO_DISPATCH_INCLUDE_EMPTY = os.getenv("AUTO_DISPATCH_INCLUDE_EMPTY", "true").lower() == "true"
 WORKER_RECYCLE_AFTER_TASKS = int(os.getenv("WORKER_RECYCLE_AFTER_TASKS", "8"))
 WORKER_RECYCLE_AFTER_SECONDS = int(os.getenv("WORKER_RECYCLE_AFTER_SECONDS", "7200"))
 
@@ -397,7 +396,7 @@ def faxina_global_de_emergencia():
     finally:
         reap_finished_children()
 
-def processar_login(account_id, setor_solicitado, thread_id, requester_username=None, requester_display_name=None, request_id=None, force_fresh=False):
+def processar_login(account_id, setor_solicitado, thread_id, requester_username=None, requester_display_name=None, request_id=None):
     db = SessionLocal()
     hoje = datetime.utcnow().strftime('%Y-%m-%d')
     
@@ -423,15 +422,13 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
         # =======================================================================
         # 🛑 BLINDAGEM CONTRA TRABALHO DUPLICADO (Otimização de Servidor)
         # =======================================================================
-        if not force_fresh and account.cookie_payload and account.last_login_at:
+        if account.cookie_payload and account.last_login_at:
             minutos_passados = (datetime.utcnow() - account.last_login_at).total_seconds() / 60
-            if minutos_passados < COOKIE_SOFT_REFRESH_MINUTES:
+            if minutos_passados < COOKIE_REUSE_MINUTES:
                 logger.info(f"[ROBÔ {thread_id} | {setor_solicitado}] ♻️ Tarefa duplicada detectada! A conta {account_id} já tem cookies frescos ({minutos_passados:.1f}m). Abortando para poupar servidor.")
                 get_redis().delete(f"lock:queue:{account_id}")
                 update_status(setor_solicitado, "Sessão renovada e salva no Pool!", concluido=True, thread_id=thread_id)
                 return
-        elif force_fresh:
-            logger.info(f"[ROBÔ {thread_id} | {setor_solicitado}] 🔁 Login explícito com force_fresh ativo. Ignorando bloqueio de cookie fresco para renovar de verdade.")
         # =======================================================================
 
         logger.info(f"[ROBÔ {thread_id} | {setor_solicitado}] Aplicando Jitter aleatório para despistar balanceadores do BB...")
@@ -769,7 +766,6 @@ def worker_loop(thread_id):
                 requester_username = task_data.get('requester_username')
                 requester_display_name = task_data.get('requester_display_name')
                 request_id = task_data.get('request_id')
-                force_fresh = bool(task_data.get('force_fresh'))
             except Exception:
                 account_id = task_data_str
                 setor = "GERAL"
@@ -777,7 +773,6 @@ def worker_loop(thread_id):
                 requester_username = None
                 requester_display_name = None
                 request_id = None
-                force_fresh = False
 
             if is_priority:
                 logger.info(
@@ -817,7 +812,6 @@ def worker_loop(thread_id):
                     requester_username=requester_username,
                     requester_display_name=requester_display_name,
                     request_id=request_id,
-                    force_fresh=force_fresh,
                 )
             finally:
                 heartbeat_stop.set()
@@ -843,7 +837,7 @@ def worker_loop(thread_id):
             time.sleep(5)
 
 def auto_dispatcher():
-    mode = "janela útil configurada" if AUTO_DISPATCH_RESPECT_WINDOW else "modo contínuo e preguiçoso"
+    mode = "janela útil configurada"
     logger.info(f"🤖 [DISPATCHER] Ativado! Manutenção automática em {mode}.")
     time.sleep(10) 
     
@@ -860,7 +854,7 @@ def auto_dispatcher():
 
             agora_utc = datetime.utcnow()
 
-            if AUTO_DISPATCH_RESPECT_WINDOW and not is_auto_dispatch_window(agora_local):
+            if not is_auto_dispatch_window(agora_local):
                 time.sleep(60)
                 continue
 
@@ -870,7 +864,7 @@ def auto_dispatcher():
                     AccountBB.status.in_(['active', 'ativo', 'provisoria_recebida', 'termo_assinado'])
                 ).order_by(AccountBB.id.asc()).all()
 
-                menor_tempo_para_vencer = float(AUTO_DISPATCH_TARGET_AGE_MINUTES)
+                menor_tempo_para_vencer = float(COOKIE_REUSE_MINUTES)
                 tarefas_enfileiradas = 0
                 
                 for acc in contas:
@@ -883,19 +877,19 @@ def auto_dispatcher():
                         if setores_list: setor = setores_list[0]
 
                     precisa_renovar = False
-                    refresh_threshold = max(1.0, float(AUTO_DISPATCH_TARGET_AGE_MINUTES) - float(AUTO_DISPATCH_REFRESH_MARGIN_MINUTES))
+                    refresh_threshold = max(1.0, float(COOKIE_REUSE_MINUTES) - float(AUTO_DISPATCH_REFRESH_MARGIN_MINUTES))
                     
                     # Lógica para saber quanto tempo de paz nós temos
                     if acc.cookie_payload and acc.last_login_at:
                         minutos_passados = (agora_utc - acc.last_login_at).total_seconds() / 60
-                        tempo_restante = float(AUTO_DISPATCH_TARGET_AGE_MINUTES) - minutos_passados
+                        tempo_restante = float(COOKIE_REUSE_MINUTES) - minutos_passados
                         
                         if tempo_restante < menor_tempo_para_vencer:
                             menor_tempo_para_vencer = tempo_restante
                             
                         if minutos_passados >= refresh_threshold:
                             precisa_renovar = True
-                    elif AUTO_DISPATCH_INCLUDE_EMPTY:
+                    else:
                         precisa_renovar = True
                         menor_tempo_para_vencer = 0.0
                     
@@ -909,10 +903,7 @@ def auto_dispatcher():
                             payload = json.dumps({"id": acc.id, "setor": setor, "auto": True})
                             get_redis().lpush("queue:login_requests", payload)
                             mark_system_activity()
-                            logger.info(
-                                f"🔄 [DISPATCHER] Conta {acc.login} ({setor}) enfileirada para manutenção preguiçosa "
-                                f"(alvo {AUTO_DISPATCH_TARGET_AGE_MINUTES}m, margem {AUTO_DISPATCH_REFRESH_MARGIN_MINUTES}m)."
-                            )
+                            logger.info(f"🔄 [DISPATCHER] Conta {acc.login} ({setor}) enfileirada para pré-aquecimento (Ciclo {COOKIE_REUSE_MINUTES}m).")
                             tarefas_enfileiradas += 1
 
                 # =========================================================================
