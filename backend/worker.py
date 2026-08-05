@@ -32,8 +32,9 @@ BASE_URL = "https://api-onelog.mdradvocacia.com"
 # MODO TURBO CONTROLADO POR VARIÁVEL DE AMBIENTE (Padrão: True)
 DEBUG_MODE = os.getenv("DEBUG_MODE", "True").lower() == "true"
 
-# Define quantos robôs vão rodar ao mesmo tempo (Padrão: 3)
-MAX_WORKERS = int(os.getenv("MAX_WORKERS", "3"))
+# Uma credencial compartilhada não se beneficia de Chromes concorrentes. A
+# configuração continua ajustável por ambiente, mas o padrão seguro é um robô.
+MAX_WORKERS = max(1, int(os.getenv("MAX_WORKERS", "1")))
 LOCAL_TIMEZONE = os.getenv("APP_TIMEZONE", "America/Fortaleza")
 AUTO_DISPATCH_START_HOUR = int(os.getenv("AUTO_DISPATCH_START_HOUR", "7"))
 AUTO_DISPATCH_END_HOUR = int(os.getenv("AUTO_DISPATCH_END_HOUR", "19"))
@@ -46,6 +47,10 @@ WATCHDOG_STALE_SECONDS = int(os.getenv("WATCHDOG_STALE_SECONDS", "420"))
 INFRA_COOLDOWN_SECONDS = int(os.getenv("INFRA_COOLDOWN_SECONDS", "600"))
 ACCOUNT_RETRY_BACKOFF_SECONDS = int(os.getenv("ACCOUNT_RETRY_BACKOFF_SECONDS", "900"))
 ACCOUNT_INFRA_BACKOFF_SECONDS = int(os.getenv("ACCOUNT_INFRA_BACKOFF_SECONDS", "1800"))
+ACCOUNT_QUEUE_LOCK_TTL_SECONDS = max(
+    60,
+    int(os.getenv("ACCOUNT_QUEUE_LOCK_TTL_SECONDS", str(ACCOUNT_INFRA_BACKOFF_SECONDS))),
+)
 CHROME_STARTUP_LOCK_TTL = int(os.getenv("CHROME_STARTUP_LOCK_TTL", "120"))
 HEARTBEAT_TTL_SECONDS = max(WATCHDOG_STALE_SECONDS * 2, 900)
 PRE_DISPATCH_PURGE_LEAD_MINUTES = int(os.getenv("PRE_DISPATCH_PURGE_LEAD_MINUTES", "15"))
@@ -55,6 +60,9 @@ IDLE_PURGE_INTERVAL_SECONDS = int(os.getenv("IDLE_PURGE_INTERVAL_SECONDS", "5400
 COOKIE_REUSE_MINUTES = int(os.getenv("COOKIE_REUSE_MINUTES", "22"))
 COOKIE_SOFT_REFRESH_MINUTES = int(os.getenv("COOKIE_SOFT_REFRESH_MINUTES", str(COOKIE_REUSE_MINUTES)))
 TASK_HEARTBEAT_INTERVAL_SECONDS = int(os.getenv("TASK_HEARTBEAT_INTERVAL_SECONDS", "15"))
+# O heartbeat prova que o processo do robô está vivo, não que o Chrome fez
+# progresso. Este limite impede que uma página presa mantenha a frota ocupada.
+TASK_MAX_RUNTIME_SECONDS = max(60, int(os.getenv("TASK_MAX_RUNTIME_SECONDS", "300")))
 CLOUDFLARE_SECOND_LOOK_SECONDS = int(os.getenv("CLOUDFLARE_SECOND_LOOK_SECONDS", "10"))
 CLOUDFLARE_PASSWORD_WAIT_SECONDS = int(os.getenv("CLOUDFLARE_PASSWORD_WAIT_SECONDS", "35"))
 RESOURCE_GUARD_MIN_AVAILABLE_MB = int(os.getenv("RESOURCE_GUARD_MIN_AVAILABLE_MB", "900"))
@@ -64,7 +72,6 @@ RESOURCE_GUARD_BROWSER_PRESSURE_MB = int(os.getenv("RESOURCE_GUARD_BROWSER_PRESS
 RESOURCE_GUARD_MAX_WAIT_SECONDS = int(os.getenv("RESOURCE_GUARD_MAX_WAIT_SECONDS", "75"))
 RESOURCE_GUARD_COOLDOWN_SECONDS = int(os.getenv("RESOURCE_GUARD_COOLDOWN_SECONDS", "180"))
 AUTO_DISPATCH_TARGET_AGE_MINUTES = int(os.getenv("AUTO_DISPATCH_TARGET_AGE_MINUTES", str(COOKIE_REUSE_MINUTES)))
-AUTO_DISPATCH_REFRESH_MARGIN_MINUTES = int(os.getenv("AUTO_DISPATCH_REFRESH_MARGIN_MINUTES", "4"))
 AUTO_DISPATCH_MAX_ENQUEUE_PER_CYCLE = int(os.getenv("AUTO_DISPATCH_MAX_ENQUEUE_PER_CYCLE", str(max(1, MAX_WORKERS - 1))))
 AUTO_DISPATCH_INCLUDE_EMPTY = os.getenv("AUTO_DISPATCH_INCLUDE_EMPTY", "true").lower() == "true"
 WORKER_RECYCLE_AFTER_TASKS = int(os.getenv("WORKER_RECYCLE_AFTER_TASKS", "8"))
@@ -151,6 +158,39 @@ def arm_account_backoff(account_id, reason, seconds):
 def get_account_backoff_seconds(account_id):
     ttl = get_redis().ttl(f"cooldown:account:{account_id}")
     return ttl if ttl and ttl > 0 else 0
+
+def set_task_started(thread_id, account_id):
+    payload = {
+        "account_id": str(account_id),
+        "started_at": int(time.time()),
+    }
+    get_redis().set(
+        f"task:started:{thread_id}",
+        json.dumps(payload),
+        ex=max(TASK_MAX_RUNTIME_SECONDS * 2, HEARTBEAT_TTL_SECONDS),
+    )
+
+def get_task_started(thread_id):
+    raw = get_redis().get(f"task:started:{thread_id}")
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+        started_at = int(payload.get("started_at", 0))
+        if started_at <= 0:
+            return None
+        return payload
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+def renew_queue_lock(account_id):
+    """Mantém a exclusividade da credencial somente durante uma tarefa real."""
+    if account_id is None:
+        return
+    try:
+        get_redis().expire(f"lock:queue:{account_id}", ACCOUNT_QUEUE_LOCK_TTL_SECONDS)
+    except Exception as error:
+        logger.warning(f"Não foi possível renovar a lease da conta {account_id}: {error}")
 
 def has_recent_other_heartbeats(exclude_thread_id=None, freshness_seconds=120):
     now = int(time.time())
@@ -251,6 +291,46 @@ def reap_finished_children():
         logger.info(f"🧼 Reaper recolheu {reaped} processo(s) filho(s) finalizado(s).")
     return reaped
 
+def stop_process_tree(process_obj, label="processo", grace_seconds=8):
+    """Encerra o robô e seus navegadores antes de recorrer ao kill forçado."""
+    pid = getattr(process_obj, "pid", None)
+    if not pid:
+        return
+
+    try:
+        parent = psutil.Process(pid)
+        descendants = parent.children(recursive=True)
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+        descendants = []
+
+    if descendants:
+        logger.warning(f"🩺 Encerrando árvore de {label}: {len(descendants)} processo(s) filho(s) detectado(s).")
+        for child in descendants:
+            try:
+                child.terminate()
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                pass
+        _, alive_children = psutil.wait_procs(descendants, timeout=max(1, grace_seconds))
+        for child in alive_children:
+            try:
+                child.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                pass
+        if alive_children:
+            psutil.wait_procs(alive_children, timeout=2)
+
+    try:
+        if process_obj.is_alive():
+            process_obj.terminate()
+            process_obj.join(timeout=max(1, grace_seconds))
+        if process_obj.is_alive():
+            process_obj.kill()
+            process_obj.join(timeout=2)
+    except Exception as error:
+        logger.warning(f"Não foi possível encerrar {label} de forma limpa: {error}")
+    finally:
+        reap_finished_children()
+
 def count_browser_processes():
     total = 0
     try:
@@ -339,12 +419,13 @@ def snapshot(sb, setor, nome_arquivo, thread_id=None):
     logger.info(f"{prefix} 📸 Snapshot gerado: {img_url}")
     return img_url
 
-def start_task_heartbeat(thread_id):
+def start_task_heartbeat(thread_id, account_id=None):
     stop_event = threading.Event()
 
     def pulse():
         while not stop_event.wait(TASK_HEARTBEAT_INTERVAL_SECONDS):
             touch_heartbeat(thread_id)
+            renew_queue_lock(account_id)
 
     heartbeat_thread = threading.Thread(target=pulse, daemon=True)
     heartbeat_thread.start()
@@ -396,7 +477,7 @@ def faxina_global_de_emergencia():
     finally:
         reap_finished_children()
 
-def processar_login(account_id, setor_solicitado, thread_id, requester_username=None, requester_display_name=None, request_id=None):
+def processar_login(account_id, setor_solicitado, thread_id, requester_username=None, requester_display_name=None, request_id=None, auto=False):
     db = SessionLocal()
     hoje = datetime.utcnow().strftime('%Y-%m-%d')
     
@@ -424,7 +505,10 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
         # =======================================================================
         if account.cookie_payload and account.last_login_at:
             minutos_passados = (datetime.utcnow() - account.last_login_at).total_seconds() / 60
-            if minutos_passados < COOKIE_REUSE_MINUTES:
+            should_run_early_auto_refresh = (
+                auto and minutos_passados >= float(AUTO_DISPATCH_TARGET_AGE_MINUTES)
+            )
+            if minutos_passados < COOKIE_REUSE_MINUTES and not should_run_early_auto_refresh:
                 logger.info(f"[ROBÔ {thread_id} | {setor_solicitado}] ♻️ Tarefa duplicada detectada! A conta {account_id} já tem cookies frescos ({minutos_passados:.1f}m). Abortando para poupar servidor.")
                 get_redis().delete(f"lock:queue:{account_id}")
                 update_status(setor_solicitado, "Sessão renovada e salva no Pool!", concluido=True, thread_id=thread_id)
@@ -766,6 +850,7 @@ def worker_loop(thread_id):
                 requester_username = task_data.get('requester_username')
                 requester_display_name = task_data.get('requester_display_name')
                 request_id = task_data.get('request_id')
+                is_auto = bool(task_data.get('auto', False))
             except Exception:
                 account_id = task_data_str
                 setor = "GERAL"
@@ -773,6 +858,7 @@ def worker_loop(thread_id):
                 requester_username = None
                 requester_display_name = None
                 request_id = None
+                is_auto = False
 
             if is_priority:
                 logger.info(
@@ -803,7 +889,8 @@ def worker_loop(thread_id):
             # ❤️ MONITOR CARDÍACO: O Robô assina o ponto antes de começar
             # =========================================================================
             touch_heartbeat(thread_id)
-            heartbeat_stop = start_task_heartbeat(thread_id)
+            set_task_started(thread_id, account_id)
+            heartbeat_stop = start_task_heartbeat(thread_id, account_id)
             try:
                 processar_login(
                     account_id,
@@ -812,11 +899,13 @@ def worker_loop(thread_id):
                     requester_username=requester_username,
                     requester_display_name=requester_display_name,
                     request_id=request_id,
+                    auto=is_auto,
                 )
             finally:
                 heartbeat_stop.set()
                 # Retira o pulso ao concluir (com sucesso ou falha limpa)
                 get_redis().delete(f"heartbeat:{thread_id}")
+                get_redis().delete(f"task:started:{thread_id}")
                 set_worker_state(thread_id, "idle", message="Aguardando missões...")
                 tarefas_processadas += 1
                 worker_uptime = int(time.time() - started_at)
@@ -877,7 +966,7 @@ def auto_dispatcher():
                         if setores_list: setor = setores_list[0]
 
                     precisa_renovar = False
-                    refresh_threshold = max(1.0, float(COOKIE_REUSE_MINUTES) - float(AUTO_DISPATCH_REFRESH_MARGIN_MINUTES))
+                    refresh_threshold = max(1.0, float(AUTO_DISPATCH_TARGET_AGE_MINUTES))
                     
                     # Lógica para saber quanto tempo de paz nós temos
                     if acc.cookie_payload and acc.last_login_at:
@@ -898,7 +987,7 @@ def auto_dispatcher():
                             continue
                         lock_key = f"lock:queue:{acc.id}"
                         if not get_redis().exists(lock_key):
-                            get_redis().setex(lock_key, 600, "1")
+                            get_redis().setex(lock_key, ACCOUNT_QUEUE_LOCK_TTL_SECONDS, "1")
                             
                             payload = json.dumps({"id": acc.id, "setor": setor, "auto": True})
                             get_redis().lpush("queue:login_requests", payload)
@@ -941,6 +1030,7 @@ if __name__ == "__main__":
         for key in r.scan_iter("maintenance:pre_dispatch_purge:*"): r.delete(key)
         for key in r.scan_iter("status:*"): r.delete(key)
         for key in r.scan_iter("heartbeat:*"): r.delete(key)
+        for key in r.scan_iter("task:started:*"): r.delete(key)
         for key in r.scan_iter("worker:state:*"): r.delete(key)
     except: pass
     
@@ -962,9 +1052,12 @@ if __name__ == "__main__":
     while True:
         try:
             time.sleep(30) 
+            reap_finished_children()
             
             if not dispatcher.is_alive():
                 logger.error("🚨 ALERTA: Dispatcher morreu! Ressuscitando...")
+                dispatcher.join(timeout=0.2)
+                reap_finished_children()
                 dispatcher = multiprocessing.Process(target=auto_dispatcher, daemon=True)
                 dispatcher.start()
                 
@@ -974,21 +1067,42 @@ if __name__ == "__main__":
 
                 if not w["process"].is_alive():
                     logger.error(f"🚨 ALERTA: ROBÔ {r_id} morreu inesperadamente (Provável OOM).")
+                    w["process"].join(timeout=0.2)
+                    reap_finished_children()
                     ressuscitar = True
                 else:
-                    # ❤️ Leitura do Eletrocardiograma (Deteção de Coma / Deadlock)
+                    # O pulso detecta processos mortos; o prazo absoluto detecta
+                    # navegadores vivos porém presos em uma página externa.
                     hb_str = get_redis().get(f"heartbeat:{r_id}")
-                    if hb_str:
-                        segundos_trabalhando = int(time.time()) - int(hb_str)
-                        if segundos_trabalhando > WATCHDOG_STALE_SECONDS:
-                            logger.error(f"🚨 ALERTA: ROBÔ {r_id} em COMA (Deadlock) há {segundos_trabalhando}s! Puxando o cabo da tomada da força...")
-                            w["process"].kill() # Assassina o processo travado
-                            activate_infra_cooldown(f"robô {r_id} travado por {segundos_trabalhando}s", seconds=min(INFRA_COOLDOWN_SECONDS, 180))
-                            if not has_recent_other_heartbeats(exclude_thread_id=r_id):
-                                faxina_global_de_emergencia()
-                            else:
-                                logger.warning("🧹 Expurgo global adiado para não derrubar sessões saudáveis de outros robôs.")
-                            ressuscitar = True
+                    task_started = get_task_started(r_id)
+                    now = int(time.time())
+                    heartbeat_stale = hb_str and (now - int(hb_str) > WATCHDOG_STALE_SECONDS)
+                    task_seconds = (
+                        now - int(task_started["started_at"])
+                        if task_started else None
+                    )
+                    task_timed_out = task_seconds is not None and task_seconds > TASK_MAX_RUNTIME_SECONDS
+
+                    if heartbeat_stale or task_timed_out:
+                        motivo = (
+                            f"limite de tarefa de {TASK_MAX_RUNTIME_SECONDS}s excedido ({task_seconds}s)"
+                            if task_timed_out
+                            else f"heartbeat parado há {now - int(hb_str)}s"
+                        )
+                        logger.error(f"🚨 ALERTA: ROBÔ {r_id} travado: {motivo}. Encerrando árvore do processo...")
+                        stop_process_tree(w["process"], label=f"ROBÔ {r_id}")
+                        if task_started and task_started.get("account_id"):
+                            arm_account_backoff(
+                                task_started["account_id"],
+                                motivo,
+                                ACCOUNT_INFRA_BACKOFF_SECONDS,
+                            )
+                        activate_infra_cooldown(f"robô {r_id} travado: {motivo}", seconds=min(INFRA_COOLDOWN_SECONDS, 180))
+                        if not has_recent_other_heartbeats(exclude_thread_id=r_id):
+                            faxina_global_de_emergencia()
+                        else:
+                            logger.warning("🧹 Expurgo global adiado para não derrubar sessões saudáveis de outros robôs.")
+                        ressuscitar = True
                             
                 if ressuscitar:
                     logger.info(f"🔄 Clonando um novo ROBÔ {r_id} saudável...")
@@ -996,6 +1110,7 @@ if __name__ == "__main__":
                     new_p.start()
                     workers[idx]["process"] = new_p
                     get_redis().delete(f"heartbeat:{r_id}")
+                    get_redis().delete(f"task:started:{r_id}")
                     set_worker_state(r_id, "starting", message="Reiniciando robô")
                     
         except KeyboardInterrupt:

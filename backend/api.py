@@ -39,6 +39,7 @@ ADMIN_BREAKGLASS_TOKEN = os.getenv("ADMIN_BREAKGLASS_TOKEN", "").strip()
 redis_client = redis.Redis.from_url(os.getenv('REDIS_URL', 'redis://localhost:6379/0'), decode_responses=True)
 COOKIE_REUSE_MINUTES = int(os.getenv("COOKIE_REUSE_MINUTES", "22"))
 COOKIE_SOFT_REFRESH_MINUTES = int(os.getenv("COOKIE_SOFT_REFRESH_MINUTES", str(COOKIE_REUSE_MINUTES)))
+ACCOUNT_QUEUE_LOCK_TTL_SECONDS = max(60, int(os.getenv("ACCOUNT_QUEUE_LOCK_TTL_SECONDS", "1800")))
 COOKIE_HARD_DELIVERY_MINUTES = int(os.getenv("COOKIE_HARD_DELIVERY_MINUTES", "20"))
 COOKIE_LOGIN_HARD_DELIVERY_MINUTES = int(os.getenv("COOKIE_LOGIN_HARD_DELIVERY_MINUTES", "2"))
 APP_TIMEZONE = os.getenv("APP_TIMEZONE", "America/Fortaleza")
@@ -243,7 +244,7 @@ def enqueue_login_refresh(account, setor_nome, user_agent=None, request_id=None,
     if redis_client.exists(lock_key):
         return False
 
-    redis_client.setex(lock_key, 600, "1")
+    redis_client.setex(lock_key, ACCOUNT_QUEUE_LOCK_TTL_SECONDS, "1")
     if status_message:
         redis_client.set(
             f"status:{setor_nome}",
