@@ -97,6 +97,21 @@ def get_redis():
         redis_client = redis.Redis.from_url(os.getenv('REDIS_URL', 'redis://localhost:6379/0'), decode_responses=True)
     return redis_client
 
+def wait_for_redis():
+    """Evita iniciar filhos durante a curta indisponibilidade do Redis no deploy."""
+    attempts = 0
+    while True:
+        try:
+            get_redis().ping()
+            if attempts:
+                logger.info("Redis disponível. Iniciando a frota.")
+            return
+        except (redis.RedisError, OSError) as error:
+            attempts += 1
+            if attempts == 1 or attempts % 5 == 0:
+                logger.warning(f"Aguardando Redis antes de iniciar os robôs: {error}")
+            time.sleep(2)
+
 def get_local_now():
     try:
         return datetime.now(ZoneInfo(LOCAL_TIMEZONE))
@@ -922,7 +937,10 @@ def worker_loop(thread_id):
             
         except Exception as e:
             logger.error(f"[ROBÔ {thread_id}] Erro no loop principal: {e}")
-            set_worker_state(thread_id, "error", message=str(e))
+            try:
+                set_worker_state(thread_id, "error", message=str(e))
+            except (redis.RedisError, OSError) as redis_error:
+                logger.warning(f"[ROBÔ {thread_id}] Redis indisponível; aguardando reconexão: {redis_error}")
             time.sleep(5)
 
 def auto_dispatcher():
@@ -1011,6 +1029,7 @@ def auto_dispatcher():
             time.sleep(60)
 
 if __name__ == "__main__":
+    wait_for_redis()
     logger.info("Limpando filas antigas e destravando status fantasmas...")
     try:
         r = get_redis()
