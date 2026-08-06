@@ -62,7 +62,7 @@ COOKIE_SOFT_REFRESH_MINUTES = int(os.getenv("COOKIE_SOFT_REFRESH_MINUTES", str(C
 TASK_HEARTBEAT_INTERVAL_SECONDS = int(os.getenv("TASK_HEARTBEAT_INTERVAL_SECONDS", "15"))
 # O heartbeat prova que o processo do robô está vivo, não que o Chrome fez
 # progresso. Este limite impede que uma página presa mantenha a frota ocupada.
-TASK_MAX_RUNTIME_SECONDS = max(60, int(os.getenv("TASK_MAX_RUNTIME_SECONDS", "300")))
+TASK_MAX_RUNTIME_SECONDS = max(60, int(os.getenv("TASK_MAX_RUNTIME_SECONDS", "480")))
 CLOUDFLARE_SECOND_LOOK_SECONDS = int(os.getenv("CLOUDFLARE_SECOND_LOOK_SECONDS", "10"))
 CLOUDFLARE_PASSWORD_WAIT_SECONDS = int(os.getenv("CLOUDFLARE_PASSWORD_WAIT_SECONDS", "35"))
 RESOURCE_GUARD_MIN_AVAILABLE_MB = int(os.getenv("RESOURCE_GUARD_MIN_AVAILABLE_MB", "900"))
