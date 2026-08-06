@@ -31,6 +31,9 @@ BASE_URL = "https://api-onelog.mdradvocacia.com"
 
 # MODO TURBO CONTROLADO POR VARIÁVEL DE AMBIENTE (Padrão: True)
 DEBUG_MODE = os.getenv("DEBUG_MODE", "True").lower() == "true"
+# Screenshots acionam uma chamada síncrona ao Chrome e não devem participar do
+# caminho operacional. Habilite apenas durante uma investigação pontual.
+DEBUG_SNAPSHOTS = os.getenv("DEBUG_SNAPSHOTS", "false").lower() == "true"
 
 # Uma credencial compartilhada não se beneficia de Chromes concorrentes. A
 # configuração continua ajustável por ambiente, mas o padrão seguro é um robô.
@@ -421,7 +424,8 @@ def update_status(setor, msg, concluido=False, erro=False, imagem=None, thread_i
     logger.info(f"{prefix} {msg}")
 
 def snapshot(sb, setor, nome_arquivo, thread_id=None):
-    if not DEBUG_MODE: return None
+    if not DEBUG_MODE or not DEBUG_SNAPSHOTS:
+        return None
     touch_heartbeat(thread_id)
     mark_system_activity()
     if not os.path.exists('shared'): os.makedirs('shared')
