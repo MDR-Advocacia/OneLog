@@ -291,7 +291,12 @@ def enqueue_login_refresh(account, setor_nome, user_agent=None, request_id=None,
     if status_message:
         redis_client.set(
             f"status:{setor_nome}",
-            json.dumps({"mensagem": status_message, "concluido": False, "erro": False})
+            json.dumps({
+                "mensagem": status_message,
+                "concluido": False,
+                "erro": False,
+                "request_id": request_id,
+            })
         )
 
     payload = {
@@ -831,6 +836,10 @@ def get_status():
     setor_nome = request.args.get('setor')
     if not setor_nome: return jsonify({"mensagem": "Setor ausente."}), 400
 
+    # Keep the current request correlated through the final cached-session reply.
+    status_str = redis_client.get(f"status:{setor_nome}")
+    status = parse_json_safe(status_str) or {"mensagem": "Aguardando sincronização..."}
+
     db = SessionLocal()
     account = None
     try:
@@ -846,24 +855,27 @@ def get_status():
                 extra={"delivery_rule_minutes": COOKIE_REUSE_MINUTES},
                 detailed=should_record_status_detail(setor_nome, "pool_hot"),
             )
+            response_payload = {"concluido": True, "mensagem": "Conexão segura estabelecida!"}
+            if status.get("request_id"):
+                response_payload["request_id"] = status["request_id"]
             return make_status_response(
-                {"concluido": True, "mensagem": "Conexão segura estabelecida!"},
+                response_payload,
                 STATUS_POLL_READY_SECONDS,
             )
     finally:
         db.close()
 
-    status_str = redis_client.get(f"status:{setor_nome}")
-    status = parse_json_safe(status_str) or {"mensagem": "Aguardando sincronização..."}
-    account_backoff_seconds = 0
+    cooldown_seconds = 0
     if account:
-        account_backoff_seconds = max(
-            redis_client.ttl(f"cooldown:account:{account.id}"),
-            redis_client.ttl(f"lock:queue:{account.id}"),
-            0,
-        )
+        cooldown_seconds = max(redis_client.ttl(f"cooldown:account:{account.id}"), 0)
 
-    has_pending_retry = status.get("retry_after_seconds") or account_backoff_seconds
+    # A queue lock means the worker is actively processing the request, not that
+    # the extension must postpone polling for the full lock lifetime. Retryable
+    # states, on the other hand, expose the remaining backend cooldown.
+    if status.get("retryable") and cooldown_seconds:
+        status["retry_after_seconds"] = cooldown_seconds
+
+    has_pending_retry = bool(status.get("retryable"))
     poll_after_seconds = STATUS_POLL_BACKOFF_SECONDS if has_pending_retry else STATUS_POLL_BUSY_SECONDS
 
     record_request_event(
@@ -912,7 +924,11 @@ def request_login():
         
         if not account:
             record_request_event("login", setor_nome=setor_nome, outcome="no_account", user_agent=user_agent, requester=requester, request_id=request_id)
-            return jsonify({"status": "erro", "mensagem": f"Setor {setor_nome} sem conta válida/ativa vinculada."}), 403
+            return jsonify({
+                "status": "erro",
+                "mensagem": f"Setor {setor_nome} sem conta válida/ativa vinculada.",
+                "request_id": request_id,
+            }), 403
 
         if can_deliver_cached_cookie(account):
             cookie_age = get_cookie_age_minutes(account)
@@ -932,7 +948,8 @@ def request_login():
             return jsonify({
                 "status": "sucesso", "setor": setor_nome,
                 "cookies": json.loads(account.cookie_payload),
-                "url": "https://juridico.bb.com.br/wfj"
+                "url": "https://juridico.bb.com.br/wfj",
+                "request_id": request_id,
             })
         
         # =========================================================
@@ -940,9 +957,30 @@ def request_login():
         # =========================================================
         lock_key = f"lock:queue:{account.id}"
         if redis_client.exists(lock_key):
-            redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Sincronizando com conexão em andamento...", "concluido": False}))
+            active_status = parse_json_safe(redis_client.get(f"status:{setor_nome}")) or {}
+            active_request_id = active_status.get("request_id") or request_id
+            # A second click must not erase a retryable status or its remaining
+            # cooldown. The original request remains the source of truth.
+            if active_status:
+                active_status.setdefault("request_id", active_request_id)
+            else:
+                active_status = {
+                    "mensagem": "Sincronizando com conexão em andamento...",
+                    "concluido": False,
+                    "erro": False,
+                    "request_id": active_request_id,
+                }
+            redis_client.set(f"status:{setor_nome}", json.dumps(active_status))
             record_request_event("login", setor_nome=setor_nome, account=account, outcome="already_queued", user_agent=user_agent, requester=requester, request_id=request_id)
-            return jsonify({"status": "queued", "setor": setor_nome}) 
+            return make_status_response(
+                {
+                    "status": "queued",
+                    "setor": setor_nome,
+                    "request_id": active_request_id,
+                    "request_reused": active_request_id != request_id,
+                },
+                STATUS_POLL_BUSY_SECONDS,
+            )
             
         queued_now = enqueue_login_refresh(
             account,
@@ -954,7 +992,10 @@ def request_login():
         )
         if not queued_now:
             record_request_event("login", setor_nome=setor_nome, account=account, outcome="already_queued", user_agent=user_agent, requester=requester, request_id=request_id)
-            return jsonify({"status": "queued", "setor": setor_nome})
+            return make_status_response(
+                {"status": "queued", "setor": setor_nome, "request_id": request_id},
+                STATUS_POLL_BUSY_SECONDS,
+            )
         
         redis_client.incr(f'metrics:robos_executados:{hoje}')
         redis_client.hincrby(f'metrics:account_logins:{hoje}', str(account.login), 1)
@@ -968,10 +1009,17 @@ def request_login():
             request_id=request_id,
         )
         
-        return jsonify({"status": "queued", "setor": setor_nome})
+        return make_status_response(
+            {"status": "queued", "setor": setor_nome, "request_id": request_id},
+            STATUS_POLL_BUSY_SECONDS,
+        )
     except Exception as e:
         record_request_event("login", setor_nome=setor_nome, outcome="api_error", user_agent=user_agent, extra={"error": str(e)}, requester=requester, request_id=request_id)
-        return jsonify({"status": "erro", "mensagem": f"Erro interno na API: {str(e)}"}), 500
+        return jsonify({
+            "status": "erro",
+            "mensagem": f"Erro interno na API: {str(e)}",
+            "request_id": request_id,
+        }), 500
     finally:
         db.close()
 
@@ -984,13 +1032,14 @@ def renew_session():
     requester = None
     request_id = secrets.token_hex(8)
 
-    if not setor_nome: return jsonify({"status": "erro", "mensagem": "Setor ausente."}), 400
+    if not setor_nome:
+        return jsonify({"status": "erro", "mensagem": "Setor ausente.", "request_id": request_id}), 400
 
     if username and password:
         ad_result = autenticar_e_obter_setor(username, password)
         if ad_result['status'] == 'erro':
-            record_request_event("renew", setor_nome=setor_nome, outcome="ad_denied", user_agent=user_agent)
-            return jsonify({"status": "unauthorized", "mensagem": "Credenciais inválidas."}), 401
+            record_request_event("renew", setor_nome=setor_nome, outcome="ad_denied", user_agent=user_agent, request_id=request_id)
+            return jsonify({"status": "unauthorized", "mensagem": "Credenciais inválidas.", "request_id": request_id}), 401
         requester = {
             "username": ad_result.get("usuario") or username,
             "display_name": ad_result.get("display_name") or ad_result.get("usuario") or username
@@ -1019,16 +1068,37 @@ def renew_session():
                     request_id=request_id,
                     extra={"delivery_rule_minutes": COOKIE_REUSE_MINUTES},
                 )
-                return jsonify({"status": "queued"})
+                return make_status_response(
+                    {"status": "queued", "request_id": request_id},
+                    STATUS_POLL_READY_SECONDS,
+                )
             
             # =========================================================
             # 🔒 A TRAVA DE FILA FOI RESTAURADA AQUI
             # =========================================================
             lock_key = f"lock:queue:{account.id}"
             if redis_client.exists(lock_key):
-                redis_client.set(f"status:{setor_nome}", json.dumps({"mensagem": "Aguardando renovação de segurança...", "concluido": False, "erro": False}))
+                active_status = parse_json_safe(redis_client.get(f"status:{setor_nome}")) or {}
+                active_request_id = active_status.get("request_id") or request_id
+                if active_status:
+                    active_status.setdefault("request_id", active_request_id)
+                else:
+                    active_status = {
+                        "mensagem": "Aguardando renovação de segurança...",
+                        "concluido": False,
+                        "erro": False,
+                        "request_id": active_request_id,
+                    }
+                redis_client.set(f"status:{setor_nome}", json.dumps(active_status))
                 record_request_event("renew", setor_nome=setor_nome, account=account, outcome="already_queued", user_agent=user_agent, requester=requester, request_id=request_id)
-                return jsonify({"status": "queued"})
+                return make_status_response(
+                    {
+                        "status": "queued",
+                        "request_id": active_request_id,
+                        "request_reused": active_request_id != request_id,
+                    },
+                    STATUS_POLL_BUSY_SECONDS,
+                )
 
             queued_now = enqueue_login_refresh(
                 account,
@@ -1040,7 +1110,10 @@ def renew_session():
             )
             if not queued_now:
                 record_request_event("renew", setor_nome=setor_nome, account=account, outcome="already_queued", user_agent=user_agent, requester=requester, request_id=request_id)
-                return jsonify({"status": "queued"})
+                return make_status_response(
+                    {"status": "queued", "request_id": request_id},
+                    STATUS_POLL_BUSY_SECONDS,
+                )
             
             redis_client.incr(f'metrics:robos_executados:{hoje}')
             redis_client.hincrby(f'metrics:account_logins:{hoje}', str(account.login), 1)
@@ -1053,11 +1126,14 @@ def renew_session():
                 requester=requester,
                 request_id=request_id,
             )
-            return jsonify({"status": "queued"})
+            return make_status_response(
+                {"status": "queued", "request_id": request_id},
+                STATUS_POLL_BUSY_SECONDS,
+            )
     finally:
         db.close()
     record_request_event("renew", setor_nome=setor_nome, outcome="not_found", user_agent=user_agent, requester=requester, request_id=request_id)
-    return jsonify({"status": "erro"}), 404
+    return jsonify({"status": "erro", "request_id": request_id}), 404
 
 @app.route('/api/zerocore/session', methods=['GET', 'POST'])
 def get_session():

@@ -602,6 +602,14 @@ def update_status(
         "imagem": imagem,
         "retryable": bool(retryable),
     }
+    if thread_id:
+        raw_worker_state = get_redis().get(f"worker:state:{thread_id}")
+        try:
+            active_request_id = json.loads(raw_worker_state or "{}").get("request_id")
+        except (TypeError, ValueError):
+            active_request_id = None
+        if active_request_id:
+            status["request_id"] = active_request_id
     if retry_after_seconds:
         status["retry_after_seconds"] = max(1, int(retry_after_seconds))
     get_redis().set(f"status:{setor}", json.dumps(status))
