@@ -105,11 +105,26 @@ Estas acoes nao foram executadas:
 
 ## Validacao posterior ao deploy do OneLog
 
+Validado as 13:15 UTC, apos o deploy da revisao `01f45f1`:
+
+- API, worker, PostgreSQL e Redis do OneLog iniciaram sem restart. O worker
+  esta com `init: true`, limite de 1,5 GiB e `PidsLimit=256` efetivo.
+- As filas normal, prioritaria e de retry adiado estavam vazias.
+- A API consumia 0,01% de CPU e 67,87 MiB; o worker 0,00% e 115,3 MiB, com
+  quatro PIDs. O host tinha 63 zumbis, mas eles nao pertenciam ao novo worker.
+- O primeiro pre-aquecimento apos o deploy concluiu: `BB_Robos` atravessou o
+  Cloudflare, encontrou a senha, autenticou e gravou a sessao no pool em
+  47,25 segundos.
+
+A API nao possui hoje uma rota publica `/health`; a resposta `404` nessa URL
+e esperada. Recomenda-se criar um healthcheck autenticavel ou interno em uma
+proxima janela, para que Coolify e observabilidade tenham uma sonda semantica.
+
+Proximas verificacoes operacionais:
+
 1. Confirmar `delayed_retries` no dashboard/API e que uma falha temporaria
    apareca como retry, nunca como fila perdida.
 2. Confirmar log `Tarefa preservada para retry` em falha Cloudflare e
    `tarefa(s) de retry devolvida(s)` quando vencer o atraso.
-3. Confirmar que `docker stats` do OneLog permanece abaixo dos limites e que
-   PIDs do worker ficam abaixo de 256.
-4. Acompanhar por 24 horas o tamanho do volume compartilhado e a taxa de
+3. Acompanhar por 24 horas o tamanho do volume compartilhado e a taxa de
    crescimento dos logs rotacionados.
