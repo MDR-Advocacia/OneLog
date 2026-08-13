@@ -16,6 +16,12 @@ from database import SessionLocal, AccountBB
 
 if not os.path.exists('shared'): os.makedirs('shared')
 
+# The main process supervises multiprocessing workers. Child browser processes
+# are reaped by the child that created them (or by the container init), never by
+# the supervisor, otherwise multiprocessing loses the exit status it needs to
+# replace a recycled worker.
+SUPERVISOR_PID = os.getpid()
+
 # Configuração de Logs (Salva no terminal e no arquivo público)
 logging.basicConfig(
     level=logging.INFO, 
@@ -188,6 +194,55 @@ def set_task_started(thread_id, account_id):
         ex=max(TASK_MAX_RUNTIME_SECONDS * 2, HEARTBEAT_TTL_SECONDS),
     )
 
+def set_inflight_task(thread_id, queue_name, task_data_str):
+    """Persists a claimed queue item so a worker restart can return it to Redis."""
+    payload = {
+        "queue_name": queue_name,
+        "task_data": task_data_str,
+        "claimed_at": int(time.time()),
+    }
+    get_redis().set(f"inflight:task:{thread_id}", json.dumps(payload))
+
+def clear_inflight_task(thread_id):
+    get_redis().delete(f"inflight:task:{thread_id}")
+
+def recover_inflight_task(thread_id):
+    """Returns an unfinished claim to its original queue after a worker loss."""
+    key = f"inflight:task:{thread_id}"
+    raw = get_redis().get(key)
+    if not raw:
+        return False
+
+    try:
+        payload = json.loads(raw)
+        queue_name = payload["queue_name"]
+        task_data_str = payload["task_data"]
+        if queue_name not in {"queue:priority_logins", "queue:login_requests"}:
+            raise ValueError(f"fila inválida: {queue_name}")
+        if not isinstance(task_data_str, str) or not task_data_str:
+            raise ValueError("tarefa vazia")
+    except (TypeError, ValueError, KeyError, json.JSONDecodeError) as error:
+        logger.error(f"Não foi possível recuperar a tarefa em voo do ROBÔ {thread_id}: {error}")
+        clear_inflight_task(thread_id)
+        return False
+
+    # BRPOP removes from the right. RPUSH puts the recovered task at the next
+    # position to be consumed instead of leaving callers blocked behind it.
+    get_redis().rpush(queue_name, task_data_str)
+    clear_inflight_task(thread_id)
+    logger.warning(f"↩️ Tarefa em voo do ROBÔ {thread_id} devolvida para {queue_name} após reinício.")
+    return True
+
+def recover_all_inflight_tasks():
+    recovered = 0
+    for key in list(get_redis().scan_iter("inflight:task:*")):
+        thread_id = key.rsplit(":", 1)[-1]
+        if recover_inflight_task(thread_id):
+            recovered += 1
+    if recovered:
+        logger.warning(f"↩️ {recovered} tarefa(s) em voo foram recuperadas no boot do worker.")
+    return recovered
+
 def get_task_started(thread_id):
     raw = get_redis().get(f"task:started:{thread_id}")
     if not raw:
@@ -293,7 +348,27 @@ def is_browser_process(proc_info):
         return False
     return any(term in nome or term in cmdline for term in BROWSER_PROCESS_TERMS)
 
-def reap_finished_children():
+def reap_finished_children(managed_pids=None):
+    """Reap exited browser helpers without stealing multiprocessing exit codes."""
+    # The supervisor must let Process.is_alive()/join() reap its own workers.
+    # `waitid(..., WNOWAIT)` lets it inspect an exited child first, so orphaned
+    # browser children can still be collected without stealing a managed PID.
+    if os.getpid() == SUPERVISOR_PID:
+        protected = {pid for pid in (managed_pids or []) if pid}
+        reaped = 0
+        while True:
+            try:
+                info = os.waitid(os.P_ALL, 0, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                if info is None or not info.si_pid or info.si_pid in protected:
+                    break
+                os.waitpid(info.si_pid, 0)
+                reaped += 1
+            except (AttributeError, ChildProcessError, OSError):
+                break
+        if reaped:
+            logger.info(f"🧼 Supervisor recolheu {reaped} processo(s) órfão(s) finalizado(s).")
+        return reaped
+
     reaped = 0
     while True:
         try:
@@ -347,7 +422,8 @@ def stop_process_tree(process_obj, label="processo", grace_seconds=8):
     except Exception as error:
         logger.warning(f"Não foi possível encerrar {label} de forma limpa: {error}")
     finally:
-        reap_finished_children()
+        if os.getpid() != SUPERVISOR_PID:
+            reap_finished_children()
 
 def count_browser_processes():
     total = 0
@@ -853,11 +929,13 @@ def worker_loop(thread_id):
                 continue
                 
             queue_name, task_data_str = task
+            set_inflight_task(thread_id, queue_name, task_data_str)
             
             if get_redis().exists("lock:cooldown"):
                 logger.warning(f"[ROBÔ {thread_id}] Fôlego ativado no meio do caminho! Devolvendo tarefa para a fila {queue_name}...")
                 set_worker_state(thread_id, "cooldown", message="Tarefa devolvida por cooldown")
                 get_redis().rpush(queue_name, task_data_str)
+                clear_inflight_task(thread_id)
                 time.sleep(20)
                 continue
 
@@ -925,6 +1003,7 @@ def worker_loop(thread_id):
                 # Retira o pulso ao concluir (com sucesso ou falha limpa)
                 get_redis().delete(f"heartbeat:{thread_id}")
                 get_redis().delete(f"task:started:{thread_id}")
+                clear_inflight_task(thread_id)
                 set_worker_state(thread_id, "idle", message="Aguardando missões...")
                 tarefas_processadas += 1
                 worker_uptime = int(time.time() - started_at)
@@ -1034,23 +1113,18 @@ def auto_dispatcher():
 
 if __name__ == "__main__":
     wait_for_redis()
-    logger.info("Limpando filas antigas e destravando status fantasmas...")
+    logger.info("Recuperando estado volátil sem descartar fila ou bloqueios ativos...")
     try:
         r = get_redis()
-        r.delete("queue:login_requests")
-        r.delete("queue:priority_logins") 
-        r.delete("lock:cooldown") 
-        r.delete("lock:infra_cooldown")
+        recover_all_inflight_tasks()
+
+        # These locks belong only to a browser process. They are safe to clear
+        # after a process restart; account locks, queues and backoffs are not.
         r.delete("lock:bb_door") 
         r.delete("lock:chrome_startup")
         r.delete("lock:purge_in_progress")
         r.delete("lock:idle_purge")
-        r.set("metrics:captcha_consecutive_failures", 0) 
-        r.set("metrics:infra_consecutive_failures", 0)
         mark_system_activity()
-        for key in r.scan_iter("lock:queue:*"): r.delete(key)
-        for key in r.scan_iter("cooldown:account:*"): r.delete(key)
-        for key in r.scan_iter("maintenance:pre_dispatch_purge:*"): r.delete(key)
         for key in r.scan_iter("status:*"): r.delete(key)
         for key in r.scan_iter("heartbeat:*"): r.delete(key)
         for key in r.scan_iter("task:started:*"): r.delete(key)
@@ -1074,13 +1148,11 @@ if __name__ == "__main__":
     # =========================================================================
     while True:
         try:
-            time.sleep(30) 
-            reap_finished_children()
+            time.sleep(30)
             
             if not dispatcher.is_alive():
                 logger.error("🚨 ALERTA: Dispatcher morreu! Ressuscitando...")
                 dispatcher.join(timeout=0.2)
-                reap_finished_children()
                 dispatcher = multiprocessing.Process(target=auto_dispatcher, daemon=True)
                 dispatcher.start()
                 
@@ -1089,9 +1161,13 @@ if __name__ == "__main__":
                 ressuscitar = False
 
                 if not w["process"].is_alive():
-                    logger.error(f"🚨 ALERTA: ROBÔ {r_id} morreu inesperadamente (Provável OOM).")
                     w["process"].join(timeout=0.2)
-                    reap_finished_children()
+                    exitcode = w["process"].exitcode
+                    if exitcode == 0:
+                        logger.info(f"♻️ ROBÔ {r_id} concluiu reciclagem planejada. Repondo processo limpo.")
+                    else:
+                        logger.error(f"🚨 ALERTA: ROBÔ {r_id} morreu com exit code {exitcode}. Repondo processo.")
+                    recover_inflight_task(r_id)
                     ressuscitar = True
                 else:
                     # O pulso detecta processos mortos; o prazo absoluto detecta
@@ -1135,6 +1211,9 @@ if __name__ == "__main__":
                     get_redis().delete(f"heartbeat:{r_id}")
                     get_redis().delete(f"task:started:{r_id}")
                     set_worker_state(r_id, "starting", message="Reiniciando robô")
+
+            managed_pids = [dispatcher.pid, *(w["process"].pid for w in workers)]
+            reap_finished_children(managed_pids)
                     
         except KeyboardInterrupt:
             logger.info("Encerrando sistema...")
