@@ -76,7 +76,8 @@ services:
       resources:
         limits:
           cpus: '1.0'
-          memory: 1536M    # Limite aumentado para segurar 3 Chromes
+          memory: 1536M    # Um Chrome controlado, com folga para o navegador e o driver
+          pids: 256
         reservations:
           memory: 512M     # Deixe apenas UMA linha de memory aqui
 volumes:

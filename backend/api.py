@@ -8,8 +8,10 @@ import secrets
 import logging
 import sys
 import re
-from collections import Counter, deque
+import glob
+from collections import Counter
 from datetime import datetime, timedelta
+from logging.handlers import RotatingFileHandler
 from database import SessionLocal, Sector, AccountBB, init_db, seed_db
 from ad_integration import autenticar_e_obter_setor, autenticar_admin_ad, listar_ous_bb_ad
 from functools import wraps
@@ -27,7 +29,14 @@ api_logger = logging.getLogger("onelog.api")
 if not api_logger.handlers:
     api_logger.setLevel(logging.INFO)
     formatter = logging.Formatter('%(asctime)s - API - %(message)s')
-    file_handler = logging.FileHandler(os.path.join(SHARED_DIR, "api_debug.log"), encoding='utf-8')
+    log_max_bytes = max(1_048_576, int(os.getenv("LOG_MAX_BYTES", str(25 * 1024 * 1024))))
+    log_backup_count = max(1, int(os.getenv("LOG_BACKUP_COUNT", "14")))
+    file_handler = RotatingFileHandler(
+        os.path.join(SHARED_DIR, "api_debug.log"),
+        maxBytes=log_max_bytes,
+        backupCount=log_backup_count,
+        encoding='utf-8',
+    )
     file_handler.setFormatter(formatter)
     stream_handler = logging.StreamHandler(sys.stdout)
     stream_handler.setFormatter(formatter)
@@ -50,6 +59,10 @@ ADMIN_SESSION_TTL_SECONDS = int(os.getenv("ADMIN_SESSION_TTL_SECONDS", "28800"))
 LOG_TAIL_LIMIT = int(os.getenv("LOG_TAIL_LIMIT", "200"))
 CACHE_SETTLE_GRACE_SECONDS = int(os.getenv("CACHE_SETTLE_GRACE_SECONDS", "45"))
 CACHE_REENTRY_FORCE_FRESH_SECONDS = int(os.getenv("CACHE_REENTRY_FORCE_FRESH_SECONDS", "900"))
+STATUS_EVENT_SAMPLE_SECONDS = max(1, int(os.getenv("STATUS_EVENT_SAMPLE_SECONDS", "15")))
+STATUS_POLL_READY_SECONDS = max(1, int(os.getenv("STATUS_POLL_READY_SECONDS", "5")))
+STATUS_POLL_BUSY_SECONDS = max(1, int(os.getenv("STATUS_POLL_BUSY_SECONDS", "10")))
+STATUS_POLL_BACKOFF_SECONDS = max(1, int(os.getenv("STATUS_POLL_BACKOFF_SECONDS", "30")))
 LOG_LINE_RE = re.compile(r'^(?P<raw_ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+\s-\s(?P<channel>[A-Z_]+)\s-\s(?P<message>.*)$')
 
 def get_local_now():
@@ -143,7 +156,18 @@ def clear_recent_cache_delivery(account=None, requester=None):
     if key:
         redis_client.delete(key)
 
-def record_request_event(endpoint, setor_nome=None, account=None, outcome=None, user_agent=None, cookie_age_minutes=None, extra=None, requester=None, request_id=None):
+def record_request_event(
+    endpoint,
+    setor_nome=None,
+    account=None,
+    outcome=None,
+    user_agent=None,
+    cookie_age_minutes=None,
+    extra=None,
+    requester=None,
+    request_id=None,
+    detailed=True,
+):
     now_utc = datetime.utcnow()
     today = now_utc.strftime('%Y-%m-%d')
     event = {
@@ -174,27 +198,46 @@ def record_request_event(endpoint, setor_nome=None, account=None, outcome=None, 
     redis_client.hincrby(f"metrics:request_endpoint:{today}", endpoint, 1)
     if outcome:
         redis_client.hincrby(f"metrics:request_outcome:{today}", outcome, 1)
-    push_recent_request(event)
-    api_logger.info(
-        "[REQ] endpoint=%s outcome=%s setor=%s account=%s requester=%s req=%s ip=%s cookie_age=%s",
-        endpoint,
-        outcome or "-",
-        setor_nome or "-",
-        account.login if account else "-",
-        (requester or {}).get("username") or "-",
-        request_id or "-",
-        event["ip"],
-        event.get("cookie_age_minutes", "-"),
-    )
-    mark_live_activity(
-        setor_nome=setor_nome,
-        account=account,
-        endpoint=endpoint,
-        outcome=outcome,
-        user_agent=user_agent,
-        requester=requester,
-        request_id=request_id
-    )
+    if detailed:
+        push_recent_request(event)
+        api_logger.info(
+            "[REQ] endpoint=%s outcome=%s setor=%s account=%s requester=%s req=%s ip=%s cookie_age=%s",
+            endpoint,
+            outcome or "-",
+            setor_nome or "-",
+            account.login if account else "-",
+            (requester or {}).get("username") or "-",
+            request_id or "-",
+            event["ip"],
+            event.get("cookie_age_minutes", "-"),
+        )
+        mark_live_activity(
+            setor_nome=setor_nome,
+            account=account,
+            endpoint=endpoint,
+            outcome=outcome,
+            user_agent=user_agent,
+            requester=requester,
+            request_id=request_id
+        )
+
+def should_record_status_detail(setor_nome, outcome):
+    """Samples chatty extension polling while retaining exact daily counters."""
+    safe_sector = re.sub(r'[^a-zA-Z0-9_.-]+', '_', setor_nome or 'unknown')[:120]
+    safe_outcome = re.sub(r'[^a-zA-Z0-9_.-]+', '_', outcome or 'unknown')[:80]
+    key = f"metrics:status_detail_sample:{safe_sector}:{safe_outcome}"
+    return bool(redis_client.set(key, "1", ex=STATUS_EVENT_SAMPLE_SECONDS, nx=True))
+
+def make_status_response(payload, poll_after_seconds=None):
+    response_payload = dict(payload or {})
+    if poll_after_seconds:
+        poll_after_seconds = max(1, int(poll_after_seconds))
+        response_payload["poll_after_seconds"] = poll_after_seconds
+    response = jsonify(response_payload)
+    if poll_after_seconds:
+        response.headers["Retry-After"] = str(poll_after_seconds)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 def record_session_cycle(account, new_login_at):
     if not account or not account.last_login_at:
@@ -269,6 +312,7 @@ def get_queue_snapshot():
     return {
         "login_requests": redis_client.llen("queue:login_requests"),
         "priority_logins": redis_client.llen("queue:priority_logins"),
+        "delayed_retries": redis_client.zcard("queue:delayed_login_requests"),
         "cooldown_active": redis_client.exists("lock:cooldown") == 1,
         "infra_cooldown_active": redis_client.exists("lock:infra_cooldown") == 1,
     }
@@ -303,9 +347,16 @@ def get_log_sources(source="combined"):
         "worker": ("worker", os.path.join(SHARED_DIR, "worker_debug.log")),
         "api": ("api", os.path.join(SHARED_DIR, "api_debug.log")),
     }
-    if selected in mapping:
-        return [mapping[selected]]
-    return [mapping["worker"], mapping["api"]]
+    selected_sources = [mapping[selected]] if selected in mapping else [mapping["worker"], mapping["api"]]
+    sources = []
+    for source_name, base_path in selected_sources:
+        # Rotated files are part of the same retained log stream and remain
+        # available to the existing date filter and download endpoints.
+        paths = sorted(glob.glob(f"{base_path}*"), key=lambda path: os.path.getmtime(path))
+        for path in paths:
+            if os.path.isfile(path):
+                sources.append((source_name, path))
+    return sources
 
 def iter_log_lines(file_path, source_name, day=None, contains=None):
     if not os.path.exists(file_path):
@@ -329,15 +380,66 @@ def iter_log_lines(file_path, source_name, day=None, contains=None):
                 "message": match.group("message"),
             }
 
+def read_last_log_lines(file_path, max_lines):
+    """Reads a bounded tail without rescanning a months-long shared log."""
+    if max_lines <= 0 or not os.path.exists(file_path):
+        return []
+
+    block_size = 64 * 1024
+    newline_count = 0
+    chunks = []
+    with open(file_path, "rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        position = handle.tell()
+        while position > 0 and newline_count <= max_lines:
+            read_size = min(block_size, position)
+            position -= read_size
+            handle.seek(position)
+            chunk = handle.read(read_size)
+            chunks.append(chunk)
+            newline_count += chunk.count(b"\n")
+
+    raw_lines = b"".join(reversed(chunks)).splitlines()[-max_lines:]
+    return [line.decode("utf-8", errors="replace") for line in raw_lines]
+
+def iter_recent_log_lines(file_path, source_name, max_lines, day=None, contains=None):
+    contains_filter = (contains or "").lower().strip()
+    for line in read_last_log_lines(file_path, max_lines):
+        match = LOG_LINE_RE.match(line)
+        if not match:
+            continue
+        raw_ts = match.group("raw_ts")
+        if day and raw_ts[:10] != day:
+            continue
+        if contains_filter and contains_filter not in line.lower():
+            continue
+        yield {
+            "source": source_name,
+            "ts": raw_ts,
+            "line": line,
+            "message": match.group("message"),
+        }
+
 def read_log_tail(source="combined", day=None, limit=120, contains=None):
     max_lines = min(max(int(limit or 120), 1), LOG_TAIL_LIMIT)
     per_source = max_lines if source in ("api", "worker") else max_lines * 3
+    scan_lines = max(per_source * 20, 1_000)
     items = []
-    for source_name, file_path in get_log_sources(source):
-        tail = deque(maxlen=per_source)
-        for item in iter_log_lines(file_path, source_name, day=day, contains=contains):
-            tail.append(item)
-        items.extend(list(tail))
+    source_paths = get_log_sources(source)
+    paths_by_source = {}
+    for source_name, file_path in source_paths:
+        paths_by_source.setdefault(source_name, []).append(file_path)
+
+    # Keep a bounded tail for every selected source. Older rotations stay
+    # available for an explicit historical day or a download.
+    for source_name, paths in paths_by_source.items():
+        for file_path in paths[-2:]:
+            items.extend(iter_recent_log_lines(file_path, source_name, scan_lines, day=day, contains=contains))
+
+    if day and not items:
+        for source_name, paths in paths_by_source.items():
+            for file_path in paths[:-2]:
+                items.extend(iter_log_lines(file_path, source_name, day=day, contains=contains))
     items.sort(key=lambda item: item["ts"])
     return items[-max_lines:]
 
@@ -730,6 +832,7 @@ def get_status():
     if not setor_nome: return jsonify({"mensagem": "Setor ausente."}), 400
 
     db = SessionLocal()
+    account = None
     try:
         account = buscar_conta_para_setor(db, setor_nome)
         if can_deliver_cached_cookie(account):
@@ -741,14 +844,36 @@ def get_status():
                 outcome="pool_hot",
                 cookie_age_minutes=cookie_age,
                 extra={"delivery_rule_minutes": COOKIE_REUSE_MINUTES},
+                detailed=should_record_status_detail(setor_nome, "pool_hot"),
             )
-            return jsonify({"concluido": True, "mensagem": "Conexão segura estabelecida!"})
+            return make_status_response(
+                {"concluido": True, "mensagem": "Conexão segura estabelecida!"},
+                STATUS_POLL_READY_SECONDS,
+            )
     finally:
         db.close()
 
     status_str = redis_client.get(f"status:{setor_nome}")
-    record_request_event("status", setor_nome=setor_nome, outcome="awaiting_sync")
-    return jsonify(json.loads(status_str)) if status_str else jsonify({"mensagem": "Aguardando sincronização..."})
+    status = parse_json_safe(status_str) or {"mensagem": "Aguardando sincronização..."}
+    account_backoff_seconds = 0
+    if account:
+        account_backoff_seconds = max(
+            redis_client.ttl(f"cooldown:account:{account.id}"),
+            redis_client.ttl(f"lock:queue:{account.id}"),
+            0,
+        )
+
+    has_pending_retry = status.get("retry_after_seconds") or account_backoff_seconds
+    poll_after_seconds = STATUS_POLL_BACKOFF_SECONDS if has_pending_retry else STATUS_POLL_BUSY_SECONDS
+
+    record_request_event(
+        "status",
+        setor_nome=setor_nome,
+        account=account,
+        outcome="awaiting_sync",
+        detailed=should_record_status_detail(setor_nome, "awaiting_sync"),
+    )
+    return make_status_response(status, poll_after_seconds)
 
 @app.route('/api/zerocore/login', methods=['POST'])
 def request_login():
@@ -997,7 +1122,11 @@ def admin_dashboard_stats():
         live_sectors = get_live_entries("live:setor:*")
         total_accounts = db.query(AccountBB).count()
         active_accounts = db.query(AccountBB).filter(AccountBB.status.in_(['active', 'ativo', 'provisoria_recebida', 'termo_assinado'])).count()
-        queue_size = redis_client.llen("queue:login_requests") + redis_client.llen("queue:priority_logins")
+        queue_size = (
+            redis_client.llen("queue:login_requests")
+            + redis_client.llen("queue:priority_logins")
+            + redis_client.zcard("queue:delayed_login_requests")
+        )
         
         logins_solicitados = int(redis_client.get(f'metrics:logins_solicitados:{hoje}') or 0)
         cookies_injetados = int(redis_client.get(f'metrics:cookies_injetados:{hoje}') or 0)

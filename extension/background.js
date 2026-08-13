@@ -102,18 +102,18 @@ async function pollStatusUntilDone(isBackground = false) {
         const setor = userObj.setor;
 
         let polling = true;
-        let fallbackTimer = 0;
+        const pollingStartedAt = Date.now();
+        const maxPollingMs = 12 * 60 * 1000;
         
         while (polling) {
-            await new Promise(r => setTimeout(r, 2000));
-            fallbackTimer++;
+            await new Promise(r => setTimeout(r, 5000));
             try {
                 const res = await fetch(`${API_URL}/api/zerocore/status?setor=${setor}`);
                 const data = await res.json();
                 
                 if (data.mensagem) updateState(true, data.mensagem);
                 
-                if (data.erro || fallbackTimer > 150) { 
+                if (data.erro || Date.now() - pollingStartedAt > maxPollingMs) {
                     updateState(false, "", "Falha no robô. Tente acessar novamente.");
                     return;
                 }
@@ -132,6 +132,12 @@ async function pollStatusUntilDone(isBackground = false) {
                     
                     if (sessionData.status === "sucesso") await finalizeLogin(sessionData.cookies, isBackground);
                     else updateState(false, "", "Erro ao recuperar cookies da sessão nova.");
+                }
+
+                const retryAfterHeader = Number.parseInt(res.headers.get("Retry-After") || "", 10);
+                const requestedDelay = Number(data.poll_after_seconds || retryAfterHeader);
+                if (Number.isFinite(requestedDelay) && requestedDelay > 5) {
+                    await new Promise(resolve => setTimeout(resolve, Math.min(requestedDelay, 30) * 1000 - 5000));
                 }
             } catch(e) {}
         }

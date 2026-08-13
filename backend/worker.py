@@ -12,9 +12,13 @@ from zoneinfo import ZoneInfo
 from seleniumbase import SB
 import logging
 import sys
+from logging.handlers import RotatingFileHandler
 from database import SessionLocal, AccountBB
 
 if not os.path.exists('shared'): os.makedirs('shared')
+
+LOG_MAX_BYTES = max(1_048_576, int(os.getenv("LOG_MAX_BYTES", str(25 * 1024 * 1024))))
+LOG_BACKUP_COUNT = max(1, int(os.getenv("LOG_BACKUP_COUNT", "14")))
 
 # The main process supervises multiprocessing workers. Child browser processes
 # are reaped by the child that created them (or by the container init), never by
@@ -27,7 +31,12 @@ logging.basicConfig(
     level=logging.INFO, 
     format='%(asctime)s - WORKER - %(message)s',
     handlers=[
-        logging.FileHandler("shared/worker_debug.log", encoding='utf-8'),
+        RotatingFileHandler(
+            "shared/worker_debug.log",
+            maxBytes=LOG_MAX_BYTES,
+            backupCount=LOG_BACKUP_COUNT,
+            encoding='utf-8',
+        ),
         logging.StreamHandler(sys.stdout)
     ]
 )
@@ -72,6 +81,9 @@ TASK_HEARTBEAT_INTERVAL_SECONDS = int(os.getenv("TASK_HEARTBEAT_INTERVAL_SECONDS
 # O heartbeat prova que o processo do robô está vivo, não que o Chrome fez
 # progresso. Este limite impede que uma página presa mantenha a frota ocupada.
 TASK_MAX_RUNTIME_SECONDS = max(60, int(os.getenv("TASK_MAX_RUNTIME_SECONDS", "480")))
+CLOUDFLARE_MAX_ATTEMPTS_PER_TASK = max(1, int(os.getenv("CLOUDFLARE_MAX_ATTEMPTS_PER_TASK", "2")))
+CLOUDFLARE_RETRY_BACKOFF_SECONDS = max(60, int(os.getenv("CLOUDFLARE_RETRY_BACKOFF_SECONDS", "300")))
+TASK_TIMEOUT_RETRY_BACKOFF_SECONDS = max(60, int(os.getenv("TASK_TIMEOUT_RETRY_BACKOFF_SECONDS", "300")))
 CLOUDFLARE_SECOND_LOOK_SECONDS = int(os.getenv("CLOUDFLARE_SECOND_LOOK_SECONDS", "10"))
 CLOUDFLARE_PASSWORD_WAIT_SECONDS = int(os.getenv("CLOUDFLARE_PASSWORD_WAIT_SECONDS", "35"))
 RESOURCE_GUARD_MIN_AVAILABLE_MB = int(os.getenv("RESOURCE_GUARD_MIN_AVAILABLE_MB", "900"))
@@ -92,6 +104,8 @@ WORKER_RECYCLE_AFTER_SECONDS = int(os.getenv("WORKER_RECYCLE_AFTER_SECONDS", "72
 PROXY_ENV = os.getenv("PROXY_LIST", "socks5://189.124.176.141:45123")
 PROXY_LIST = [p.strip() for p in PROXY_ENV.split(',') if p.strip()]
 BROWSER_PROCESS_TERMS = ("chrome", "chromedriver", "chrome_crashpad", "xvfb")
+LOGIN_QUEUES = {"queue:priority_logins", "queue:login_requests"}
+DELAYED_RETRY_QUEUE = "queue:delayed_login_requests"
 
 def get_random_proxy():
     if not PROXY_LIST:
@@ -206,6 +220,88 @@ def set_inflight_task(thread_id, queue_name, task_data_str):
 def clear_inflight_task(thread_id):
     get_redis().delete(f"inflight:task:{thread_id}")
 
+def validate_queued_task(queue_name, task_data_str):
+    if queue_name not in LOGIN_QUEUES:
+        raise ValueError(f"fila inválida: {queue_name}")
+    if not isinstance(task_data_str, str) or not task_data_str:
+        raise ValueError("tarefa vazia")
+
+def schedule_delayed_retry(queue_name, task_data_str, delay_seconds, reason):
+    """Stores a retry durably instead of making a worker sleep or losing the claim."""
+    validate_queued_task(queue_name, task_data_str)
+    delay_seconds = max(1, int(delay_seconds))
+    payload = json.dumps({
+        "queue_name": queue_name,
+        "task_data": task_data_str,
+    }, ensure_ascii=False, sort_keys=True)
+    ready_at = time.time() + delay_seconds
+    get_redis().zadd(DELAYED_RETRY_QUEUE, {payload: ready_at})
+    return ready_at
+
+def promote_due_retries(limit=10):
+    """Moves due retry jobs back to their original queue without busy polling."""
+    redis_conn = get_redis()
+    if not redis_conn.set("lock:delayed_retry_promoter", "1", ex=30, nx=True):
+        return 0
+
+    now = time.time()
+    try:
+        raw_items = redis_conn.zrangebyscore(DELAYED_RETRY_QUEUE, "-inf", now, start=0, num=limit)
+        promoted = 0
+        for raw in raw_items:
+            try:
+                payload = json.loads(raw)
+                queue_name = payload["queue_name"]
+                task_data_str = payload["task_data"]
+                validate_queued_task(queue_name, task_data_str)
+                task_data = json.loads(task_data_str)
+            except (TypeError, ValueError, KeyError, json.JSONDecodeError) as error:
+                logger.error(f"Retry adiado inválido descartado: {error}")
+                redis_conn.zrem(DELAYED_RETRY_QUEUE, raw)
+                continue
+
+            # Pre-aquecimento continua restrito ao horario comercial. Pedidos
+            # manuais podem voltar quando o usuario efetivamente solicitou acesso.
+            if task_data.get("auto") and not is_auto_dispatch_window():
+                continue
+
+            # Publish first: a duplicate is safer than losing an access request
+            # if Redis disconnects between removing the marker and requeueing.
+            redis_conn.rpush(queue_name, task_data_str)
+            if redis_conn.zrem(DELAYED_RETRY_QUEUE, raw):
+                promoted += 1
+
+        if promoted:
+            logger.info(f"↪️ {promoted} tarefa(s) de retry devolvida(s) à fila.")
+        return promoted
+    finally:
+        redis_conn.delete("lock:delayed_retry_promoter")
+
+def defer_inflight_task(thread_id, delay_seconds, reason):
+    """Converts an interrupted claim into a delayed retry before respawning it."""
+    key = f"inflight:task:{thread_id}"
+    raw = get_redis().get(key)
+    if not raw:
+        return None
+
+    try:
+        payload = json.loads(raw)
+        queue_name = payload["queue_name"]
+        task_data_str = payload["task_data"]
+        validate_queued_task(queue_name, task_data_str)
+        task_data = json.loads(task_data_str)
+    except (TypeError, ValueError, KeyError, json.JSONDecodeError) as error:
+        logger.error(f"Não foi possível adiar tarefa em voo do ROBÔ {thread_id}: {error}")
+        clear_inflight_task(thread_id)
+        return None
+
+    schedule_delayed_retry(queue_name, task_data_str, delay_seconds, reason)
+    clear_inflight_task(thread_id)
+    logger.warning(
+        f"↪️ Tarefa em voo do ROBÔ {thread_id} adiada por {delay_seconds}s após {reason}."
+    )
+    return task_data
+
 def recover_inflight_task(thread_id):
     """Returns an unfinished claim to its original queue after a worker loss."""
     key = f"inflight:task:{thread_id}"
@@ -217,10 +313,7 @@ def recover_inflight_task(thread_id):
         payload = json.loads(raw)
         queue_name = payload["queue_name"]
         task_data_str = payload["task_data"]
-        if queue_name not in {"queue:priority_logins", "queue:login_requests"}:
-            raise ValueError(f"fila inválida: {queue_name}")
-        if not isinstance(task_data_str, str) or not task_data_str:
-            raise ValueError("tarefa vazia")
+        validate_queued_task(queue_name, task_data_str)
     except (TypeError, ValueError, KeyError, json.JSONDecodeError) as error:
         logger.error(f"Não foi possível recuperar a tarefa em voo do ROBÔ {thread_id}: {error}")
         clear_inflight_task(thread_id)
@@ -489,11 +582,28 @@ def wait_for_host_capacity(thread_id, setor, account_id=None):
 
     return last_reason or "host sob pressão"
 
-def update_status(setor, msg, concluido=False, erro=False, imagem=None, thread_id=None):
+def update_status(
+    setor,
+    msg,
+    concluido=False,
+    erro=False,
+    imagem=None,
+    thread_id=None,
+    retryable=False,
+    retry_after_seconds=None,
+):
     touch_heartbeat(thread_id)
     set_worker_state(thread_id, "running", setor=setor, message=msg)
     mark_system_activity()
-    status = {"mensagem": msg, "concluido": concluido, "erro": erro, "imagem": imagem}
+    status = {
+        "mensagem": msg,
+        "concluido": concluido,
+        "erro": erro,
+        "imagem": imagem,
+        "retryable": bool(retryable),
+    }
+    if retry_after_seconds:
+        status["retry_after_seconds"] = max(1, int(retry_after_seconds))
     get_redis().set(f"status:{setor}", json.dumps(status))
     
     prefix = f"[ROBÔ {thread_id} | {setor}]" if thread_id else f"[{setor}]"
@@ -592,8 +702,14 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
         cooldown_restante = get_account_backoff_seconds(account_id)
         if cooldown_restante > 0:
             logger.warning(f"[ROBÔ {thread_id} | {setor_solicitado}] Conta {account_id} em quarentena de backend por mais {cooldown_restante}s. Pulando nova abertura de navegador.")
-            update_status(setor_solicitado, f"Infraestrutura em estabilização. Nova tentativa automática em {max(1, cooldown_restante // 60)} min.", erro=True, thread_id=thread_id)
-            return
+            update_status(
+                setor_solicitado,
+                f"Infraestrutura em estabilização. Nova tentativa automática em {max(1, cooldown_restante // 60)} min.",
+                thread_id=thread_id,
+                retryable=True,
+                retry_after_seconds=cooldown_restante,
+            )
+            return {"retry_after_seconds": cooldown_restante, "reason": "conta em estabilização"}
 
         # =======================================================================
         # 🛑 BLINDAGEM CONTRA TRABALHO DUPLICADO (Otimização de Servidor)
@@ -618,6 +734,7 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
         
         update_status(setor, "Iniciando robô stealth...", thread_id=thread_id)
         max_tentativas_gerais = 3
+        cloudflare_trap_attempts = 0
         
         for tentativa in range(1, max_tentativas_gerais + 1):
             logger.info(f"[ROBÔ {thread_id} | {setor}] === TENTATIVA {tentativa}/{max_tentativas_gerais} ===")
@@ -874,7 +991,15 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                         fail_fast = True
 
                 if is_cloudflare_trap:
-                    logger.warning(f"[ROBÔ {thread_id} | {setor}] Cloudflare explícito detectado após dupla checagem. Mantendo retry normal, sem cooldown pesado imediato.")
+                    cloudflare_trap_attempts += 1
+                    if cloudflare_trap_attempts >= CLOUDFLARE_MAX_ATTEMPTS_PER_TASK:
+                        fail_fast = True
+                        logger.warning(
+                            f"[ROBÔ {thread_id} | {setor}] Cloudflare não concluiu após "
+                            f"{cloudflare_trap_attempts} tentativa(s). Adiando para não desperdiçar o orçamento do robô."
+                        )
+                    else:
+                        logger.warning(f"[ROBÔ {thread_id} | {setor}] Cloudflare explícito detectado após dupla checagem. Mantendo retry normal.")
                 elif is_infra_error:
                     logger.warning(f"[ROBÔ {thread_id} | {setor}] Infraestrutura do host degradada. Abortando novas tentativas imediatas para poupar RAM/threads.")
                 
@@ -892,12 +1017,22 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
 
                 if tentativa == max_tentativas_gerais or fail_fast:
                     logger.error(f"[ROBÔ {thread_id} | {setor}] FALHA DEFINITIVA APÓS {tentativa} TENTATIVA(S).")
-                    backoff_seconds = ACCOUNT_INFRA_BACKOFF_SECONDS if is_infra_error else ACCOUNT_RETRY_BACKOFF_SECONDS
+                    if is_cloudflare_trap:
+                        backoff_seconds = CLOUDFLARE_RETRY_BACKOFF_SECONDS
+                    else:
+                        backoff_seconds = ACCOUNT_INFRA_BACKOFF_SECONDS if is_infra_error else ACCOUNT_RETRY_BACKOFF_SECONDS
                     arm_account_backoff(account_id, motivo_falha, backoff_seconds)
-                    update_status(setor, f"Falha no processo. Nova tentativa automática em {max(1, backoff_seconds // 60)} min.", erro=True, imagem=img, thread_id=thread_id)
+                    update_status(
+                        setor,
+                        f"Falha no processo. Nova tentativa automática em {max(1, backoff_seconds // 60)} min.",
+                        imagem=img,
+                        thread_id=thread_id,
+                        retryable=True,
+                        retry_after_seconds=backoff_seconds,
+                    )
                     if is_infra_error:
                         activate_infra_cooldown(f"{setor} em quarentena por falha de infraestrutura", seconds=INFRA_COOLDOWN_SECONDS)
-                    return
+                    return {"retry_after_seconds": backoff_seconds, "reason": motivo_falha}
                 else:
                     update_status(setor, f"Sessão queimada. Reiniciando navegador do zero (Tentativa {tentativa+1})...", imagem=img, thread_id=thread_id)
                     time.sleep(3)
@@ -912,6 +1047,7 @@ def worker_loop(thread_id):
     
     while True:
         try:
+            promote_due_retries()
             if get_redis().exists("lock:cooldown"):
                 logger.info(f"[ROBÔ {thread_id}] 🛑 Modo fôlego ativo. Aguardando a poeira baixar...")
                 set_worker_state(thread_id, "cooldown", message="Modo fôlego ativo")
@@ -988,8 +1124,9 @@ def worker_loop(thread_id):
             touch_heartbeat(thread_id)
             set_task_started(thread_id, account_id)
             heartbeat_stop = start_task_heartbeat(thread_id, account_id)
+            recycle_requested = False
             try:
-                processar_login(
+                result = processar_login(
                     account_id,
                     setor,
                     thread_id,
@@ -997,6 +1134,36 @@ def worker_loop(thread_id):
                     requester_display_name=requester_display_name,
                     request_id=request_id,
                     auto=is_auto,
+                )
+                if isinstance(result, dict) and result.get("retry_after_seconds"):
+                    retry_after_seconds = int(result["retry_after_seconds"])
+                    schedule_delayed_retry(
+                        queue_name,
+                        task_data_str,
+                        retry_after_seconds,
+                        result.get("reason") or "retry automático",
+                    )
+                    logger.warning(
+                        f"[ROBÔ {thread_id} | {setor}] Tarefa preservada para retry em "
+                        f"{retry_after_seconds}s."
+                    )
+            except Exception as error:
+                # A supervisão só precisa intervir quando o processo inteiro
+                # travar. Erros Python recuperáveis preservam a solicitação.
+                logger.exception(f"[ROBÔ {thread_id} | {setor}] Erro inesperado na tarefa: {error}")
+                arm_account_backoff(account_id, "erro inesperado do worker", TASK_TIMEOUT_RETRY_BACKOFF_SECONDS)
+                schedule_delayed_retry(
+                    queue_name,
+                    task_data_str,
+                    TASK_TIMEOUT_RETRY_BACKOFF_SECONDS,
+                    "erro inesperado do worker",
+                )
+                update_status(
+                    setor,
+                    "O robô encontrou um erro recuperável. A solicitação foi preservada para nova tentativa automática.",
+                    thread_id=thread_id,
+                    retryable=True,
+                    retry_after_seconds=TASK_TIMEOUT_RETRY_BACKOFF_SECONDS,
                 )
             finally:
                 heartbeat_stop.set()
@@ -1016,7 +1183,10 @@ def worker_loop(thread_id):
                         else f"uptime de {worker_uptime}s"
                     )
                     logger.warning(f"[ROBÔ {thread_id}] Reciclagem automática acionada após {motivo}. Encerrando processo para renascer limpo.")
-                    return
+                    recycle_requested = True
+
+            if recycle_requested:
+                return
             
         except Exception as e:
             logger.error(f"[ROBÔ {thread_id}] Erro no loop principal: {e}")
@@ -1034,6 +1204,8 @@ def auto_dispatcher():
     while True:
         try:
             agora_local = get_local_now()
+
+            promote_due_retries()
 
             maybe_run_pre_dispatch_purge(agora_local)
             maybe_run_idle_purge()
@@ -1190,11 +1362,23 @@ if __name__ == "__main__":
                         )
                         logger.error(f"🚨 ALERTA: ROBÔ {r_id} travado: {motivo}. Encerrando árvore do processo...")
                         stop_process_tree(w["process"], label=f"ROBÔ {r_id}")
+                        deferred_task = defer_inflight_task(
+                            r_id,
+                            TASK_TIMEOUT_RETRY_BACKOFF_SECONDS,
+                            motivo,
+                        )
                         if task_started and task_started.get("account_id"):
                             arm_account_backoff(
                                 task_started["account_id"],
                                 motivo,
-                                ACCOUNT_INFRA_BACKOFF_SECONDS,
+                                TASK_TIMEOUT_RETRY_BACKOFF_SECONDS,
+                            )
+                        if deferred_task and deferred_task.get("setor"):
+                            update_status(
+                                deferred_task["setor"],
+                                "A validação excedeu o tempo seguro. A solicitação foi preservada para nova tentativa automática.",
+                                retryable=True,
+                                retry_after_seconds=TASK_TIMEOUT_RETRY_BACKOFF_SECONDS,
                             )
                         activate_infra_cooldown(f"robô {r_id} travado: {motivo}", seconds=min(INFRA_COOLDOWN_SECONDS, 180))
                         if not has_recent_other_heartbeats(exclude_thread_id=r_id):

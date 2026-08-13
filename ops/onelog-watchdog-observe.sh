@@ -66,16 +66,21 @@ fi
 # executando uma tarefa. Mantemos a primeira observação para evitar alertas em
 # qualquer transição curta de fila durante um deploy ou retry.
 queue_total=0
+delayed_retry_total=0
 active_tasks=0
 queue_stall_minutes=0
 if [ -n "$redis" ]; then
     normal_queue="$(docker exec "$redis" redis-cli --raw LLEN queue:login_requests 2>/dev/null || echo 0)"
     priority_queue="$(docker exec "$redis" redis-cli --raw LLEN queue:priority_logins 2>/dev/null || echo 0)"
+    delayed_retry_total="$(docker exec "$redis" redis-cli --raw ZCARD queue:delayed_login_requests 2>/dev/null || echo 0)"
     normal_queue="${normal_queue:-0}"
     priority_queue="${priority_queue:-0}"
+    delayed_retry_total="${delayed_retry_total:-0}"
     queue_total=$((normal_queue + priority_queue))
     active_tasks="$(docker exec "$redis" redis-cli --scan --pattern 'task:started:*' 2>/dev/null | wc -l | tr -d ' ')"
 
+    # Delayed retries are intentional backoffs, not a stalled consumer. Only
+    # ready queue items count toward the alert threshold.
     if [ "$queue_total" -gt 0 ] && [ "$active_tasks" -eq 0 ]; then
         now_epoch="$(date -u +%s)"
         first_seen="$now_epoch"
@@ -134,7 +139,7 @@ message="$(mktemp)"
     echo "Memoria disponivel: ${available_mib} MiB"
     echo "Swap em uso: ${swap_used_mib} MiB"
     echo "Processos zumbi no host: $zombies"
-    echo "Fila OneLog: ${queue_total} item(ns); tarefas ativas: ${active_tasks}; fila sem consumidor por: ${queue_stall_minutes} min"
+    echo "Fila OneLog pronta: ${queue_total} item(ns); retries adiados: ${delayed_retry_total}; tarefas ativas: ${active_tasks}; fila sem consumidor por: ${queue_stall_minutes} min"
     echo "Falhas de Chrome nos ultimos ${CHROME_WINDOW_MIN} min: ${chrome_failures:-0}"
     echo
     echo "Recursos do OneLog:"
