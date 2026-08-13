@@ -61,9 +61,6 @@ services:
     container_name: onelog_worker
     # Tini becomes PID 1 and reaps browser descendants if a worker is killed.
     init: true
-    # One Chrome session needs only a few dozen processes. This prevents a
-    # leaked browser tree from exhausting PIDs on the shared host.
-    pids_limit: 256
     shm_size: 2gb
     environment:
       - REDIS_URL=redis://redis:6379/0
