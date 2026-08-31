@@ -65,9 +65,17 @@ WATCHDOG_STALE_SECONDS = int(os.getenv("WATCHDOG_STALE_SECONDS", "420"))
 INFRA_COOLDOWN_SECONDS = int(os.getenv("INFRA_COOLDOWN_SECONDS", "600"))
 ACCOUNT_RETRY_BACKOFF_SECONDS = int(os.getenv("ACCOUNT_RETRY_BACKOFF_SECONDS", "900"))
 ACCOUNT_INFRA_BACKOFF_SECONDS = int(os.getenv("ACCOUNT_INFRA_BACKOFF_SECONDS", "1800"))
+# The heartbeat proves the process is alive, not that Chrome has made progress.
+# Keep the queue lock slightly above the maximum task runtime so a failed task
+# cannot block the only shared credential for the old 30-minute default.
+TASK_MAX_RUNTIME_SECONDS = max(60, int(os.getenv("TASK_MAX_RUNTIME_SECONDS", "480")))
+DEFAULT_ACCOUNT_QUEUE_LOCK_TTL_SECONDS = max(
+    WATCHDOG_STALE_SECONDS + 60,
+    TASK_MAX_RUNTIME_SECONDS + 120,
+)
 ACCOUNT_QUEUE_LOCK_TTL_SECONDS = max(
     60,
-    int(os.getenv("ACCOUNT_QUEUE_LOCK_TTL_SECONDS", str(ACCOUNT_INFRA_BACKOFF_SECONDS))),
+    int(os.getenv("ACCOUNT_QUEUE_LOCK_TTL_SECONDS", str(DEFAULT_ACCOUNT_QUEUE_LOCK_TTL_SECONDS))),
 )
 CHROME_STARTUP_LOCK_TTL = int(os.getenv("CHROME_STARTUP_LOCK_TTL", "120"))
 HEARTBEAT_TTL_SECONDS = max(WATCHDOG_STALE_SECONDS * 2, 900)
@@ -78,9 +86,6 @@ IDLE_PURGE_INTERVAL_SECONDS = int(os.getenv("IDLE_PURGE_INTERVAL_SECONDS", "5400
 COOKIE_REUSE_MINUTES = int(os.getenv("COOKIE_REUSE_MINUTES", "22"))
 COOKIE_SOFT_REFRESH_MINUTES = int(os.getenv("COOKIE_SOFT_REFRESH_MINUTES", str(COOKIE_REUSE_MINUTES)))
 TASK_HEARTBEAT_INTERVAL_SECONDS = int(os.getenv("TASK_HEARTBEAT_INTERVAL_SECONDS", "15"))
-# O heartbeat prova que o processo do robô está vivo, não que o Chrome fez
-# progresso. Este limite impede que uma página presa mantenha a frota ocupada.
-TASK_MAX_RUNTIME_SECONDS = max(60, int(os.getenv("TASK_MAX_RUNTIME_SECONDS", "480")))
 CLOUDFLARE_MAX_ATTEMPTS_PER_TASK = max(1, int(os.getenv("CLOUDFLARE_MAX_ATTEMPTS_PER_TASK", "2")))
 CLOUDFLARE_RETRY_BACKOFF_SECONDS = max(60, int(os.getenv("CLOUDFLARE_RETRY_BACKOFF_SECONDS", "300")))
 TASK_TIMEOUT_RETRY_BACKOFF_SECONDS = max(60, int(os.getenv("TASK_TIMEOUT_RETRY_BACKOFF_SECONDS", "300")))
@@ -92,7 +97,21 @@ RESOURCE_GUARD_HARD_BROWSER_PROCS = int(os.getenv("RESOURCE_GUARD_HARD_BROWSER_P
 RESOURCE_GUARD_BROWSER_PRESSURE_MB = int(os.getenv("RESOURCE_GUARD_BROWSER_PRESSURE_MB", str(max(1400, RESOURCE_GUARD_MIN_AVAILABLE_MB + 350))))
 RESOURCE_GUARD_MAX_WAIT_SECONDS = int(os.getenv("RESOURCE_GUARD_MAX_WAIT_SECONDS", "75"))
 RESOURCE_GUARD_COOLDOWN_SECONDS = int(os.getenv("RESOURCE_GUARD_COOLDOWN_SECONDS", "180"))
-AUTO_DISPATCH_TARGET_AGE_MINUTES = int(os.getenv("AUTO_DISPATCH_TARGET_AGE_MINUTES", str(COOKIE_REUSE_MINUTES)))
+AUTO_DISPATCH_REFRESH_MARGIN_MINUTES = max(
+    1,
+    int(os.getenv("AUTO_DISPATCH_REFRESH_MARGIN_MINUTES", "8")),
+)
+DEFAULT_AUTO_DISPATCH_TARGET_AGE_MINUTES = max(
+    1,
+    COOKIE_REUSE_MINUTES - AUTO_DISPATCH_REFRESH_MARGIN_MINUTES,
+)
+AUTO_DISPATCH_TARGET_AGE_MINUTES = max(
+    1,
+    min(
+        max(1, COOKIE_REUSE_MINUTES - 1),
+        int(os.getenv("AUTO_DISPATCH_TARGET_AGE_MINUTES", str(DEFAULT_AUTO_DISPATCH_TARGET_AGE_MINUTES))),
+    ),
+)
 AUTO_DISPATCH_MAX_ENQUEUE_PER_CYCLE = int(os.getenv("AUTO_DISPATCH_MAX_ENQUEUE_PER_CYCLE", str(max(1, MAX_WORKERS - 1))))
 AUTO_DISPATCH_INCLUDE_EMPTY = os.getenv("AUTO_DISPATCH_INCLUDE_EMPTY", "true").lower() == "true"
 WORKER_RECYCLE_AFTER_TASKS = int(os.getenv("WORKER_RECYCLE_AFTER_TASKS", "8"))
@@ -1265,7 +1284,10 @@ def auto_dispatcher():
                             payload = json.dumps({"id": acc.id, "setor": setor, "auto": True})
                             get_redis().lpush("queue:login_requests", payload)
                             mark_system_activity()
-                            logger.info(f"🔄 [DISPATCHER] Conta {acc.login} ({setor}) enfileirada para pré-aquecimento (Ciclo {COOKIE_REUSE_MINUTES}m).")
+                            logger.info(
+                                f"🔄 [DISPATCHER] Conta {acc.login} ({setor}) enfileirada para pré-aquecimento "
+                                f"(alvo {AUTO_DISPATCH_TARGET_AGE_MINUTES}m; entrega até {COOKIE_REUSE_MINUTES}m)."
+                            )
                             tarefas_enfileiradas += 1
 
                 # =========================================================================
