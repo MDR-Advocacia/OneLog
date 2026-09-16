@@ -758,6 +758,11 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
         for tentativa in range(1, max_tentativas_gerais + 1):
             logger.info(f"[ROBÔ {thread_id} | {setor}] === TENTATIVA {tentativa}/{max_tentativas_gerais} ===")
             touch_heartbeat(thread_id)
+            # O context manager do SeleniumBase em modo de teste registra certas
+            # falhas, mas pode encerrar o bloco sem propagá-las ao nosso except.
+            # Este texto garante que todo encerramento sem sessão seja tratado
+            # como falha recuperável fora do bloco `with SB(...)`.
+            attempt_failure_hint = "Timeout na Navegação / Elemento não encontrado"
             
             sb_instance = None 
             proxy_escolhido = get_random_proxy()
@@ -827,6 +832,7 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                         captcha_container = "div.cf-turnstile"
                         
                         if sb.is_element_visible(captcha_container):
+                            attempt_failure_hint = "Armadilha Cloudflare: desafio não concluído"
                             update_status(setor, "Cloudflare detectado. Aguardando estabilização...", imagem=img, thread_id=thread_id)
                             sb.sleep(4) 
                             
@@ -885,6 +891,8 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                     finally:
                         get_redis().delete("lock:bb_door")
                         logger.info(f"[ROBÔ {thread_id} | {setor}] Catraca liberada para o próximo robô da fila.")
+
+                    attempt_failure_hint = "Timeout ao aguardar o portal jurídico carregar após a senha."
                     
                     img = snapshot(sb, setor, f"04_senha_visivel_T{tentativa}", thread_id=thread_id)
                     
@@ -950,6 +958,11 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                         
                     else:
                         raise Exception("Timeout ao aguardar o portal jurídico carregar após a senha.")
+
+                # SeleniumBase pode consumir a exceção interna quando fecha o
+                # navegador. Sem esta sentinela, o worker interpreta a tentativa
+                # como concluída e deixa lock:queue órfão até o TTL expirar.
+                raise Exception(attempt_failure_hint)
                         
             except Exception as e:
                 if startup_lock:
