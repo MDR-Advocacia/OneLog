@@ -65,6 +65,7 @@ WATCHDOG_STALE_SECONDS = int(os.getenv("WATCHDOG_STALE_SECONDS", "420"))
 INFRA_COOLDOWN_SECONDS = int(os.getenv("INFRA_COOLDOWN_SECONDS", "600"))
 ACCOUNT_RETRY_BACKOFF_SECONDS = int(os.getenv("ACCOUNT_RETRY_BACKOFF_SECONDS", "900"))
 ACCOUNT_INFRA_BACKOFF_SECONDS = int(os.getenv("ACCOUNT_INFRA_BACKOFF_SECONDS", "1800"))
+ACCOUNT_AUTH_BACKOFF_SECONDS = int(os.getenv("ACCOUNT_AUTH_BACKOFF_SECONDS", "86400"))
 # The heartbeat proves the process is alive, not that Chrome has made progress.
 # Keep the queue lock slightly above the maximum task runtime so a failed task
 # cannot block the only shared credential for the old 30-minute default.
@@ -911,6 +912,9 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                             logged_in = True
                             img = snapshot(sb, setor, f"05_sucesso_portal_T{tentativa}", thread_id=thread_id)
                             break
+                        if "#failedLogin" in current_url:
+                            attempt_failure_hint = "Credencial BB rejeitada (#failedLogin). Validação manual necessária."
+                            raise Exception(attempt_failure_hint)
                         sb.sleep(4)
                     
                     if logged_in:
@@ -977,6 +981,7 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                 err_msg = str(e).lower()
                 is_infra_error = False
                 is_cloudflare_trap = False
+                is_auth_error = False
                 fail_fast = False
                 
                 if (
@@ -998,6 +1003,10 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                 elif "armadilha cloudflare" in err_msg:
                     motivo_falha = "Bloqueio Cloudflare (Armadilha/Popup)"
                     is_cloudflare_trap = True
+                elif "credencial bb rejeitada" in err_msg or "#failedlogin" in err_msg:
+                    motivo_falha = "Credencial BB rejeitada"
+                    is_auth_error = True
+                    fail_fast = True
                 elif "timeout" in err_msg or "nosuchelement" in err_msg:
                     motivo_falha = "Timeout na Navegação / Elemento não encontrado"
                 else:
@@ -1006,7 +1015,7 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                 get_redis().hincrby(f"metrics:error_reasons:{hoje}", motivo_falha, 1)
                 
                 # Só soma no medidor do Cloudflare se NÃO for erro de infraestrutura
-                if not is_infra_error:
+                if not is_infra_error and not is_auth_error:
                     fail_count = get_redis().incr("metrics:captcha_consecutive_failures")
                     logger.info(f"[ROBÔ {thread_id} | {setor}] Medidor de bloqueios Cloudflare: {fail_count}/6")
                     
@@ -1015,12 +1024,14 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                         logger.error(f"[ROBÔ {thread_id} | {setor}] Acionando protocolo de Fôlego para toda a frota.")
                         get_redis().setex("lock:cooldown", 180, "true") 
                         get_redis().set("metrics:captcha_consecutive_failures", 0) 
-                else:
+                elif is_infra_error:
                     logger.info(f"[ROBÔ {thread_id} | {setor}] ⚠️ Falha classificada como Infraestrutura. Medidor do Cloudflare não será acionado.")
                     infra_fail_count = get_redis().incr("metrics:infra_consecutive_failures")
                     if infra_fail_count >= 3:
                         activate_infra_cooldown(f"pico de falhas de infraestrutura ({infra_fail_count} seguidas)")
                         fail_fast = True
+                else:
+                    logger.warning(f"[ROBÔ {thread_id} | {setor}] Credencial rejeitada pelo BB. Suspendendo retries automáticos para evitar bloqueio da conta.")
 
                 if is_cloudflare_trap:
                     cloudflare_trap_attempts += 1
@@ -1049,21 +1060,36 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
 
                 if tentativa == max_tentativas_gerais or fail_fast:
                     logger.error(f"[ROBÔ {thread_id} | {setor}] FALHA DEFINITIVA APÓS {tentativa} TENTATIVA(S).")
-                    if is_cloudflare_trap:
+                    if is_auth_error:
+                        backoff_seconds = ACCOUNT_AUTH_BACKOFF_SECONDS
+                    elif is_cloudflare_trap:
                         backoff_seconds = CLOUDFLARE_RETRY_BACKOFF_SECONDS
                     else:
                         backoff_seconds = ACCOUNT_INFRA_BACKOFF_SECONDS if is_infra_error else ACCOUNT_RETRY_BACKOFF_SECONDS
                     arm_account_backoff(account_id, motivo_falha, backoff_seconds)
-                    update_status(
-                        setor,
-                        f"Falha no processo. Nova tentativa automática em {max(1, backoff_seconds // 60)} min.",
-                        imagem=img,
-                        thread_id=thread_id,
-                        retryable=True,
-                        retry_after_seconds=backoff_seconds,
-                    )
+                    if is_auth_error:
+                        get_redis().delete(f"lock:queue:{account_id}")
+                        update_status(
+                            setor,
+                            "Credencial rejeitada pelo BB. Valide ou atualize a senha no OneLog antes de tentar novamente.",
+                            erro=True,
+                            imagem=img,
+                            thread_id=thread_id,
+                            retryable=False,
+                        )
+                    else:
+                        update_status(
+                            setor,
+                            f"Falha no processo. Nova tentativa automática em {max(1, backoff_seconds // 60)} min.",
+                            imagem=img,
+                            thread_id=thread_id,
+                            retryable=True,
+                            retry_after_seconds=backoff_seconds,
+                        )
                     if is_infra_error:
                         activate_infra_cooldown(f"{setor} em quarentena por falha de infraestrutura", seconds=INFRA_COOLDOWN_SECONDS)
+                    if is_auth_error:
+                        return {"reason": motivo_falha}
                     return {"retry_after_seconds": backoff_seconds, "reason": motivo_falha}
                 else:
                     update_status(setor, f"Sessão queimada. Reiniciando navegador do zero (Tentativa {tentativa+1})...", imagem=img, thread_id=thread_id)

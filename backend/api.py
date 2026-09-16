@@ -1482,8 +1482,8 @@ def editar_conta(account_id):
             
         elif request.method == 'PUT':
             data = request.get_json() or {}
-            
-            if data.get('senha'): acc.senha = data['senha']
+            password_updated = bool(data.get('senha'))
+            if password_updated: acc.senha = data['senha']
             if 'titular' in data: acc.titular = data['titular']
             if 'data_validade' in data: acc.data_validade = data['data_validade']
             
@@ -1507,6 +1507,8 @@ def editar_conta(account_id):
                 acc.setores = "|" + "|".join(setores_lista) + "|" if setores_lista else ""
             
             db.commit()
+            if password_updated:
+                redis_client.delete(f"cooldown:account:{acc.id}", f"lock:queue:{acc.id}")
             record_admin_audit("account_update", target=acc.login, extra={"account_id": acc.id})
             return jsonify({"mensagem": "Conta atualizada com sucesso!"})
     except Exception as e:
