@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, request, send_from_directory, g, Response
+from flask import Flask, jsonify, request, send_from_directory, g, Response, abort
 from flask_cors import CORS
 import redis
 import json
@@ -823,6 +823,9 @@ def serve_privacy():
 
 @app.route('/shared/<path:filename>')
 def serve_shared(filename):
+    lower_name = os.path.basename(filename).lower()
+    if ('erro' in lower_name or 'error' in lower_name) and lower_name.endswith('.png'):
+        abort(404)
     return send_from_directory(SHARED_DIR, filename)
 
 # --- ROTAS DE OPERAÇÃO (EXTENSÃO) ---
@@ -1288,12 +1291,20 @@ def admin_error_images():
             continue
         images.append({
             "name": name,
-            "url": f"/shared/{name}",
+            "url": f"/api/admin/error_images/{name}",
             "date_str": mtime.strftime("%d/%m/%Y %H:%M"),
             "ts": mtime.isoformat()
         })
     images.sort(key=lambda x: x["ts"], reverse=True)
     return jsonify(images[:60])
+
+@app.route('/api/admin/error_images/<path:filename>', methods=['GET'])
+@admin_required
+def admin_error_image_file(filename):
+    lower_name = os.path.basename(filename).lower()
+    if not lower_name.endswith('.png') or ('erro' not in lower_name and 'error' not in lower_name):
+        abort(404)
+    return send_from_directory(SHARED_DIR, filename)
 
 @app.route('/api/admin/analytics', methods=['GET'])
 @admin_required
