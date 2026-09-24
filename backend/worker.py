@@ -65,7 +65,10 @@ WATCHDOG_STALE_SECONDS = int(os.getenv("WATCHDOG_STALE_SECONDS", "420"))
 INFRA_COOLDOWN_SECONDS = int(os.getenv("INFRA_COOLDOWN_SECONDS", "600"))
 ACCOUNT_RETRY_BACKOFF_SECONDS = int(os.getenv("ACCOUNT_RETRY_BACKOFF_SECONDS", "900"))
 ACCOUNT_INFRA_BACKOFF_SECONDS = int(os.getenv("ACCOUNT_INFRA_BACKOFF_SECONDS", "1800"))
-ACCOUNT_AUTH_BACKOFF_SECONDS = int(os.getenv("ACCOUNT_AUTH_BACKOFF_SECONDS", "86400"))
+ACCOUNT_AUTH_BACKOFF_SECONDS = max(300, int(os.getenv("ACCOUNT_AUTH_BACKOFF_SECONDS", "3600")))
+AUTH_FAILURE_CONFIRMATIONS = max(2, int(os.getenv("AUTH_FAILURE_CONFIRMATIONS", "2")))
+AUTH_RETRY_DELAY_SECONDS = max(5, int(os.getenv("AUTH_RETRY_DELAY_SECONDS", "15")))
+AUTH_FAILURE_TEXT_MAX_CHARS = max(200, int(os.getenv("AUTH_FAILURE_TEXT_MAX_CHARS", "800")))
 # The heartbeat proves the process is alive, not that Chrome has made progress.
 # Keep the queue lock slightly above the maximum task runtime so a failed task
 # cannot block the only shared credential for the old 30-minute default.
@@ -644,6 +647,79 @@ def snapshot(sb, setor, nome_arquivo, thread_id=None):
     logger.info(f"{prefix} 📸 Snapshot gerado: {img_url}")
     return img_url
 
+def sanitize_diagnostic_text(value, secrets_to_redact=()):
+    """Keeps operator-facing browser evidence compact and free of credentials."""
+    text = " ".join(str(value or "").split())
+    for secret in secrets_to_redact:
+        secret = str(secret or "").strip()
+        if secret:
+            text = text.replace(secret, "[redigido]")
+    return text[:AUTH_FAILURE_TEXT_MAX_CHARS]
+
+def capture_auth_failure_evidence(sb, setor, tentativa, thread_id=None, secrets_to_redact=()):
+    """Captures the visible BB error even when routine debug snapshots are disabled."""
+    touch_heartbeat(thread_id)
+    mark_system_activity()
+
+    visible_texts = []
+    try:
+        visible_texts = sb.execute_script(
+            """
+            const selectors = [
+              '[role="alert"]', '.alert', '.alert-danger', '.toast', '.toast-error',
+              '.notification', '.notification-error', '.error', '[class*="error"]',
+              '[id*="error"]', '[class*="danger"]'
+            ];
+            const values = [];
+            for (const selector of selectors) {
+              for (const element of document.querySelectorAll(selector)) {
+                const style = window.getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                const visible = style.display !== 'none' && style.visibility !== 'hidden'
+                  && Number(style.opacity || 1) > 0 && rect.width > 0 && rect.height > 0;
+                const text = (element.innerText || element.textContent || '').trim();
+                if (visible && text && !values.includes(text)) values.push(text);
+              }
+            }
+            return values;
+            """
+        ) or []
+    except Exception as error:
+        logger.warning(
+            f"[ROBÔ {thread_id} | {setor}] Não foi possível ler o popup de autenticação: {error}"
+        )
+
+    if not visible_texts:
+        try:
+            body_text = sb.execute_script("return document.body ? document.body.innerText : '';")
+            if body_text:
+                visible_texts = [body_text]
+        except Exception:
+            visible_texts = []
+
+    detail = sanitize_diagnostic_text(" | ".join(visible_texts), secrets_to_redact)
+    if not detail:
+        detail = "O portal redirecionou para #failedLogin sem exibir mensagem legível."
+
+    image_url = None
+    try:
+        os.makedirs("shared", exist_ok=True)
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        safe_sector = "".join(ch if ch.isalnum() or ch in "_-" else "_" for ch in str(setor))
+        filename = f"{safe_sector}_erro_auth_T{tentativa}_{timestamp}.png"
+        sb.save_screenshot(os.path.join("shared", filename))
+        image_url = f"{BASE_URL}/api/admin/error_images/{filename}"
+        logger.warning(
+            f"[ROBÔ {thread_id} | {setor}] Evidência visual da recusa salva para o painel administrativo: {filename}"
+        )
+    except Exception as error:
+        logger.warning(
+            f"[ROBÔ {thread_id} | {setor}] Não foi possível salvar a evidência visual da recusa: {error}"
+        )
+
+    logger.warning(f"[ROBÔ {thread_id} | {setor}] Mensagem visível do BB: {detail}")
+    return detail, image_url
+
 def start_task_heartbeat(thread_id, account_id=None):
     stop_event = threading.Event()
 
@@ -721,15 +797,18 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
 
         cooldown_restante = get_account_backoff_seconds(account_id)
         if cooldown_restante > 0:
+            cooldown_reason = get_redis().get(f"cooldown:account:{account_id}") or "conta em estabilização"
             logger.warning(f"[ROBÔ {thread_id} | {setor_solicitado}] Conta {account_id} em quarentena de backend por mais {cooldown_restante}s. Pulando nova abertura de navegador.")
             update_status(
                 setor_solicitado,
-                f"Infraestrutura em estabilização. Nova tentativa automática em {max(1, cooldown_restante // 60)} min.",
+                f"OneLog aguardando nova tentativa: {cooldown_reason}. Liberação em {max(1, cooldown_restante // 60)} min.",
                 thread_id=thread_id,
                 retryable=True,
                 retry_after_seconds=cooldown_restante,
             )
-            return {"retry_after_seconds": cooldown_restante, "reason": "conta em estabilização"}
+            # Do not clone every caller request into the delayed queue. The
+            # dispatcher will enqueue one fresh task when the cooldown ends.
+            return {"reason": cooldown_reason, "suppressed_by_backoff": True}
 
         # =======================================================================
         # 🛑 BLINDAGEM CONTRA TRABALHO DUPLICADO (Otimização de Servidor)
@@ -755,6 +834,9 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
         update_status(setor, "Iniciando robô stealth...", thread_id=thread_id)
         max_tentativas_gerais = 3
         cloudflare_trap_attempts = 0
+        auth_failure_count = 0
+        last_auth_failure_detail = None
+        last_auth_failure_image = None
         
         for tentativa in range(1, max_tentativas_gerais + 1):
             logger.info(f"[ROBÔ {thread_id} | {setor}] === TENTATIVA {tentativa}/{max_tentativas_gerais} ===")
@@ -913,7 +995,18 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                             img = snapshot(sb, setor, f"05_sucesso_portal_T{tentativa}", thread_id=thread_id)
                             break
                         if "#failedLogin" in current_url:
-                            attempt_failure_hint = "Credencial BB rejeitada (#failedLogin). Validação manual necessária."
+                            auth_failure_count += 1
+                            last_auth_failure_detail, last_auth_failure_image = capture_auth_failure_evidence(
+                                sb,
+                                setor,
+                                tentativa,
+                                thread_id=thread_id,
+                                secrets_to_redact=(usuario, senha),
+                            )
+                            attempt_failure_hint = (
+                                "Credencial BB rejeitada (#failedLogin). "
+                                f"Mensagem visível: {last_auth_failure_detail}"
+                            )
                             raise Exception(attempt_failure_hint)
                         sb.sleep(4)
                     
@@ -1006,7 +1099,7 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                 elif "credencial bb rejeitada" in err_msg or "#failedlogin" in err_msg:
                     motivo_falha = "Credencial BB rejeitada"
                     is_auth_error = True
-                    fail_fast = True
+                    fail_fast = auth_failure_count >= AUTH_FAILURE_CONFIRMATIONS
                 elif "timeout" in err_msg or "nosuchelement" in err_msg:
                     motivo_falha = "Timeout na Navegação / Elemento não encontrado"
                 else:
@@ -1031,7 +1124,17 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                         activate_infra_cooldown(f"pico de falhas de infraestrutura ({infra_fail_count} seguidas)")
                         fail_fast = True
                 else:
-                    logger.warning(f"[ROBÔ {thread_id} | {setor}] Credencial rejeitada pelo BB. Suspendendo retries automáticos para evitar bloqueio da conta.")
+                    if fail_fast:
+                        logger.warning(
+                            f"[ROBÔ {thread_id} | {setor}] Recusa de autenticação confirmada em "
+                            f"{auth_failure_count} tentativa(s). Suspendendo novas tentativas por "
+                            f"{max(1, ACCOUNT_AUTH_BACKOFF_SECONDS // 60)} min."
+                        )
+                    else:
+                        logger.warning(
+                            f"[ROBÔ {thread_id} | {setor}] Primeira recusa de autenticação. "
+                            "O portal pode estar instável; será feita somente uma nova tentativa controlada."
+                        )
 
                 if is_cloudflare_trap:
                     cloudflare_trap_attempts += 1
@@ -1046,7 +1149,9 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                 elif is_infra_error:
                     logger.warning(f"[ROBÔ {thread_id} | {setor}] Infraestrutura do host degradada. Abortando novas tentativas imediatas para poupar RAM/threads.")
                 
-                if sb_instance:
+                if is_auth_error and last_auth_failure_image:
+                    img = last_auth_failure_image
+                elif sb_instance:
                      try:
                          img = snapshot(sb_instance, setor, f"erro_tentativa_{tentativa}", thread_id=thread_id)
                      except Exception:
@@ -1069,9 +1174,11 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                     arm_account_backoff(account_id, motivo_falha, backoff_seconds)
                     if is_auth_error:
                         get_redis().delete(f"lock:queue:{account_id}")
+                        auth_detail = last_auth_failure_detail or "O portal redirecionou para #failedLogin."
                         update_status(
                             setor,
-                            "Credencial rejeitada pelo BB. Valide ou atualize a senha no OneLog antes de tentar novamente.",
+                            f"BB recusou o acesso após {auth_failure_count} tentativa(s): {auth_detail} "
+                            f"Nova tentativa suspensa por {max(1, backoff_seconds // 60)} min.",
                             erro=True,
                             imagem=img,
                             thread_id=thread_id,
@@ -1092,8 +1199,19 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                         return {"reason": motivo_falha}
                     return {"retry_after_seconds": backoff_seconds, "reason": motivo_falha}
                 else:
-                    update_status(setor, f"Sessão queimada. Reiniciando navegador do zero (Tentativa {tentativa+1})...", imagem=img, thread_id=thread_id)
-                    time.sleep(3)
+                    if is_auth_error:
+                        auth_detail = last_auth_failure_detail or "O portal redirecionou para #failedLogin."
+                        update_status(
+                            setor,
+                            f"BB recusou a primeira tentativa: {auth_detail} "
+                            "Fazendo uma segunda tentativa controlada...",
+                            imagem=img,
+                            thread_id=thread_id,
+                        )
+                        time.sleep(AUTH_RETRY_DELAY_SECONDS)
+                    else:
+                        update_status(setor, f"Sessão queimada. Reiniciando navegador do zero (Tentativa {tentativa+1})...", imagem=img, thread_id=thread_id)
+                        time.sleep(3)
     finally:
         db.close()
 
