@@ -656,8 +656,15 @@ def sanitize_diagnostic_text(value, secrets_to_redact=()):
             text = text.replace(secret, "[redigido]")
     return text[:AUTH_FAILURE_TEXT_MAX_CHARS]
 
-def capture_auth_failure_evidence(sb, setor, tentativa, thread_id=None, secrets_to_redact=()):
-    """Captures the visible BB error even when routine debug snapshots are disabled."""
+def capture_browser_failure_evidence(
+    sb,
+    setor,
+    tentativa,
+    thread_id=None,
+    secrets_to_redact=(),
+    evidence_kind="auth",
+):
+    """Captures a visible browser failure even when routine snapshots are disabled."""
     touch_heartbeat(thread_id)
     mark_system_activity()
 
@@ -686,7 +693,7 @@ def capture_auth_failure_evidence(sb, setor, tentativa, thread_id=None, secrets_
         ) or []
     except Exception as error:
         logger.warning(
-            f"[ROBÔ {thread_id} | {setor}] Não foi possível ler o popup de autenticação: {error}"
+            f"[ROBÔ {thread_id} | {setor}] Não foi possível ler a mensagem visível do navegador: {error}"
         )
 
     if not visible_texts:
@@ -699,26 +706,45 @@ def capture_auth_failure_evidence(sb, setor, tentativa, thread_id=None, secrets_
 
     detail = sanitize_diagnostic_text(" | ".join(visible_texts), secrets_to_redact)
     if not detail:
-        detail = "O portal redirecionou para #failedLogin sem exibir mensagem legível."
+        detail = "O navegador não exibiu uma mensagem de erro legível."
 
     image_url = None
     try:
         os.makedirs("shared", exist_ok=True)
         timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
         safe_sector = "".join(ch if ch.isalnum() or ch in "_-" else "_" for ch in str(setor))
-        filename = f"{safe_sector}_erro_auth_T{tentativa}_{timestamp}.png"
+        safe_kind = "".join(
+            ch if ch.isalnum() or ch in "_-" else "_" for ch in str(evidence_kind)
+        )
+        filename = f"{safe_sector}_erro_{safe_kind}_T{tentativa}_{timestamp}.png"
         sb.save_screenshot(os.path.join("shared", filename))
         image_url = f"{BASE_URL}/api/admin/error_images/{filename}"
         logger.warning(
-            f"[ROBÔ {thread_id} | {setor}] Evidência visual da recusa salva para o painel administrativo: {filename}"
+            f"[ROBÔ {thread_id} | {setor}] Evidência visual da falha salva para o painel administrativo: {filename}"
         )
     except Exception as error:
         logger.warning(
-            f"[ROBÔ {thread_id} | {setor}] Não foi possível salvar a evidência visual da recusa: {error}"
+            f"[ROBÔ {thread_id} | {setor}] Não foi possível salvar a evidência visual da falha: {error}"
         )
 
     logger.warning(f"[ROBÔ {thread_id} | {setor}] Mensagem visível do BB: {detail}")
     return detail, image_url
+
+
+def capture_auth_failure_evidence(sb, setor, tentativa, thread_id=None, secrets_to_redact=()):
+    """Backward-compatible wrapper for confirmed BB authentication failures."""
+    detail, image_url = capture_browser_failure_evidence(
+        sb,
+        setor,
+        tentativa,
+        thread_id=thread_id,
+        secrets_to_redact=secrets_to_redact,
+        evidence_kind="auth",
+    )
+    if detail == "O navegador não exibiu uma mensagem de erro legível.":
+        detail = "O portal redirecionou para #failedLogin sem exibir mensagem legível."
+    return detail, image_url
+
 
 def start_task_heartbeat(thread_id, account_id=None):
     stop_event = threading.Event()
@@ -839,6 +865,8 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
         last_auth_failure_image = None
         
         for tentativa in range(1, max_tentativas_gerais + 1):
+            last_browser_failure_detail = None
+            last_browser_failure_image = None
             logger.info(f"[ROBÔ {thread_id} | {setor}] === TENTATIVA {tentativa}/{max_tentativas_gerais} ===")
             touch_heartbeat(thread_id)
             # O context manager do SeleniumBase em modo de teste registra certas
@@ -904,6 +932,22 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                         img = snapshot(sb, setor, f"01_inicio_T{tentativa}", thread_id=thread_id)
                         
                         update_status(setor, "Digitando usuário...", imagem=img, thread_id=thread_id)
+                        try:
+                            sb.wait_for_element("#idToken1", timeout=10)
+                        except Exception as user_field_error:
+                            last_browser_failure_detail, last_browser_failure_image = capture_browser_failure_evidence(
+                                sb,
+                                setor,
+                                tentativa,
+                                thread_id=thread_id,
+                                secrets_to_redact=(usuario, senha),
+                                evidence_kind="login_ausente",
+                            )
+                            attempt_failure_hint = (
+                                "Tela de login do BB não carregou: campo de usuário ausente. "
+                                f"Conteúdo visível: {last_browser_failure_detail}"
+                            )
+                            raise Exception(attempt_failure_hint) from user_field_error
                         sb.type("#idToken1", usuario)
                         sb.sleep(1)
                         sb.click("#loginButton_0")
@@ -961,11 +1005,21 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                                 sb.wait_for_element("#idToken3", timeout=max(8, CLOUDFLARE_SECOND_LOOK_SECONDS))
                                 logger.info(f"[ROBÔ {thread_id} | {setor}] >>> Campo de senha apareceu na segunda checagem. Falso alarme evitado.")
                             except Exception as second_wait_e:
+                                last_browser_failure_detail, last_browser_failure_image = capture_browser_failure_evidence(
+                                    sb,
+                                    setor,
+                                    tentativa,
+                                    thread_id=thread_id,
+                                    secrets_to_redact=(usuario, senha),
+                                    evidence_kind="cloudflare",
+                                )
                                 logger.error(f"[ROBÔ {thread_id} | {setor}] 🚨 ARMADILHA DETECTADA! O campo de senha não carregou mesmo após rechecagem.")
-                                raise Exception(
+                                attempt_failure_hint = (
                                     "Armadilha Cloudflare: campo de senha ausente após dupla checagem. "
+                                    f"Página visível: {last_browser_failure_detail}. "
                                     f"Erro inicial: {wait_e}. Erro final: {second_wait_e}"
                                 )
+                                raise Exception(attempt_failure_hint)
                         # =======================================================================
                         
                         # TELEMETRIA: Sucesso de Autenticação (Fura-bloqueio)
@@ -1054,7 +1108,19 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                         return 
                         
                     else:
-                        raise Exception("Timeout ao aguardar o portal jurídico carregar após a senha.")
+                        last_browser_failure_detail, last_browser_failure_image = capture_browser_failure_evidence(
+                            sb,
+                            setor,
+                            tentativa,
+                            thread_id=thread_id,
+                            secrets_to_redact=(usuario, senha),
+                            evidence_kind="pos_login",
+                        )
+                        attempt_failure_hint = (
+                            "Timeout ao aguardar o portal jurídico carregar após a senha. "
+                            f"Página visível: {last_browser_failure_detail}"
+                        )
+                        raise Exception(attempt_failure_hint)
 
                 # SeleniumBase pode consumir a exceção interna quando fecha o
                 # navegador. Sem esta sentinela, o worker interpreta a tentativa
@@ -1151,6 +1217,8 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                 
                 if is_auth_error and last_auth_failure_image:
                     img = last_auth_failure_image
+                elif last_browser_failure_image:
+                    img = last_browser_failure_image
                 elif sb_instance:
                      try:
                          img = snapshot(sb_instance, setor, f"erro_tentativa_{tentativa}", thread_id=thread_id)
@@ -1185,9 +1253,12 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                             retryable=False,
                         )
                     else:
+                        failure_detail = last_browser_failure_detail or str(e)
                         update_status(
                             setor,
-                            f"Falha no processo. Nova tentativa automática em {max(1, backoff_seconds // 60)} min.",
+                            f"{motivo_falha}: {failure_detail}. "
+                            f"Nova tentativa automática em {max(1, backoff_seconds // 60)} min.",
+                            erro=True,
                             imagem=img,
                             thread_id=thread_id,
                             retryable=True,
@@ -1210,7 +1281,14 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                         )
                         time.sleep(AUTH_RETRY_DELAY_SECONDS)
                     else:
-                        update_status(setor, f"Sessão queimada. Reiniciando navegador do zero (Tentativa {tentativa+1})...", imagem=img, thread_id=thread_id)
+                        failure_detail = last_browser_failure_detail or str(e)
+                        update_status(
+                            setor,
+                            f"{motivo_falha}: {failure_detail}. "
+                            f"Reiniciando navegador do zero (Tentativa {tentativa+1})...",
+                            imagem=img,
+                            thread_id=thread_id,
+                        )
                         time.sleep(3)
     finally:
         db.close()
