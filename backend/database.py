@@ -1,6 +1,6 @@
 import os
 from datetime import datetime
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey, text
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey, inspect, text
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
 DB_URL = os.getenv("DB_URL", "sqlite:///onelog_local.db")
@@ -11,6 +11,17 @@ if DB_URL.startswith("postgres://"):
 engine = create_engine(DB_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+
+ACCOUNT_COLUMN_MIGRATIONS = {
+    "status": "ALTER TABLE accounts_bb ADD COLUMN status VARCHAR DEFAULT 'active'",
+    "titular": "ALTER TABLE accounts_bb ADD COLUMN titular VARCHAR",
+    "setores": "ALTER TABLE accounts_bb ADD COLUMN setores VARCHAR",
+    "data_validade": "ALTER TABLE accounts_bb ADD COLUMN data_validade VARCHAR",
+    "status_updated_at": (
+        "ALTER TABLE accounts_bb ADD COLUMN status_updated_at "
+        "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+    ),
+}
 
 class Sector(Base):
     __tablename__ = "sectors"
@@ -46,15 +57,27 @@ class AccountBB(Base):
 
 def init_db():
     Base.metadata.create_all(bind=engine)
-    
-    # Auto-Migrate: Adiciona as colunas novas na tabela já existente automaticamente
+
+    # PostgreSQL takes an ACCESS EXCLUSIVE lock even for
+    # `ADD COLUMN IF NOT EXISTS`. Running all five statements on every API
+    # startup can therefore leave the API unavailable while a worker holds a
+    # normal read transaction during browser login. Inspect first and execute
+    # DDL only when the schema is genuinely missing a column.
     try:
+        existing_columns = {
+            column["name"] for column in inspect(engine).get_columns("accounts_bb")
+        }
+        pending_migrations = [
+            statement
+            for column_name, statement in ACCOUNT_COLUMN_MIGRATIONS.items()
+            if column_name not in existing_columns
+        ]
+        if not pending_migrations:
+            return
+
         with engine.begin() as conn:
-            conn.execute(text("ALTER TABLE accounts_bb ADD COLUMN IF NOT EXISTS status VARCHAR DEFAULT 'active'"))
-            conn.execute(text("ALTER TABLE accounts_bb ADD COLUMN IF NOT EXISTS titular VARCHAR"))
-            conn.execute(text("ALTER TABLE accounts_bb ADD COLUMN IF NOT EXISTS setores VARCHAR"))
-            conn.execute(text("ALTER TABLE accounts_bb ADD COLUMN IF NOT EXISTS data_validade VARCHAR"))
-            conn.execute(text("ALTER TABLE accounts_bb ADD COLUMN IF NOT EXISTS status_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"))
+            for statement in pending_migrations:
+                conn.execute(text(statement))
     except Exception as e:
         print(f"Migração ignorada ou já aplicada: {e}")
 
