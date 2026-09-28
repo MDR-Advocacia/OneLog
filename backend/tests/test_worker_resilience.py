@@ -54,6 +54,32 @@ class WorkerResilienceTests(unittest.TestCase):
             worker.configure_browser_command_timeout()
         setter.assert_called_once_with(worker.BROWSER_COMMAND_TIMEOUT_SECONDS)
 
+    def test_forced_attempt_abort_only_kills_browser_helpers(self):
+        chrome = mock.Mock()
+        chrome.name.return_value = "chromedriver"
+        chrome.cmdline.return_value = ["/usr/bin/chromedriver"]
+        chrome.status.return_value = "sleeping"
+
+        unrelated = mock.Mock()
+        unrelated.name.return_value = "python"
+        unrelated.cmdline.return_value = ["python", "worker.py"]
+        unrelated.status.return_value = "sleeping"
+
+        parent = mock.Mock()
+        parent.children.return_value = [chrome, unrelated]
+        with mock.patch.object(worker.psutil, "Process", return_value=parent):
+            killed = worker.abort_browser_attempt(1, "BB_Robos", "teste")
+
+        self.assertEqual(killed, 1)
+        chrome.kill.assert_called_once_with()
+        unrelated.kill.assert_not_called()
+
+    def test_attempt_timeout_is_longer_than_command_timeout(self):
+        self.assertGreater(
+            worker.BROWSER_ATTEMPT_HARD_TIMEOUT_SECONDS,
+            worker.BROWSER_COMMAND_TIMEOUT_SECONDS,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -103,6 +103,13 @@ BROWSER_COMMAND_TIMEOUT_SECONDS = max(
     5,
     int(os.getenv("BROWSER_COMMAND_TIMEOUT_SECONDS", "20")),
 )
+# ChromeDriver can stop answering during SeleniumBase teardown even after an
+# individual HTTP command has timed out. Bound each browser attempt separately
+# so a stuck teardown cannot consume the worker-wide watchdog budget.
+BROWSER_ATTEMPT_HARD_TIMEOUT_SECONDS = max(
+    BROWSER_COMMAND_TIMEOUT_SECONDS + 30,
+    int(os.getenv("BROWSER_ATTEMPT_HARD_TIMEOUT_SECONDS", "150")),
+)
 RESOURCE_GUARD_MIN_AVAILABLE_MB = int(os.getenv("RESOURCE_GUARD_MIN_AVAILABLE_MB", "900"))
 RESOURCE_GUARD_MAX_BROWSER_PROCS = int(os.getenv("RESOURCE_GUARD_MAX_BROWSER_PROCS", str(max(18, MAX_WORKERS * 10))))
 RESOURCE_GUARD_HARD_BROWSER_PROCS = int(os.getenv("RESOURCE_GUARD_HARD_BROWSER_PROCS", str(max(24, MAX_WORKERS * 14))))
@@ -803,6 +810,38 @@ def configure_browser_command_timeout():
     RemoteConnection.set_timeout(BROWSER_COMMAND_TIMEOUT_SECONDS)
 
 
+def abort_browser_attempt(thread_id=None, setor=None, reason="limite da tentativa excedido"):
+    """Kills only browser helpers owned by the current worker process.
+
+    This intentionally avoids WebDriver.quit(): that transport is the component
+    known to hang after the BB/Cloudflare page leaves ChromeDriver unresponsive.
+    """
+    killed = 0
+    try:
+        worker_process = psutil.Process(os.getpid())
+        for child in worker_process.children(recursive=True):
+            try:
+                child_info = {
+                    "name": child.name(),
+                    "cmdline": child.cmdline(),
+                    "status": child.status(),
+                }
+                if is_browser_process(child_info):
+                    child.kill()
+                    killed += 1
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                pass
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        pass
+
+    prefix = f"[ROBÔ {thread_id} | {setor}]" if thread_id else "[ROBÔ]"
+    logger.warning(
+        f"{prefix} Encerramento forçado da tentativa: {reason}. "
+        f"{killed} processo(s) de navegador sinalizado(s)."
+    )
+    return killed
+
+
 def start_task_heartbeat(thread_id, account_id=None):
     stop_event = threading.Event()
 
@@ -940,6 +979,7 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
             sb_instance = None 
             proxy_escolhido = get_random_proxy()
             startup_lock = False
+            attempt_abort_timer = None
             
             try:
                 host_pressure_reason = wait_for_host_capacity(thread_id, setor, account_id=account_id)
@@ -964,6 +1004,20 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                     page_load_strategy="eager",
                 ) as sb:
                     sb_instance = sb 
+                    attempt_abort_timer = threading.Timer(
+                        BROWSER_ATTEMPT_HARD_TIMEOUT_SECONDS,
+                        abort_browser_attempt,
+                        kwargs={
+                            "thread_id": thread_id,
+                            "setor": setor,
+                            "reason": (
+                                "teto independente de "
+                                f"{BROWSER_ATTEMPT_HARD_TIMEOUT_SECONDS}s atingido"
+                            ),
+                        },
+                    )
+                    attempt_abort_timer.daemon = True
+                    attempt_abort_timer.start()
                     if startup_lock:
                         get_redis().delete("lock:chrome_startup")
                         startup_lock = False
@@ -1017,6 +1071,11 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                             attempt_failure_hint = (
                                 "Tela de login do BB não carregou: campo de usuário ausente. "
                                 f"Conteúdo visível: {last_browser_failure_detail}"
+                            )
+                            abort_browser_attempt(
+                                thread_id,
+                                setor,
+                                "campo de usuário ausente",
                             )
                             raise Exception(attempt_failure_hint) from user_field_error
                         sb.type("#idToken1", usuario)
@@ -1090,6 +1149,11 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                                     f"Página visível: {last_browser_failure_detail}. "
                                     f"Erro inicial: {wait_e}. Erro final: {second_wait_e}"
                                 )
+                                abort_browser_attempt(
+                                    thread_id,
+                                    setor,
+                                    "desafio do Cloudflare não concluído",
+                                )
                                 raise Exception(attempt_failure_hint)
                         # =======================================================================
                         
@@ -1131,6 +1195,11 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                             attempt_failure_hint = (
                                 "Credencial BB rejeitada (#failedLogin). "
                                 f"Mensagem visível: {last_auth_failure_detail}"
+                            )
+                            abort_browser_attempt(
+                                thread_id,
+                                setor,
+                                "recusa de autenticação confirmada",
                             )
                             raise Exception(attempt_failure_hint)
                         sb.sleep(4)
@@ -1175,6 +1244,8 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                         for guard_key in list(get_redis().scan_iter(f"guard:recent_cache_login:{account_id}:*")):
                             get_redis().delete(guard_key)
                         
+                        if attempt_abort_timer:
+                            attempt_abort_timer.cancel()
                         limpar_memoria_residual(sb_instance)
                         return 
                         
@@ -1191,6 +1262,11 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                             "Timeout ao aguardar o portal jurídico carregar após a senha. "
                             f"Página visível: {last_browser_failure_detail}"
                         )
+                        abort_browser_attempt(
+                            thread_id,
+                            setor,
+                            "portal jurídico não carregou após a senha",
+                        )
                         raise Exception(attempt_failure_hint)
 
                 # SeleniumBase pode consumir a exceção interna quando fecha o
@@ -1199,6 +1275,8 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                 raise Exception(attempt_failure_hint)
                         
             except Exception as e:
+                if attempt_abort_timer:
+                    attempt_abort_timer.cancel()
                 if startup_lock:
                     get_redis().delete("lock:chrome_startup")
                 logger.warning(f"[ROBÔ {thread_id} | {setor}] Falha na tentativa {tentativa}: {e}")
