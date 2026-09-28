@@ -10,6 +10,7 @@ import threading
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from seleniumbase import SB
+from selenium.webdriver.remote.remote_connection import RemoteConnection
 import logging
 import sys
 from logging.handlers import RotatingFileHandler
@@ -95,6 +96,13 @@ CLOUDFLARE_RETRY_BACKOFF_SECONDS = max(60, int(os.getenv("CLOUDFLARE_RETRY_BACKO
 TASK_TIMEOUT_RETRY_BACKOFF_SECONDS = max(60, int(os.getenv("TASK_TIMEOUT_RETRY_BACKOFF_SECONDS", "300")))
 CLOUDFLARE_SECOND_LOOK_SECONDS = int(os.getenv("CLOUDFLARE_SECOND_LOOK_SECONDS", "10"))
 CLOUDFLARE_PASSWORD_WAIT_SECONDS = int(os.getenv("CLOUDFLARE_PASSWORD_WAIT_SECONDS", "35"))
+# Selenium's default socket timeout is unbounded. If ChromeDriver stops answering
+# during teardown, a worker otherwise stays blocked until the outer watchdog
+# kills the whole process several minutes later.
+BROWSER_COMMAND_TIMEOUT_SECONDS = max(
+    5,
+    int(os.getenv("BROWSER_COMMAND_TIMEOUT_SECONDS", "20")),
+)
 RESOURCE_GUARD_MIN_AVAILABLE_MB = int(os.getenv("RESOURCE_GUARD_MIN_AVAILABLE_MB", "900"))
 RESOURCE_GUARD_MAX_BROWSER_PROCS = int(os.getenv("RESOURCE_GUARD_MAX_BROWSER_PROCS", str(max(18, MAX_WORKERS * 10))))
 RESOURCE_GUARD_HARD_BROWSER_PROCS = int(os.getenv("RESOURCE_GUARD_HARD_BROWSER_PROCS", str(max(24, MAX_WORKERS * 14))))
@@ -377,7 +385,14 @@ def renew_queue_lock(account_id):
     if account_id is None:
         return
     try:
-        get_redis().expire(f"lock:queue:{account_id}", ACCOUNT_QUEUE_LOCK_TTL_SECONDS)
+        # EXPIRE silently does nothing after a lease has elapsed. Recreating the
+        # key while the task is in flight prevents the dispatcher from adding a
+        # duplicate login behind the active browser.
+        get_redis().setex(
+            f"lock:queue:{account_id}",
+            ACCOUNT_QUEUE_LOCK_TTL_SECONDS,
+            "1",
+        )
     except Exception as error:
         logger.warning(f"Não foi possível renovar a lease da conta {account_id}: {error}")
 
@@ -746,6 +761,48 @@ def capture_auth_failure_evidence(sb, setor, tentativa, thread_id=None, secrets_
     return detail, image_url
 
 
+def classify_login_failure(error):
+    """Classifies BB failures without treating gateway pages as bad passwords."""
+    message = sanitize_diagnostic_text(error).lower()
+
+    infra_markers = (
+        "errno 11",
+        "resource temporarily unavailable",
+        "failed to start a thread",
+        "host sobrecarregado",
+        "cannot connect to chrome",
+        "session not created",
+        "not reachable",
+        "unable to discover open pages",
+        "recursion",
+        "chrome not reachable",
+    )
+    gateway_markers = (
+        "armadilha cloudflare",
+        "unable to login",
+        "return to login page",
+        "cdn-cgi/challenge-platform",
+        "cf-turnstile",
+        "campo de usuário ausente",
+        "loading... ao acessar a intranet",
+    )
+
+    if any(marker in message for marker in infra_markers) or "-5" in message:
+        return "Esgotamento de Recursos (OS/Docker)", "infra"
+    if any(marker in message for marker in gateway_markers):
+        return "Bloqueio temporário do Cloudflare/portal BB", "gateway"
+    if "credencial bb rejeitada" in message or "#failedlogin" in message:
+        return "Credencial BB rejeitada", "auth"
+    if "timeout" in message or "nosuchelement" in message:
+        return "Timeout na Navegação / Elemento não encontrado", "navigation"
+    return "Falha não identificada no portal BB", "unknown"
+
+
+def configure_browser_command_timeout():
+    """Bounds every Selenium-to-ChromeDriver request, including driver.quit()."""
+    RemoteConnection.set_timeout(BROWSER_COMMAND_TIMEOUT_SECONDS)
+
+
 def start_task_heartbeat(thread_id, account_id=None):
     stop_event = threading.Event()
 
@@ -832,9 +889,14 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                 retryable=True,
                 retry_after_seconds=cooldown_restante,
             )
-            # Do not clone every caller request into the delayed queue. The
-            # dispatcher will enqueue one fresh task when the cooldown ends.
-            return {"reason": cooldown_reason, "suppressed_by_backoff": True}
+            # Automatic prewarming can be recreated by the dispatcher. A real
+            # caller request must remain durable until the backoff expires.
+            if auto:
+                return {"reason": cooldown_reason, "suppressed_by_backoff": True}
+            return {
+                "reason": cooldown_reason,
+                "retry_after_seconds": cooldown_restante,
+            }
 
         # =======================================================================
         # 🛑 BLINDAGEM CONTRA TRABALHO DUPLICADO (Otimização de Servidor)
@@ -891,7 +953,16 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                     time.sleep(2)
                 startup_lock = True
 
-                with SB(uc=True, test=True, headless=False, xvfb=True, proxy=proxy_escolhido, page_load_strategy="eager") as sb:
+                configure_browser_command_timeout()
+                with SB(
+                    uc=True,
+                    test=False,
+                    no_screenshot=True,
+                    headless=False,
+                    xvfb=True,
+                    proxy=proxy_escolhido,
+                    page_load_strategy="eager",
+                ) as sb:
                     sb_instance = sb 
                     if startup_lock:
                         get_redis().delete("lock:chrome_startup")
@@ -1137,39 +1208,16 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                 # TELEMETRIA: Registro de Falhas e Categorização Inteligente
                 get_redis().hincrby(f"metrics:robot_error:{hoje}", f"ROBÔ {thread_id}", 1)
                 
-                err_msg = str(e).lower()
-                is_infra_error = False
-                is_cloudflare_trap = False
-                is_auth_error = False
+                motivo_falha, failure_kind = classify_login_failure(e)
+                is_infra_error = failure_kind == "infra"
+                is_cloudflare_trap = failure_kind == "gateway"
+                is_auth_error = failure_kind == "auth"
                 fail_fast = False
-                
-                if (
-                    "errno 11" in err_msg
-                    or "resource temporarily unavailable" in err_msg
-                    or "-5" in err_msg
-                    or "failed to start a thread" in err_msg
-                    or "host sobrecarregado" in err_msg
-                    or "cannot connect to chrome" in err_msg
-                    or "session not created" in err_msg
-                    or "not reachable" in err_msg
-                    or "unable to discover open pages" in err_msg
-                    or "recursion" in err_msg
-                    or "chrome not reachable" in err_msg
-                ):
-                    motivo_falha = "Esgotamento de Recursos (OS/Docker)"
-                    is_infra_error = True
+
+                if is_infra_error:
                     fail_fast = True
-                elif "armadilha cloudflare" in err_msg:
-                    motivo_falha = "Bloqueio Cloudflare (Armadilha/Popup)"
-                    is_cloudflare_trap = True
-                elif "credencial bb rejeitada" in err_msg or "#failedlogin" in err_msg:
-                    motivo_falha = "Credencial BB rejeitada"
-                    is_auth_error = True
+                elif is_auth_error:
                     fail_fast = auth_failure_count >= AUTH_FAILURE_CONFIRMATIONS
-                elif "timeout" in err_msg or "nosuchelement" in err_msg:
-                    motivo_falha = "Timeout na Navegação / Elemento não encontrado"
-                else:
-                    motivo_falha = "Erro Desconhecido"
                 
                 get_redis().hincrby(f"metrics:error_reasons:{hoje}", motivo_falha, 1)
                 
@@ -1211,7 +1259,10 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                             f"{cloudflare_trap_attempts} tentativa(s). Adiando para não desperdiçar o orçamento do robô."
                         )
                     else:
-                        logger.warning(f"[ROBÔ {thread_id} | {setor}] Cloudflare explícito detectado após dupla checagem. Mantendo retry normal.")
+                        logger.warning(
+                            f"[ROBÔ {thread_id} | {setor}] Portal BB/Cloudflare indisponível. "
+                            "Será feita somente mais uma tentativa controlada."
+                        )
                 elif is_infra_error:
                     logger.warning(f"[ROBÔ {thread_id} | {setor}] Infraestrutura do host degradada. Abortando novas tentativas imediatas para poupar RAM/threads.")
                 
@@ -1377,6 +1428,10 @@ def worker_loop(thread_id):
             # =========================================================================
             touch_heartbeat(thread_id)
             set_task_started(thread_id, account_id)
+            # Recria o lease imediatamente ao retirar a tarefa da fila. O heartbeat
+            # seguinte só acontece após o intervalo normal e deixava uma pequena
+            # janela para o dispatcher enfileirar a mesma conta novamente.
+            renew_queue_lock(account_id)
             heartbeat_stop = start_task_heartbeat(thread_id, account_id)
             recycle_requested = False
             try:
