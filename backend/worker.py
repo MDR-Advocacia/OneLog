@@ -682,9 +682,17 @@ def log_bb_challenge_state(sb, setor, thread_id, stage, started_at):
                     && rect.width > 0 && rect.height > 0;
             };
             const container = document.querySelector('div.cf-turnstile');
+            const visibleFrames = Array.from(document.querySelectorAll('iframe')).filter(visible);
+            const challengeFrame = visibleFrames.some((frame) =>
+                /cloudflare|turnstile|challenge/i.test(
+                    [frame.getAttribute('src'), frame.getAttribute('title'), frame.getAttribute('name')]
+                        .filter(Boolean).join(' ')
+                )
+            );
             return {
                 container: visible(container),
-                iframe: visible(container && container.querySelector('iframe')),
+                challenge_frame: challengeFrame,
+                visible_frames: visibleFrames.length,
                 password: visible(document.querySelector('#idToken3')),
             };
         """)
@@ -692,7 +700,8 @@ def log_bb_challenge_state(sb, setor, thread_id, stage, started_at):
             f"[ROBÔ {thread_id} | {setor}] Estado do desafio: etapa={stage}, "
             f"desde_usuario={time.monotonic() - started_at:.1f}s, "
             f"turnstile={bool(state.get('container'))}, "
-            f"iframe={bool(state.get('iframe'))}, "
+            f"iframe_desafio={bool(state.get('challenge_frame'))}, "
+            f"iframes_visiveis={int(state.get('visible_frames', 0))}, "
             f"campo_senha={bool(state.get('password'))}."
         )
     except Exception as error:
