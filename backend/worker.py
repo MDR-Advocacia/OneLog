@@ -669,6 +669,38 @@ def snapshot(sb, setor, nome_arquivo, thread_id=None):
     logger.info(f"{prefix} 📸 Snapshot gerado: {img_url}")
     return img_url
 
+
+def log_bb_challenge_state(sb, setor, thread_id, stage, started_at):
+    """Log only visible DOM state; a visible iframe does not prove challenge approval."""
+    try:
+        state = sb.execute_script("""
+            const visible = (element) => {
+                if (!element) return false;
+                const style = window.getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                return style.display !== 'none' && style.visibility !== 'hidden'
+                    && rect.width > 0 && rect.height > 0;
+            };
+            const container = document.querySelector('div.cf-turnstile');
+            return {
+                container: visible(container),
+                iframe: visible(container && container.querySelector('iframe')),
+                password: visible(document.querySelector('#idToken3')),
+            };
+        """)
+        logger.info(
+            f"[ROBÔ {thread_id} | {setor}] Estado do desafio: etapa={stage}, "
+            f"desde_usuario={time.monotonic() - started_at:.1f}s, "
+            f"turnstile={bool(state.get('container'))}, "
+            f"iframe={bool(state.get('iframe'))}, "
+            f"campo_senha={bool(state.get('password'))}."
+        )
+    except Exception as error:
+        logger.warning(
+            f"[ROBÔ {thread_id} | {setor}] Observação do desafio indisponível "
+            f"na etapa {stage}: {type(error).__name__}."
+        )
+
 def sanitize_diagnostic_text(value, secrets_to_redact=()):
     """Keeps operator-facing browser evidence compact and free of credentials."""
     text = " ".join(str(value or "").split())
@@ -1080,10 +1112,12 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                             raise Exception(attempt_failure_hint) from user_field_error
                         sb.type("#idToken1", usuario)
                         sb.sleep(1)
+                        challenge_started_at = time.monotonic()
                         sb.click("#loginButton_0")
                         
                         update_status(setor, "Analisando Captcha...", imagem=img, thread_id=thread_id)
                         sb.sleep(6)
+                        log_bb_challenge_state(sb, setor, thread_id, "apos_espera_inicial", challenge_started_at)
                         img = snapshot(sb, setor, f"02_antes_captcha_T{tentativa}", thread_id=thread_id)
                         
                         captcha_container = "div.cf-turnstile"
@@ -1091,16 +1125,21 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                         if sb.is_element_visible(captcha_container):
                             attempt_failure_hint = "Armadilha Cloudflare: desafio não concluído"
                             update_status(setor, "Cloudflare detectado. Aguardando estabilização...", imagem=img, thread_id=thread_id)
-                            sb.sleep(4) 
+                            sb.sleep(4)
+                            log_bb_challenge_state(sb, setor, thread_id, "antes_chamada_clique", challenge_started_at)
                             
                             try:
                                 sb.click(captcha_container) 
-                                logger.info(f"[ROBÔ {thread_id} | {setor}] >>> Clique bruto no captcha realizado.")
+                                logger.info(
+                                    f"[ROBÔ {thread_id} | {setor}] Chamada de clique no contêiner retornou; "
+                                    "aprovação do desafio ainda não confirmada."
+                                )
                             except Exception as e:
                                 logger.warning(f"[ROBÔ {thread_id} | {setor}] Aviso no clique bruto: {e}")
                             
-                            update_status(setor, "Aguardando validação do clique...", thread_id=thread_id)
-                            sb.sleep(5) 
+                            update_status(setor, "Aguardando campo de senha após tentativa de clique...", thread_id=thread_id)
+                            sb.sleep(5)
+                            log_bb_challenge_state(sb, setor, thread_id, "apos_espera_clique", challenge_started_at)
                                 
                             img = snapshot(sb, setor, f"03_pos_clique_T{tentativa}", thread_id=thread_id)
                         
@@ -1111,7 +1150,8 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                         # =======================================================================
                         try:
                             sb.wait_for_element("#idToken3", timeout=CLOUDFLARE_PASSWORD_WAIT_SECONDS)
-                            logger.info(f"[ROBÔ {thread_id} | {setor}] >>> SUCESSO! Campo de senha apareceu!")
+                            log_bb_challenge_state(sb, setor, thread_id, "senha_visivel", challenge_started_at)
+                            logger.info(f"[ROBÔ {thread_id} | {setor}] Campo de senha apareceu; desafio liberou a próxima etapa.")
                         except Exception as wait_e:
                             cloudflare_ainda_visivel = False
                             try:
@@ -1133,8 +1173,10 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
 
                             try:
                                 sb.wait_for_element("#idToken3", timeout=max(8, CLOUDFLARE_SECOND_LOOK_SECONDS))
+                                log_bb_challenge_state(sb, setor, thread_id, "senha_visivel_rechecagem", challenge_started_at)
                                 logger.info(f"[ROBÔ {thread_id} | {setor}] >>> Campo de senha apareceu na segunda checagem. Falso alarme evitado.")
                             except Exception as second_wait_e:
+                                log_bb_challenge_state(sb, setor, thread_id, "senha_ausente_rechecagem", challenge_started_at)
                                 last_browser_failure_detail, last_browser_failure_image = capture_browser_failure_evidence(
                                     sb,
                                     setor,
