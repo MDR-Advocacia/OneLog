@@ -50,6 +50,7 @@ DEBUG_MODE = os.getenv("DEBUG_MODE", "True").lower() == "true"
 # Screenshots acionam uma chamada síncrona ao Chrome e não devem participar do
 # caminho operacional. Habilite apenas durante uma investigação pontual.
 DEBUG_SNAPSHOTS = os.getenv("DEBUG_SNAPSHOTS", "false").lower() == "true"
+BB_CHALLENGE_CHECKPOINTS = os.getenv("BB_CHALLENGE_CHECKPOINTS", "false").lower() == "true"
 
 # Uma credencial compartilhada não se beneficia de Chromes concorrentes. A
 # configuração continua ajustável por ambiente, mas o padrão seguro é um robô.
@@ -710,6 +711,31 @@ def log_bb_challenge_state(sb, setor, thread_id, stage, started_at):
             f"na etapa {stage}: {type(error).__name__}."
         )
 
+
+def capture_bb_challenge_checkpoint(sb, setor, thread_id, tentativa, stage, started_at):
+    """Save a few opt-in frames for visual review without changing challenge logic."""
+    if not BB_CHALLENGE_CHECKPOINTS or setor != "BB_Robos":
+        return
+    try:
+        touch_heartbeat(thread_id)
+        os.makedirs("shared", exist_ok=True)
+        filename = (
+            f"BB_Robos_desafio_{stage}_T{tentativa}_"
+            f"{datetime.utcnow().strftime('%Y%m%d_%H%M%S_%f')}.png"
+        )
+        screenshot_started_at = time.monotonic()
+        sb.save_screenshot(os.path.join("shared", filename))
+        logger.info(
+            f"[ROBÔ {thread_id} | {setor}] Captura pontual do desafio: "
+            f"etapa={stage}, desde_usuario={screenshot_started_at - started_at:.1f}s, "
+            f"duracao={time.monotonic() - screenshot_started_at:.1f}s, arquivo={filename}."
+        )
+    except Exception as error:
+        logger.warning(
+            f"[ROBÔ {thread_id} | {setor}] Captura pontual indisponível "
+            f"na etapa {stage}: {type(error).__name__}."
+        )
+
 def sanitize_diagnostic_text(value, secrets_to_redact=()):
     """Keeps operator-facing browser evidence compact and free of credentials."""
     text = " ".join(str(value or "").split())
@@ -1134,8 +1160,14 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                         if sb.is_element_visible(captcha_container):
                             attempt_failure_hint = "Armadilha Cloudflare: desafio não concluído"
                             update_status(setor, "Cloudflare detectado. Aguardando estabilização...", imagem=img, thread_id=thread_id)
+                            capture_bb_challenge_checkpoint(
+                                sb, setor, thread_id, tentativa, "apos_espera_inicial", challenge_started_at
+                            )
                             sb.sleep(4)
                             log_bb_challenge_state(sb, setor, thread_id, "antes_chamada_clique", challenge_started_at)
+                            capture_bb_challenge_checkpoint(
+                                sb, setor, thread_id, tentativa, "antes_chamada_clique", challenge_started_at
+                            )
                             
                             try:
                                 sb.click(captcha_container) 
@@ -1149,6 +1181,9 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                             update_status(setor, "Aguardando campo de senha após tentativa de clique...", thread_id=thread_id)
                             sb.sleep(5)
                             log_bb_challenge_state(sb, setor, thread_id, "apos_espera_clique", challenge_started_at)
+                            capture_bb_challenge_checkpoint(
+                                sb, setor, thread_id, tentativa, "apos_espera_clique", challenge_started_at
+                            )
                                 
                             img = snapshot(sb, setor, f"03_pos_clique_T{tentativa}", thread_id=thread_id)
                         
