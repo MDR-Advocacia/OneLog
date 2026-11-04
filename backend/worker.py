@@ -95,7 +95,7 @@ CLOUDFLARE_MAX_ATTEMPTS_PER_TASK = max(1, int(os.getenv("CLOUDFLARE_MAX_ATTEMPTS
 CLOUDFLARE_RETRY_BACKOFF_SECONDS = max(60, int(os.getenv("CLOUDFLARE_RETRY_BACKOFF_SECONDS", "300")))
 TASK_TIMEOUT_RETRY_BACKOFF_SECONDS = max(60, int(os.getenv("TASK_TIMEOUT_RETRY_BACKOFF_SECONDS", "300")))
 CLOUDFLARE_SECOND_LOOK_SECONDS = int(os.getenv("CLOUDFLARE_SECOND_LOOK_SECONDS", "10"))
-CLOUDFLARE_PASSWORD_WAIT_SECONDS = int(os.getenv("CLOUDFLARE_PASSWORD_WAIT_SECONDS", "35"))
+CLOUDFLARE_PASSWORD_WAIT_SECONDS = int(os.getenv("CLOUDFLARE_PASSWORD_WAIT_SECONDS", "45"))
 # Selenium's default socket timeout is unbounded. If ChromeDriver stops answering
 # during teardown, a worker otherwise stays blocked until the outer watchdog
 # kills the whole process several minutes later.
@@ -948,7 +948,7 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
             if minutos_passados < COOKIE_REUSE_MINUTES and not should_run_early_auto_refresh:
                 logger.info(f"[ROBÔ {thread_id} | {setor_solicitado}] ♻️ Tarefa duplicada detectada! A conta {account_id} já tem cookies frescos ({minutos_passados:.1f}m). Abortando para poupar servidor.")
                 get_redis().delete(f"lock:queue:{account_id}")
-                update_status(setor_solicitado, "Sessão renovada e salva no Pool!", concluido=True, thread_id=thread_id)
+                update_status(setor_solicitado, "Sessão recente reutilizada do Pool!", concluido=True, thread_id=thread_id)
                 return
         # =======================================================================
 
@@ -1090,19 +1090,17 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                         
                         if sb.is_element_visible(captcha_container):
                             attempt_failure_hint = "Armadilha Cloudflare: desafio não concluído"
-                            update_status(setor, "Cloudflare detectado. Aguardando estabilização...", imagem=img, thread_id=thread_id)
-                            sb.sleep(4) 
-                            
-                            try:
-                                sb.click(captcha_container) 
-                                logger.info(f"[ROBÔ {thread_id} | {setor}] >>> Clique bruto no captcha realizado.")
-                            except Exception as e:
-                                logger.warning(f"[ROBÔ {thread_id} | {setor}] Aviso no clique bruto: {e}")
-                            
-                            update_status(setor, "Aguardando validação do clique...", thread_id=thread_id)
-                            sb.sleep(5) 
-                                
-                            img = snapshot(sb, setor, f"03_pos_clique_T{tentativa}", thread_id=thread_id)
+                            update_status(
+                                setor,
+                                "Cloudflare detectado. Aguardando verificação automática...",
+                                imagem=img,
+                                thread_id=thread_id,
+                            )
+                            logger.info(
+                                f"[ROBÔ {thread_id} | {setor}] Turnstile visível; "
+                                "aguardando o campo de senha sem interação no desafio."
+                            )
+                            img = snapshot(sb, setor, f"03_verificacao_automatica_T{tentativa}", thread_id=thread_id)
                         
                         update_status(setor, "Aguardando campo de senha...", imagem=img, thread_id=thread_id)
                         
