@@ -68,6 +68,8 @@ services:
       - PYTHONUNBUFFERED=1
     volumes:
       - shared_data:/app/shared
+      # O perfil do banco fica privado ao worker; /app/shared é exposto pela API.
+      - browser_profiles:/app/browser_profiles
     depends_on:
       - redis
       - db
@@ -84,3 +86,4 @@ volumes:
   postgres_data:
   redis_data:
   shared_data:
+  browser_profiles:
