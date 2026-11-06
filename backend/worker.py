@@ -7,6 +7,8 @@ import signal
 import psutil
 import random
 import threading
+import fcntl
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from seleniumbase import SB
@@ -50,6 +52,9 @@ DEBUG_MODE = os.getenv("DEBUG_MODE", "True").lower() == "true"
 # Screenshots acionam uma chamada síncrona ao Chrome e não devem participar do
 # caminho operacional. Habilite apenas durante uma investigação pontual.
 DEBUG_SNAPSHOTS = os.getenv("DEBUG_SNAPSHOTS", "false").lower() == "true"
+BB_CHALLENGE_CHECKPOINTS = os.getenv("BB_CHALLENGE_CHECKPOINTS", "false").lower() == "true"
+BB_PERSIST_BROWSER_PROFILE = os.getenv("BB_PERSIST_BROWSER_PROFILE", "false").lower() == "true"
+BB_BROWSER_PROFILE_ROOT = os.getenv("BB_BROWSER_PROFILE_ROOT", "/app/browser_profiles")
 
 # Uma credencial compartilhada não se beneficia de Chromes concorrentes. A
 # configuração continua ajustável por ambiente, mas o padrão seguro é um robô.
@@ -669,6 +674,72 @@ def snapshot(sb, setor, nome_arquivo, thread_id=None):
     logger.info(f"{prefix} 📸 Snapshot gerado: {img_url}")
     return img_url
 
+
+def log_bb_challenge_state(sb, setor, thread_id, stage, started_at):
+    """Log only visible DOM state; a visible iframe does not prove challenge approval."""
+    try:
+        state = sb.execute_script("""
+            const visible = (element) => {
+                if (!element) return false;
+                const style = window.getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                return style.display !== 'none' && style.visibility !== 'hidden'
+                    && rect.width > 0 && rect.height > 0;
+            };
+            const container = document.querySelector('div.cf-turnstile');
+            const visibleFrames = Array.from(document.querySelectorAll('iframe')).filter(visible);
+            const challengeFrame = visibleFrames.some((frame) =>
+                /cloudflare|turnstile|challenge/i.test(
+                    [frame.getAttribute('src'), frame.getAttribute('title'), frame.getAttribute('name')]
+                        .filter(Boolean).join(' ')
+                )
+            );
+            return {
+                container: visible(container),
+                challenge_frame: challengeFrame,
+                visible_frames: visibleFrames.length,
+                password: visible(document.querySelector('#idToken3')),
+            };
+        """)
+        logger.info(
+            f"[ROBÔ {thread_id} | {setor}] Estado do desafio: etapa={stage}, "
+            f"desde_usuario={time.monotonic() - started_at:.1f}s, "
+            f"turnstile={bool(state.get('container'))}, "
+            f"iframe_desafio={bool(state.get('challenge_frame'))}, "
+            f"iframes_visiveis={int(state.get('visible_frames', 0))}, "
+            f"campo_senha={bool(state.get('password'))}."
+        )
+    except Exception as error:
+        logger.warning(
+            f"[ROBÔ {thread_id} | {setor}] Observação do desafio indisponível "
+            f"na etapa {stage}: {type(error).__name__}."
+        )
+
+
+def capture_bb_challenge_checkpoint(sb, setor, thread_id, tentativa, stage, started_at):
+    """Save a few opt-in frames for visual review without changing challenge logic."""
+    if not BB_CHALLENGE_CHECKPOINTS or setor != "BB_Robos":
+        return
+    try:
+        touch_heartbeat(thread_id)
+        os.makedirs("shared", exist_ok=True)
+        filename = (
+            f"BB_Robos_desafio_{stage}_T{tentativa}_"
+            f"{datetime.utcnow().strftime('%Y%m%d_%H%M%S_%f')}.png"
+        )
+        screenshot_started_at = time.monotonic()
+        sb.save_screenshot(os.path.join("shared", filename))
+        logger.info(
+            f"[ROBÔ {thread_id} | {setor}] Captura pontual do desafio: "
+            f"etapa={stage}, desde_usuario={screenshot_started_at - started_at:.1f}s, "
+            f"duracao={time.monotonic() - screenshot_started_at:.1f}s, arquivo={filename}."
+        )
+    except Exception as error:
+        logger.warning(
+            f"[ROBÔ {thread_id} | {setor}] Captura pontual indisponível "
+            f"na etapa {stage}: {type(error).__name__}."
+        )
+
 def sanitize_diagnostic_text(value, secrets_to_redact=()):
     """Keeps operator-facing browser evidence compact and free of credentials."""
     text = " ".join(str(value or "").split())
@@ -808,6 +879,55 @@ def classify_login_failure(error):
 def configure_browser_command_timeout():
     """Bounds every Selenium-to-ChromeDriver request, including driver.quit()."""
     RemoteConnection.set_timeout(BROWSER_COMMAND_TIMEOUT_SECONDS)
+
+
+@contextmanager
+def browser_session(account_id, preserve_profile=False, **browser_options):
+    """Keep one private Chrome profile for the BB account across attempts.
+
+    SeleniumBase's usual quit can kill Chrome before it flushes its cookie DB.
+    Browser.close asks Chrome to flush and exit while the profile is still locked.
+    """
+    with ExitStack() as stack:
+        if preserve_profile:
+            profile_root = os.path.abspath(BB_BROWSER_PROFILE_ROOT)
+            profile_path = os.path.join(profile_root, f"bb_{int(account_id)}")
+            os.makedirs(profile_path, mode=0o700, exist_ok=True)
+            os.chmod(profile_path, 0o700)
+            lock_path = os.path.join(profile_path, ".onelog.lock")
+            lock_file = stack.enter_context(open(lock_path, "a+"))
+            os.chmod(lock_path, 0o600)
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+            # A hard timeout can leave Chrome's symlink locks after its process
+            # is gone. Never remove them while this profile has an active Chrome.
+            profile_arg = f"--user-data-dir={profile_path}"
+            for process in psutil.process_iter(["name", "cmdline"]):
+                try:
+                    if process.info["name"] and "chrome" in process.info["name"].lower():
+                        if profile_arg in (process.info["cmdline"] or []):
+                            raise RuntimeError("Perfil do Chrome já está em uso")
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
+            for name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+                lock_symlink = os.path.join(profile_path, name)
+                if os.path.islink(lock_symlink):
+                    os.unlink(lock_symlink)
+            browser_options["user_data_dir"] = profile_path
+
+        sb = stack.enter_context(SB(**browser_options))
+        try:
+            yield sb
+        finally:
+            if preserve_profile:
+                try:
+                    sb.driver.execute_cdp_cmd("Browser.close", {})
+                    logger.info("[BB_Robos] Chrome fechou e gravou o perfil persistente.")
+                except Exception as close_error:
+                    logger.warning(
+                        "[BB_Robos] Chrome não confirmou o fechamento ordenado do perfil: %s",
+                        type(close_error).__name__,
+                    )
 
 
 def abort_browser_attempt(thread_id=None, setor=None, reason="limite da tentativa excedido"):
@@ -957,6 +1077,7 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
 
         setor = setor_solicitado
         usuario, senha = account.login, account.senha
+        preserve_browser_profile = BB_PERSIST_BROWSER_PROFILE and setor == "BB_Robos"
         
         update_status(setor, "Iniciando robô stealth...", thread_id=thread_id)
         max_tentativas_gerais = 3
@@ -994,7 +1115,9 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                 startup_lock = True
 
                 configure_browser_command_timeout()
-                with SB(
+                with browser_session(
+                    account_id=account_id,
+                    preserve_profile=preserve_browser_profile,
                     uc=True,
                     test=False,
                     no_screenshot=True,
@@ -1034,22 +1157,25 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                         sb.open('https://loginweb.bb.com.br/favicon.ico')
                         sb.sleep(1)
                         
-                        logger.info(f"[ROBÔ {thread_id} | {setor}] Executando Faxina Nuclear de Cookies e Cache...")
-                        try:
-                            sb.driver.execute_cdp_cmd('Network.clearBrowserCache', {})
-                            sb.driver.execute_cdp_cmd('Network.clearBrowserCookies', {})
-                        except Exception as cdp_e:
-                            logger.warning(f"[ROBÔ {thread_id} | {setor}] Aviso na faxina CDP: {cdp_e}")
-                            
-                        sb.delete_all_cookies()
-                        try:
-                            sb.execute_script("window.localStorage.clear(); window.sessionStorage.clear();")
-                        except Exception as storage_e:
-                            logger.warning(f"[ROBÔ {thread_id} | {setor}] Aviso na limpeza de local/session storage: {storage_e}")
-                        try:
-                            sb.execute_script("window.indexedDB.databases().then(dbs => dbs.forEach(db => window.indexedDB.deleteDatabase(db.name)))")
-                        except Exception as indexeddb_e:
-                            logger.warning(f"[ROBÔ {thread_id} | {setor}] Aviso na limpeza de IndexedDB: {indexeddb_e}")
+                        if preserve_browser_profile:
+                            logger.info(f"[ROBÔ {thread_id} | {setor}] Reutilizando perfil privado do Chrome sem apagar cookies/cache.")
+                        else:
+                            logger.info(f"[ROBÔ {thread_id} | {setor}] Executando Faxina Nuclear de Cookies e Cache...")
+                            try:
+                                sb.driver.execute_cdp_cmd('Network.clearBrowserCache', {})
+                                sb.driver.execute_cdp_cmd('Network.clearBrowserCookies', {})
+                            except Exception as cdp_e:
+                                logger.warning(f"[ROBÔ {thread_id} | {setor}] Aviso na faxina CDP: {cdp_e}")
+
+                            sb.delete_all_cookies()
+                            try:
+                                sb.execute_script("window.localStorage.clear(); window.sessionStorage.clear();")
+                            except Exception as storage_e:
+                                logger.warning(f"[ROBÔ {thread_id} | {setor}] Aviso na limpeza de local/session storage: {storage_e}")
+                            try:
+                                sb.execute_script("window.indexedDB.databases().then(dbs => dbs.forEach(db => window.indexedDB.deleteDatabase(db.name)))")
+                            except Exception as indexeddb_e:
+                                logger.warning(f"[ROBÔ {thread_id} | {setor}] Aviso na limpeza de IndexedDB: {indexeddb_e}")
                         
                         sb.open('https://loginweb.bb.com.br/sso/XUI/?realm=/paj&goto=https://juridico.bb.com.br/wfj#login')
                         sb.sleep(4)
@@ -1072,18 +1198,21 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                                 "Tela de login do BB não carregou: campo de usuário ausente. "
                                 f"Conteúdo visível: {last_browser_failure_detail}"
                             )
-                            abort_browser_attempt(
-                                thread_id,
-                                setor,
-                                "campo de usuário ausente",
-                            )
+                            if not preserve_browser_profile:
+                                abort_browser_attempt(
+                                    thread_id,
+                                    setor,
+                                    "campo de usuário ausente",
+                                )
                             raise Exception(attempt_failure_hint) from user_field_error
                         sb.type("#idToken1", usuario)
                         sb.sleep(1)
+                        challenge_started_at = time.monotonic()
                         sb.click("#loginButton_0")
                         
                         update_status(setor, "Analisando Captcha...", imagem=img, thread_id=thread_id)
                         sb.sleep(6)
+                        log_bb_challenge_state(sb, setor, thread_id, "apos_espera_inicial", challenge_started_at)
                         img = snapshot(sb, setor, f"02_antes_captcha_T{tentativa}", thread_id=thread_id)
                         
                         captcha_container = "div.cf-turnstile"
@@ -1091,16 +1220,30 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                         if sb.is_element_visible(captcha_container):
                             attempt_failure_hint = "Armadilha Cloudflare: desafio não concluído"
                             update_status(setor, "Cloudflare detectado. Aguardando estabilização...", imagem=img, thread_id=thread_id)
-                            sb.sleep(4) 
+                            capture_bb_challenge_checkpoint(
+                                sb, setor, thread_id, tentativa, "apos_espera_inicial", challenge_started_at
+                            )
+                            sb.sleep(4)
+                            log_bb_challenge_state(sb, setor, thread_id, "antes_chamada_clique", challenge_started_at)
+                            capture_bb_challenge_checkpoint(
+                                sb, setor, thread_id, tentativa, "antes_chamada_clique", challenge_started_at
+                            )
                             
                             try:
                                 sb.click(captcha_container) 
-                                logger.info(f"[ROBÔ {thread_id} | {setor}] >>> Clique bruto no captcha realizado.")
+                                logger.info(
+                                    f"[ROBÔ {thread_id} | {setor}] Chamada de clique no contêiner retornou; "
+                                    "aprovação do desafio ainda não confirmada."
+                                )
                             except Exception as e:
                                 logger.warning(f"[ROBÔ {thread_id} | {setor}] Aviso no clique bruto: {e}")
                             
-                            update_status(setor, "Aguardando validação do clique...", thread_id=thread_id)
-                            sb.sleep(5) 
+                            update_status(setor, "Aguardando campo de senha após tentativa de clique...", thread_id=thread_id)
+                            sb.sleep(5)
+                            log_bb_challenge_state(sb, setor, thread_id, "apos_espera_clique", challenge_started_at)
+                            capture_bb_challenge_checkpoint(
+                                sb, setor, thread_id, tentativa, "apos_espera_clique", challenge_started_at
+                            )
                                 
                             img = snapshot(sb, setor, f"03_pos_clique_T{tentativa}", thread_id=thread_id)
                         
@@ -1111,7 +1254,8 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                         # =======================================================================
                         try:
                             sb.wait_for_element("#idToken3", timeout=CLOUDFLARE_PASSWORD_WAIT_SECONDS)
-                            logger.info(f"[ROBÔ {thread_id} | {setor}] >>> SUCESSO! Campo de senha apareceu!")
+                            log_bb_challenge_state(sb, setor, thread_id, "senha_visivel", challenge_started_at)
+                            logger.info(f"[ROBÔ {thread_id} | {setor}] Campo de senha apareceu; desafio liberou a próxima etapa.")
                         except Exception as wait_e:
                             cloudflare_ainda_visivel = False
                             try:
@@ -1133,8 +1277,10 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
 
                             try:
                                 sb.wait_for_element("#idToken3", timeout=max(8, CLOUDFLARE_SECOND_LOOK_SECONDS))
+                                log_bb_challenge_state(sb, setor, thread_id, "senha_visivel_rechecagem", challenge_started_at)
                                 logger.info(f"[ROBÔ {thread_id} | {setor}] >>> Campo de senha apareceu na segunda checagem. Falso alarme evitado.")
                             except Exception as second_wait_e:
+                                log_bb_challenge_state(sb, setor, thread_id, "senha_ausente_rechecagem", challenge_started_at)
                                 last_browser_failure_detail, last_browser_failure_image = capture_browser_failure_evidence(
                                     sb,
                                     setor,
@@ -1149,11 +1295,12 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                                     f"Página visível: {last_browser_failure_detail}. "
                                     f"Erro inicial: {wait_e}. Erro final: {second_wait_e}"
                                 )
-                                abort_browser_attempt(
-                                    thread_id,
-                                    setor,
-                                    "desafio do Cloudflare não concluído",
-                                )
+                                if not preserve_browser_profile:
+                                    abort_browser_attempt(
+                                        thread_id,
+                                        setor,
+                                        "desafio do Cloudflare não concluído",
+                                    )
                                 raise Exception(attempt_failure_hint)
                         # =======================================================================
                         
@@ -1196,11 +1343,12 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                                 "Credencial BB rejeitada (#failedLogin). "
                                 f"Mensagem visível: {last_auth_failure_detail}"
                             )
-                            abort_browser_attempt(
-                                thread_id,
-                                setor,
-                                "recusa de autenticação confirmada",
-                            )
+                            if not preserve_browser_profile:
+                                abort_browser_attempt(
+                                    thread_id,
+                                    setor,
+                                    "recusa de autenticação confirmada",
+                                )
                             raise Exception(attempt_failure_hint)
                         sb.sleep(4)
                     
@@ -1246,7 +1394,8 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                         
                         if attempt_abort_timer:
                             attempt_abort_timer.cancel()
-                        limpar_memoria_residual(sb_instance)
+                        if not preserve_browser_profile:
+                            limpar_memoria_residual(sb_instance)
                         return 
                         
                     else:
@@ -1262,11 +1411,12 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                             "Timeout ao aguardar o portal jurídico carregar após a senha. "
                             f"Página visível: {last_browser_failure_detail}"
                         )
-                        abort_browser_attempt(
-                            thread_id,
-                            setor,
-                            "portal jurídico não carregou após a senha",
-                        )
+                        if not preserve_browser_profile:
+                            abort_browser_attempt(
+                                thread_id,
+                                setor,
+                                "portal jurídico não carregou após a senha",
+                            )
                         raise Exception(attempt_failure_hint)
 
                 # SeleniumBase pode consumir a exceção interna quando fecha o
