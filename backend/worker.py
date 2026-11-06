@@ -51,9 +51,6 @@ DEBUG_MODE = os.getenv("DEBUG_MODE", "True").lower() == "true"
 # caminho operacional. Habilite apenas durante uma investigação pontual.
 DEBUG_SNAPSHOTS = os.getenv("DEBUG_SNAPSHOTS", "false").lower() == "true"
 BB_CHALLENGE_CHECKPOINTS = os.getenv("BB_CHALLENGE_CHECKPOINTS", "false").lower() == "true"
-# Each SB attempt starts with a temporary browser profile. Preserve the site
-# state obtained during the favicon preflight only for an opt-in BB_Robos trial.
-PRESERVE_BB_PREFLIGHT_STATE = os.getenv("PRESERVE_BB_PREFLIGHT_STATE", "false").lower() == "true"
 
 # Uma credencial compartilhada não se beneficia de Chromes concorrentes. A
 # configuração continua ajustável por ambiente, mas o padrão seguro é um robô.
@@ -1104,28 +1101,22 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                         sb.open('https://loginweb.bb.com.br/favicon.ico')
                         sb.sleep(1)
                         
-                        if setor == "BB_Robos" and PRESERVE_BB_PREFLIGHT_STATE:
-                            logger.info(
-                                f"[ROBÔ {thread_id} | {setor}] Preservando cookies e cache "
-                                "recebidos no preflight deste perfil temporário."
-                            )
-                        else:
-                            logger.info(f"[ROBÔ {thread_id} | {setor}] Executando Faxina Nuclear de Cookies e Cache...")
-                            try:
-                                sb.driver.execute_cdp_cmd('Network.clearBrowserCache', {})
-                                sb.driver.execute_cdp_cmd('Network.clearBrowserCookies', {})
-                            except Exception as cdp_e:
-                                logger.warning(f"[ROBÔ {thread_id} | {setor}] Aviso na faxina CDP: {cdp_e}")
-
-                            sb.delete_all_cookies()
-                            try:
-                                sb.execute_script("window.localStorage.clear(); window.sessionStorage.clear();")
-                            except Exception as storage_e:
-                                logger.warning(f"[ROBÔ {thread_id} | {setor}] Aviso na limpeza de local/session storage: {storage_e}")
-                            try:
-                                sb.execute_script("window.indexedDB.databases().then(dbs => dbs.forEach(db => window.indexedDB.deleteDatabase(db.name)))")
-                            except Exception as indexeddb_e:
-                                logger.warning(f"[ROBÔ {thread_id} | {setor}] Aviso na limpeza de IndexedDB: {indexeddb_e}")
+                        logger.info(f"[ROBÔ {thread_id} | {setor}] Executando Faxina Nuclear de Cookies e Cache...")
+                        try:
+                            sb.driver.execute_cdp_cmd('Network.clearBrowserCache', {})
+                            sb.driver.execute_cdp_cmd('Network.clearBrowserCookies', {})
+                        except Exception as cdp_e:
+                            logger.warning(f"[ROBÔ {thread_id} | {setor}] Aviso na faxina CDP: {cdp_e}")
+                            
+                        sb.delete_all_cookies()
+                        try:
+                            sb.execute_script("window.localStorage.clear(); window.sessionStorage.clear();")
+                        except Exception as storage_e:
+                            logger.warning(f"[ROBÔ {thread_id} | {setor}] Aviso na limpeza de local/session storage: {storage_e}")
+                        try:
+                            sb.execute_script("window.indexedDB.databases().then(dbs => dbs.forEach(db => window.indexedDB.deleteDatabase(db.name)))")
+                        except Exception as indexeddb_e:
+                            logger.warning(f"[ROBÔ {thread_id} | {setor}] Aviso na limpeza de IndexedDB: {indexeddb_e}")
                         
                         sb.open('https://loginweb.bb.com.br/sso/XUI/?realm=/paj&goto=https://juridico.bb.com.br/wfj#login')
                         sb.sleep(4)
