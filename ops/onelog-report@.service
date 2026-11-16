@@ -1,0 +1,12 @@
+[Unit]
+Description=Post OneLog Teams report (%i)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/libexec/onelog-report-teams %i
+TimeoutStartSec=180
+Nice=10
+IOSchedulingClass=idle
