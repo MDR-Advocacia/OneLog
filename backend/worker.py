@@ -55,6 +55,9 @@ DEBUG_SNAPSHOTS = os.getenv("DEBUG_SNAPSHOTS", "false").lower() == "true"
 BB_CHALLENGE_CHECKPOINTS = os.getenv("BB_CHALLENGE_CHECKPOINTS", "false").lower() == "true"
 BB_PERSIST_BROWSER_PROFILE = os.getenv("BB_PERSIST_BROWSER_PROFILE", "false").lower() == "true"
 BB_BROWSER_PROFILE_ROOT = os.getenv("BB_BROWSER_PROFILE_ROOT", "/app/browser_profiles")
+BB_AUTO_VERIFY_BEFORE_CLICK_SECONDS = max(
+    0, int(os.getenv("BB_AUTO_VERIFY_BEFORE_CLICK_SECONDS", "0"))
+)
 
 # Uma credencial compartilhada não se beneficia de Chromes concorrentes. A
 # configuração continua ajustável por ambiente, mas o padrão seguro é um robô.
@@ -1213,11 +1216,24 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                         update_status(setor, "Analisando Captcha...", imagem=img, thread_id=thread_id)
                         sb.sleep(6)
                         log_bb_challenge_state(sb, setor, thread_id, "apos_espera_inicial", challenge_started_at)
+                        auto_verify_first = setor == "BB_Robos" and BB_AUTO_VERIFY_BEFORE_CLICK_SECONDS > 0
+                        if auto_verify_first:
+                            update_status(setor, "Aguardando a verificação automática do portal...", thread_id=thread_id)
+                            deadline = challenge_started_at + BB_AUTO_VERIFY_BEFORE_CLICK_SECONDS
+                            while time.monotonic() < deadline:
+                                try:
+                                    if sb.is_element_visible("#idToken3"):
+                                        break
+                                except Exception:
+                                    pass
+                                sb.sleep(min(1.0, max(0.1, deadline - time.monotonic())))
+                            log_bb_challenge_state(sb, setor, thread_id, "apos_espera_automatica", challenge_started_at)
                         img = snapshot(sb, setor, f"02_antes_captcha_T{tentativa}", thread_id=thread_id)
                         
                         captcha_container = "div.cf-turnstile"
                         
-                        if sb.is_element_visible(captcha_container):
+                        password_ready = auto_verify_first and sb.is_element_visible("#idToken3")
+                        if not password_ready and sb.is_element_visible(captcha_container):
                             attempt_failure_hint = "Armadilha Cloudflare: desafio não concluído"
                             update_status(setor, "Cloudflare detectado. Aguardando estabilização...", imagem=img, thread_id=thread_id)
                             capture_bb_challenge_checkpoint(
