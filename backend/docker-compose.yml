@@ -66,8 +66,15 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - DB_URL=postgresql://${DB_USER:-onelog}:${DB_PASS:-onelog_password}@db:5432/${DB_NAME:-onelog_db}
       - PYTHONUNBUFFERED=1
+      - BB_PERSIST_BROWSER_PROFILE=true
+      - BB_BROWSER_PROFILE_ROOT=/app/browser_profiles
+      - BB_AUTO_VERIFY_BEFORE_CLICK_SECONDS=25
+      - BB_CHALLENGE_CHECKPOINTS=false
+      - CLOUDFLARE_RETRY_BACKOFF_SECONDS=900
     volumes:
       - shared_data:/app/shared
+      # O perfil do banco fica privado ao worker; /app/shared é exposto pela API.
+      - browser_profiles:/app/browser_profiles
     depends_on:
       - redis
       - db
@@ -84,3 +91,4 @@ volumes:
   postgres_data:
   redis_data:
   shared_data:
+  browser_profiles:

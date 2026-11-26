@@ -13,6 +13,7 @@ from collections import Counter
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from database import SessionLocal, Sector, AccountBB, init_db, seed_db
+from session_cookies import load_pool_cookies
 from ad_integration import autenticar_e_obter_setor, autenticar_admin_ad, listar_ous_bb_ad
 from functools import wraps
 from zoneinfo import ZoneInfo
@@ -261,7 +262,7 @@ def get_cookie_hard_delivery_limit_minutes(account=None, login_flow=False):
     return float(COOKIE_LOGIN_HARD_DELIVERY_MINUTES if login_flow else COOKIE_HARD_DELIVERY_MINUTES)
 
 def can_deliver_cached_cookie(account, hard_limit_minutes=None, login_flow=False):
-    if not account or not account.cookie_payload:
+    if not account or not load_pool_cookies(account.cookie_payload):
         return False
     cookie_age = get_cookie_age_minutes(account)
     if cookie_age is None:
@@ -272,7 +273,7 @@ def can_deliver_cached_cookie(account, hard_limit_minutes=None, login_flow=False
     return cookie_age <= limit_minutes
 
 def should_background_refresh_cookie(account, soft_limit_minutes=COOKIE_SOFT_REFRESH_MINUTES):
-    if not account or not account.cookie_payload:
+    if not account or not load_pool_cookies(account.cookie_payload):
         return False
     cookie_age = get_cookie_age_minutes(account)
     if cookie_age is None:
@@ -658,7 +659,7 @@ def get_session_totals(accounts):
             totals["fresh"] += 1
         if runtime["cookie_hot"]:
             totals["deliverable"] += 1
-        elif acc.cookie_payload:
+        elif load_pool_cookies(acc.cookie_payload):
             totals["expired"] += 1
         if runtime["backoff_seconds"] > 0:
             totals["backoff"] += 1
@@ -680,16 +681,12 @@ def get_worker_states():
 def get_account_runtime(account):
     cookie_age_minutes = get_cookie_age_minutes(account)
     backoff_seconds = redis_client.ttl(f"cooldown:account:{account.id}")
-    cookie_count = 0
-    if account.cookie_payload:
-        try:
-            cookie_count = len(json.loads(account.cookie_payload))
-        except Exception:
-            cookie_count = 0
+    cookie_count = len(load_pool_cookies(account.cookie_payload))
+    cookie_hot = can_deliver_cached_cookie(account)
     return {
         "cookie_age_minutes": round(cookie_age_minutes, 1) if cookie_age_minutes is not None else None,
-        "cookie_hot": can_deliver_cached_cookie(account),
-        "cookie_fresh": cookie_age_minutes is not None and cookie_age_minutes < COOKIE_REUSE_MINUTES,
+        "cookie_hot": cookie_hot,
+        "cookie_fresh": cookie_hot,
         "minutes_to_refresh": round(max(0, COOKIE_REUSE_MINUTES - cookie_age_minutes), 1) if cookie_age_minutes is not None else None,
         "minutes_to_hard_expiry": round(max(0, COOKIE_REUSE_MINUTES - cookie_age_minutes), 1) if cookie_age_minutes is not None else None,
         "backoff_seconds": backoff_seconds if backoff_seconds and backoff_seconds > 0 else 0,
@@ -858,6 +855,8 @@ def get_status():
 
     status_str = redis_client.get(f"status:{setor_nome}")
     status = parse_json_safe(status_str) or {"mensagem": "Aguardando sincronização..."}
+    if status.get("concluido"):
+        status = {"mensagem": "Aguardando sessão utilizável...", "concluido": False}
     account_backoff_seconds = 0
     if account:
         account_backoff_seconds = max(
@@ -934,7 +933,7 @@ def request_login():
             )
             return jsonify({
                 "status": "sucesso", "setor": setor_nome,
-                "cookies": json.loads(account.cookie_payload),
+                "cookies": load_pool_cookies(account.cookie_payload),
                 "url": "https://juridico.bb.com.br/wfj"
             })
         
@@ -1085,7 +1084,8 @@ def get_session():
     db = SessionLocal()
     try:
         account = buscar_conta_para_setor(db, setor_nome)
-        if account and account.cookie_payload:
+        cookies = load_pool_cookies(account.cookie_payload) if account else []
+        if cookies:
             record_request_event(
                 "session",
                 setor_nome=setor_nome,
@@ -1096,7 +1096,7 @@ def get_session():
                 request_id=request_id,
                 extra={"delivery_rule_minutes": COOKIE_REUSE_MINUTES},
             )
-            return jsonify({"status": "sucesso", "cookies": json.loads(account.cookie_payload)})
+            return jsonify({"status": "sucesso", "cookies": cookies})
     finally:
         db.close()
     record_request_event("session", setor_nome=setor_nome, outcome="not_found", requester=requester, request_id=request_id)
