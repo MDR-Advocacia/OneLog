@@ -17,6 +17,7 @@ import logging
 import sys
 from logging.handlers import RotatingFileHandler
 from database import SessionLocal, AccountBB
+from session_cookies import load_pool_cookies, usable_pool_cookies
 
 if not os.path.exists('shared'): os.makedirs('shared')
 
@@ -157,6 +158,17 @@ def get_random_proxy():
     if not PROXY_LIST:
         return None
     return random.choice(PROXY_LIST)
+
+
+def wait_for_pool_cookies(sb, attempts=6, interval_seconds=2):
+    """Allow the portal to finish setting its session after the URL changes."""
+    for attempt in range(attempts):
+        cookies = usable_pool_cookies(sb.driver.get_cookies())
+        if cookies:
+            return cookies
+        if attempt + 1 < attempts:
+            sb.sleep(interval_seconds)
+    return []
 
 redis_client = None
 
@@ -1063,7 +1075,7 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
         # =======================================================================
         # 🛑 BLINDAGEM CONTRA TRABALHO DUPLICADO (Otimização de Servidor)
         # =======================================================================
-        if account.cookie_payload and account.last_login_at:
+        if load_pool_cookies(account.cookie_payload) and account.last_login_at:
             minutos_passados = (datetime.utcnow() - account.last_login_at).total_seconds() / 60
             should_run_early_auto_refresh = (
                 auto and minutos_passados >= float(AUTO_DISPATCH_TARGET_AGE_MINUTES)
@@ -1369,16 +1381,10 @@ def processar_login(account_id, setor_solicitado, thread_id, requester_username=
                         sb.sleep(4)
                     
                     if logged_in:
-                        cookies = sb.driver.get_cookies()
-                        COOKIES_BLOQUEADOS = ["PD-S-SESSION-ID", "JSESSIONID", "cf_clearance", "__cf_bm"]
-                        
-                        cookies_limpos = []
-                        for cookie in cookies:
-                            nome_cookie = cookie['name']
-                            if nome_cookie in COOKIES_BLOQUEADOS or nome_cookie.startswith('TS01') or 'BIGipServer' in nome_cookie:
-                                logger.info(f"[ROBÔ {thread_id} | {setor}] Filtro Ativado: Destruindo cookie tóxico -> {nome_cookie}")
-                                continue
-                            cookies_limpos.append(cookie)
+                        cookies_limpos = wait_for_pool_cookies(sb)
+                        if not cookies_limpos:
+                            attempt_failure_hint = "Portal jurídico aberto, mas sem cookies de sessão utilizáveis."
+                            raise RuntimeError(attempt_failure_hint)
                             
                         try: real_ua = sb.execute_script("return navigator.userAgent;")
                         except: real_ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
@@ -1795,7 +1801,7 @@ def auto_dispatcher():
                     refresh_threshold = max(1.0, float(AUTO_DISPATCH_TARGET_AGE_MINUTES))
                     
                     # Lógica para saber quanto tempo de paz nós temos
-                    if acc.cookie_payload and acc.last_login_at:
+                    if load_pool_cookies(acc.cookie_payload) and acc.last_login_at:
                         minutos_passados = (agora_utc - acc.last_login_at).total_seconds() / 60
                         tempo_restante = float(COOKIE_REUSE_MINUTES) - minutos_passados
                         

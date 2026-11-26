@@ -17,6 +17,27 @@ class FakeRedis:
 
 
 class WorkerResilienceTests(unittest.TestCase):
+    def test_cookie_capture_waits_for_a_usable_portal_session(self):
+        browser = mock.Mock()
+        browser.driver.get_cookies.side_effect = [
+            [{"name": "cf_clearance", "value": "challenge", "domain": ".bb.com.br"}],
+            [{"name": "BBSSOToken", "value": "session", "domain": ".bb.com.br"}],
+        ]
+
+        cookies = worker.wait_for_pool_cookies(browser, attempts=3, interval_seconds=2)
+
+        self.assertEqual([cookie["name"] for cookie in cookies], ["BBSSOToken"])
+        browser.sleep.assert_called_once_with(2)
+
+    def test_cookie_capture_rejects_empty_session(self):
+        browser = mock.Mock()
+        browser.driver.get_cookies.return_value = [
+            {"name": "JSESSIONID", "value": "challenge", "domain": ".bb.com.br"}
+        ]
+
+        self.assertEqual(worker.wait_for_pool_cookies(browser, attempts=2), [])
+        browser.sleep.assert_called_once_with(2)
+
     def test_gateway_pages_are_not_reported_as_bad_credentials(self):
         cases = (
             "Bem-vindo à Intranet BB UNABLE TO LOGIN Return to Login Page",
