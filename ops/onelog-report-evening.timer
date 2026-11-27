@@ -1,0 +1,11 @@
+[Unit]
+Description=OneLog report at 21:00 Fortaleza
+
+[Timer]
+OnCalendar=*-*-* 21:00:00 America/Fortaleza
+AccuracySec=1min
+Persistent=true
+Unit=onelog-report@evening.service
+
+[Install]
+WantedBy=timers.target
